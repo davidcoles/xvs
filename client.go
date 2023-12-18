@@ -163,6 +163,7 @@ func (b *Client) Start() error {
 		fmt.Println(b.netns)
 	}
 
+	b.icmp = &ICMP{}
 	err := b.icmp.Start()
 
 	if err != nil {
