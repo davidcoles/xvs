@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-package vc5tmp
+package xvs
 
 import (
 	"bufio"
@@ -29,9 +29,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/davidcoles/vc5tmp/bpf"
-	"github.com/davidcoles/vc5tmp/maglev"
-	"github.com/davidcoles/vc5tmp/xdp"
+	"github.com/davidcoles/xvs/bpf"
+	"github.com/davidcoles/xvs/maglev"
+	"github.com/davidcoles/xvs/xdp"
 )
 
 //go:embed bpf/bpf.o

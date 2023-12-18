@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-package vc5tmp
+package xvs
 
 import (
 	"errors"
@@ -27,8 +27,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/davidcoles/vc5tmp/bpf"
-	"github.com/davidcoles/vc5tmp/xdp"
+	"github.com/davidcoles/xvs/bpf"
+	"github.com/davidcoles/xvs/xdp"
 )
 
 type be_state struct {
