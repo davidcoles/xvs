@@ -49,7 +49,7 @@ distclean: clean
 	cd balancer && $(MAKE) distclean
 
 debian-dependencies:
-	apt-get install build-essential libelf-dev clang libc6-dev libc6-dev-i386 llvm
+	apt-get install build-essential libelf-dev clang libc6-dev llvm
 
 wc:
 	wc *.go xdp/*.go maglev/*.go bpf/*.go
