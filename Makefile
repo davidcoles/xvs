@@ -48,9 +48,8 @@ distclean: clean
 	rm -rf libbpf
 	cd balancer && $(MAKE) distclean
 
-ubuntu-dependencies:
-	apt-get install git build-essential libelf-dev clang libc6-dev libc6-dev-i386 llvm golang-1.20 libyaml-perl libjson-perl ethtool
-	ln -s /usr/lib/go-1.20/bin/go /usr/local/bin/go
+debian-dependencies:
+	apt-get install build-essential libelf-dev clang libc6-dev libc6-dev-i386 llvm
 
 wc:
 	wc *.go xdp/*.go maglev/*.go bpf/*.go
