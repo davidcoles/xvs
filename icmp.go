@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-package icmp
+package xvs
 
 import (
 	"net"
@@ -35,7 +35,7 @@ func (i *ICMP) Start() error {
 	}
 
 	i.submit = make(chan string, 1000)
-	go icmp.probe(conn)
+	go i.probe(conn)
 
 	return nil
 }
