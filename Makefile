@@ -16,7 +16,7 @@ example: bpf/bpf.o
 	cd balancer && $(MAKE)
 
 
-%.o: %.c libbpf/src/libbpf.a
+%.o: %.c libbpf
 	clang -S \
 	    -target bpf \
 	    -D FLOW_STATE_TYPE=$(FLOW_STATE_TYPE) \
@@ -37,8 +37,8 @@ example: bpf/bpf.o
 libbpf:
 	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
 
-libbpf/src/libbpf.a: libbpf
-	cd libbpf/src && $(MAKE)
+#libbpf/src/libbpf.a: libbpf
+#	cd libbpf/src && $(MAKE)
 
 clean:
 	rm -f bpf/bpf.o
