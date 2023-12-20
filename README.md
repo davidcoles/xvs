@@ -47,3 +47,8 @@ You should then be able to contact the service:
 No healthchecking is done, so you'll have to make sure that a
 webserver is running on the real servers and that the VIP has been
 configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
+
+
+A more complete example with health check and BGP route health
+injection is currently available at
+[VC5ng](https://github.com/davidcoles/vc5ng).
