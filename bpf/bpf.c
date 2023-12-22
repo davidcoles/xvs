@@ -1104,7 +1104,7 @@ int xdp_main_func(struct xdp_md *ctx, int veth)
     return XDP_PASS;
 }
 
-
+/*
 SEC("real") int xdp_main_real(struct xdp_md *ctx)
 {
     return xdp_main_func(ctx, 0);
@@ -1113,6 +1113,16 @@ SEC("real") int xdp_main_real(struct xdp_md *ctx)
 SEC("veth") int xdp_main_veth(struct xdp_md *ctx)
 {
     return xdp_main_func(ctx, 1);   
+}
+*/
+SEC("xdp") int xdp_real(struct xdp_md *ctx)
+{
+    return xdp_main_func(ctx, 0);
+}
+
+SEC("xdp") int xdp_veth(struct xdp_md *ctx)
+{
+    return xdp_main_func(ctx, 1);
 }
 
 char _license[] SEC("license") = "GPL";

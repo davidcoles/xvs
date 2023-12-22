@@ -723,21 +723,21 @@ func open(obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*
 	}
 
 	if vetha != "" {
-		err = m.xdp.LoadBpfSection("veth", false, vetha)
+		err = m.xdp.LoadBpfSection("xdp_veth", false, vetha)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	if vethb != "" {
-		err = m.xdp.LoadBpfSection("veth", true, vethb)
+		err = m.xdp.LoadBpfSection("xdp_veth", true, vethb)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	for _, e := range eth {
-		err = m.xdp.LoadBpfSection("real", native, e)
+		err = m.xdp.LoadBpfSection("xdp_real", native, e)
 		if err != nil {
 			return nil, err
 		}

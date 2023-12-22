@@ -10,13 +10,14 @@
 
 LIBBPF := $(PWD)/libbpf/src
 #BPFVER ?= v0.6.1
-BPFVER ?= v0.8.1
+#BPFVER ?= v0.8.1
+BPFVER ?= v1.3.0
 
 export CGO_CFLAGS  = -I$(LIBBPF)
 export CGO_LDFLAGS = -L$(LIBBPF)
 
 build: libbpf/src/libbpf.a
-	go build #-race
+	go build -race
 
 libbpf:
 	git clone -b $(BPFVER) https://github.com/libbpf/libbpf

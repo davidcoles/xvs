@@ -1,6 +1,7 @@
 LIBBPF := $(PWD)/libbpf/src
 #BPFVER ?= v0.6.1
-BPFVER ?= v0.8.1
+#BPFVER ?= v0.8.1
+BPFVER ?= v1.3.0
 
 export CGO_CFLAGS  = -I$(LIBBPF)
 export CGO_LDFLAGS = -L$(LIBBPF)
