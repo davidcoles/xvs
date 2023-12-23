@@ -17,7 +17,7 @@ example: bpf/bpf.o
 	cd balancer && $(MAKE)
 
 
-%.o: %.c libbpf
+%.o: %.c
 	clang -S \
 	    -target bpf \
 	    -D FLOW_STATE_TYPE=$(FLOW_STATE_TYPE) \
