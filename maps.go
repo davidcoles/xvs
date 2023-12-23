@@ -20,8 +20,11 @@ package xvs
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	_ "embed"
 	"errors"
+	"io/ioutil"
 	"net"
 	"os"
 	"regexp"
@@ -34,11 +37,17 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
-//go:embed bpf/bpf.o
-var _BPF_O []byte
+//go:embed bpf/bpf.o.gz
+var bpf_gz []byte
 
-func BPF() []byte {
-	return append([]byte{}, _BPF_O...)
+func BPF() ([]byte, error) {
+	z, err := gzip.NewReader(bytes.NewReader(bpf_gz))
+
+	if err != nil {
+		return nil, err
+	}
+
+	return ioutil.ReadAll(z)
 }
 
 type maps = Maps
@@ -716,7 +725,7 @@ func open(obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*
 	m.fd = make(map[string]int)
 	m.defcon = 5
 
-	m.xdp, err = xdp.LoadBpfProgram(_BPF_O)
+	m.xdp, err = xdp.LoadBpfProgram(obj)
 
 	if err != nil {
 		return nil, err

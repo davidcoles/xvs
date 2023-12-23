@@ -11,11 +11,14 @@ FLOW_STATE_SIZE ?= 1000000  # 1M
 FLOW_SHARE_SIZE ?= 1000000  # 1M
 FLOW_QUEUE_SIZE ?= 10000
 
-default: bpf/bpf.o
+default:
+	test -f bpf/bpf.o.gz || $(MAKE) bpf/bpf.o.gz
 
-example: bpf/bpf.o
+example: bpf/bpf.o.gz
 	cd balancer && $(MAKE)
 
+bpf/bpf.o.gz: bpf/bpf.o
+	gzip -9 bpf/bpf.o
 
 %.o: %.c
 	clang -S \
@@ -42,7 +45,7 @@ libbpf:
 #	cd libbpf/src && $(MAKE)
 
 clean:
-	rm -f bpf/bpf.o
+	rm -f bpf/bpf.o bpf/bpf.o.gz
 	cd balancer && $(MAKE) clean
 
 distclean: clean

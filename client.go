@@ -170,7 +170,13 @@ func (b *Client) Start() error {
 		return err
 	}
 
-	b.maps, err = open(_BPF_O, b.Native, len(b.vlans) > 0 && b.Redirect, vetha, vethb, phy...)
+	bpf, err := BPF()
+
+	if err != nil {
+		return errors.New("Couldn't decompress eBPF code")
+	}
+
+	b.maps, err = open(bpf, b.Native, len(b.vlans) > 0 && b.Redirect, vetha, vethb, phy...)
 
 	if err != nil {
 		return err

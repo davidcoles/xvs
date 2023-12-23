@@ -118,15 +118,15 @@ func LoadBpfProgram(bindata []byte) (*XDP, error) {
 	xdp.p = C.load_bpf_file(C.CString(tmpfile.Name()))
 
 	if xdp.p == nil {
-		return nil, errors.New("Oops")
+		return nil, errors.New("Unable to load eBPF")
 	}
 
 	return &xdp, nil
 }
 
-func (xdp *XDP) LoadBpfSection(p1 string, native bool, eth string) error {
+func (xdp *XDP) LoadBpfSection(section string, native bool, eth string) error {
 	C.xdp_link_detach(C.CString(eth))
-	if C.load_bpf_section(xdp.p, C.CString(eth), C.CString(p1), C.int(boolint(native))) != 0 {
+	if C.load_bpf_section(xdp.p, C.CString(eth), C.CString(section), C.int(boolint(native))) != 0 {
 		return errors.New("load_bpf_section() failed for " + eth)
 	}
 
