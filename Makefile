@@ -20,7 +20,7 @@ example: bpf/bpf.o.gz
 bpf/bpf.o.gz: bpf/bpf.o
 	gzip -9 bpf/bpf.o
 
-%.o: %.c
+%.o: %.c libbpf
 	clang -S \
 	    -target bpf \
 	    -D FLOW_STATE_TYPE=$(FLOW_STATE_TYPE) \
