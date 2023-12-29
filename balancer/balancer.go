@@ -98,7 +98,29 @@ func main() {
 
 	fmt.Println(vlans)
 
+	svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
+	err = client.CreateService(svc)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer client.RemoveService(svc)
+
+	for _, r := range rip {
+		sleep(5)
+		dst := xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1}
+
+		fmt.Println("ADDING", r)
+		client.CreateDestination(svc, dst)
+	}
+
 	/*
+		var dst []xvs.Destination
+		for _, r := range rip {
+			dst = append(dst, xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1})
+		}
+
 		svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
 		err = client.CreateService(svc)
 
@@ -106,25 +128,12 @@ func main() {
 			log.Fatal(err)
 		}
 
-		//defer client.RemoveService(svc)
+		err = client.SetService(svc, dst)
 
-		for _, r := range rip {
-			dst := xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1}
-			client.CreateDestination(svc, dst)
+		if err != nil {
+			log.Fatal(err)
 		}
 	*/
-
-	var dst []xvs.Destination
-	for _, r := range rip {
-		dst = append(dst, xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1})
-	}
-
-	svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
-	err = client.SetService(svc, dst)
-
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	sleep(60)
 

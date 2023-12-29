@@ -19,10 +19,8 @@
 package xvs
 
 import (
-	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"sort"
 	"sync"
 	"unsafe"

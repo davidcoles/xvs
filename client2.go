@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/davidcoles/xvs/foo"
+	"github.com/davidcoles/xvs/nat"
 	"github.com/davidcoles/xvs/xdp"
 )
 
@@ -27,29 +27,148 @@ type Client2 struct {
 	Redirect   bool
 	Address    netip.Addr // find default interface when not in VLAN mode
 
-	mutex   sync.Mutex
 	service map[key]*Service
+	ifaces  map[uint16]iface
+	hwaddr  map[IP4]MAC // IPv4 only
+	tags    map[netip.Addr]uint16
 
-	ifaces map[uint16]iface
-	hwaddr map[IP4]MAC // IPv4 only
-	maps   *maps
-	icmp   *ICMP
-	netns  *netns
-	tags   map[netip.Addr]uint16
+	maps  *maps
+	icmp  *ICMP
+	netns *netns
 
-	foo foo.Foo
+	natMap nat.NatMap
 
-	update chan bool
+	update_fwd chan bool
+	update_nat chan bool
+	mutex      sync.Mutex
+
+	nat []natkeyval
 }
 
-func (c *Client2) tag(netip.Addr) uint16 {
+func (c *Client2) vlanIDs() []vc {
+	var vlans []vc
+
+	for k, v := range c.VLANs {
+		vlans = append(vlans, vc{k, v})
+	}
+	sort.SliceStable(vlans, func(i, j int) bool {
+		return vlans[i].vid < vlans[j].vid
+	})
+
+	return vlans
+}
+
+func (c *Client2) tag(i netip.Addr) uint16 {
+	vlans := c.vlanIDs()
+
+	if !i.Is4() {
+		return 0
+	}
+
+	ip4 := i.As4()
+
+	ip := net.IP(ip4[:])
+	for _, v := range vlans {
+		if v.net.Contains(ip) {
+			return v.vid
+		}
+	}
+
 	return 0
+}
+
+func (c *Client2) CreateService(s Service) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.setService(&s, nil)
+}
+
+func (c *Client2) RemoveService(s Service) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	svc, err := s.key()
+
+	if err != nil {
+		return err
+	}
+
+	service, ok := c.service[svc]
+
+	if !ok {
+		return errors.New("Service does not exist")
+	}
+
+	for ip, _ := range service.backend {
+		c.maps.removeDestination(svc, ip)
+	}
+
+	if svc.addr.Is4() {
+		sb := bpf_service{vip: svc.addr.As4(), port: htons(svc.port), protocol: svc.prot}
+		xdp.BpfMapDeleteElem(c.maps.service_backend(), uP(&sb))
+		xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&bpf_vrpp{vip: s.Address.As4()}))
+	}
+
+	delete(c.service, svc)
+
+	return nil
+}
+
+func (c *Client2) CreateDestination(s Service, d Destination) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	svc, err := s.key()
+
+	if err != nil {
+		return err
+	}
+
+	service, ok := c.service[svc]
+
+	if !ok {
+		return errors.New("Service does not exist")
+	}
+
+	if !d.Address.Is4() {
+		return errors.New("Not IPv4")
+	}
+
+	ip := d.Address.As4()
+
+	if _, exists := service.backend[ip]; exists {
+		return errors.New("Desination exists")
+	}
+
+	var dst []Destination
+
+	for _, d := range service.backend {
+		dst = append(dst, *d)
+	}
+
+	dst = append(dst, d)
+
+	return c.setService(service, dst)
+}
+
+func (m *Maps) removeDestination(svc key, rip IP4) {
+
+	if svc.addr.Is4() {
+		vr := bpf_vrpp{vip: svc.addr.As4(), rip: rip, port: htons(svc.port), protocol: svc.prot}
+		xdp.BpfMapDeleteElem(m.vrpp_counter(), uP(&vr))
+		xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&vr))
+		vr.pad = 1
+		xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&vr))
+	}
 }
 
 func (c *Client2) SetService(s Service, dst []Destination) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	return c.setService(&s, dst)
+}
 
+func (c *Client2) setService(s *Service, dst []Destination) error {
 	svc, err := s.key()
 
 	if err != nil {
@@ -70,13 +189,13 @@ func (c *Client2) SetService(s Service, dst []Destination) error {
 		s.backend = map[IP4]*Destination{}
 		s.state = nil
 
-		service = &s
-		c.service[svc] = &s
+		service = s
+		c.service[svc] = s
 
 		c.maps.update_vrpp_counter(&bpf_vrpp{vip: vip}, &bpf_counter{}, xdp.BPF_NOEXIST)
+	} else {
+		service.update(*s)
 	}
-
-	service.update(s)
 
 	new := map[IP4]*Destination{}
 
@@ -99,43 +218,40 @@ func (c *Client2) SetService(s Service, dst []Destination) error {
 			c.maps.update_vrpp_concurrent(1, &vr, nil, xdp.BPF_NOEXIST)
 		}
 
-		// calculate VLAN ID if it does not already exist
-		//if _, ok := c.tag_map.ent(rip); !ok {
-		//	c.tag_map.set(rip, c.tag(rip))
-		//}
+		n := c.natMap.Add(vip, rip)
+
+		if n == 0 { // vip/rip combination wasn't in NAT map exist - fire off a ping and signal to rebuild index
+			c.icmp.Ping(rip.String())
+			select {
+			case c.update_nat <- true:
+			default:
+			}
+		}
+
+		if _, exists := c.tags[d.Address]; !exists {
+			tag := c.tag(d.Address)
+			fmt.Println("TAG:", d.Address, tag)
+			c.tags[d.Address] = tag
+		}
 	}
 
 	for rip, _ := range s.backend {
 		if _, ok := new[rip]; !ok {
 			// delete map entries
-			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol)}
-			xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&vr))
-			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&vr))
-			vr.pad = 1
-			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&vr))
+			v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 0}
+			v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 1}
+			xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&v0))
+			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v0))
+			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v1))
 		}
 	}
 
 	service.backend = new
 
-	// TODO
-	// write vip/rip to map if it does not exist - trigger update of nat->kernel
-
-	// to index nat - scan all services and remove ununsed vip/rip
-	// delete old nat rules
-	// rebuild nat map
-	// install new rules
-
-	//c.update_nat_map()
-	//for vid, iface := range c.ifaces {
-	//	c.maps.update_redirect(vid, iface.mac, iface.idx)
-	//}
-	///////c.update_redirects()
-	//c.update_nat_no_lock()
-	//service.state = nil
-	//c.update_service(svc, service, c.hwaddr, false)
-
-	service.sync(c.hwaddr, c.tags, c.maps)
+	select {
+	case c.update_fwd <- true:
+	default:
+	}
 
 	return nil
 }
@@ -144,12 +260,13 @@ func (c *Client2) Start() error {
 
 	phy := c.Interfaces
 
-	//c.nat_map = map[[2]IP4]uint16{}
-	//c.tag_map = map[IP4]uint16{}
 	c.service = map[key]*Service{}
 	c.hwaddr = map[IP4]MAC{}
-	c.update = make(chan bool, 1)
 	c.tags = map[netip.Addr]uint16{}
+	c.natMap = nat.NatMap{}
+
+	c.update_fwd = make(chan bool, 1)
+	c.update_nat = make(chan bool, 1)
 
 	var vetha, vethb string
 
@@ -221,49 +338,105 @@ func (c *Client2) Start() error {
 	}
 
 	c.scan_interfaces()
+	c.update_redirects()
 
+	go c.maps.background()
 	go c.background()
 
 	return nil
 }
 
 func (c *Client2) background() {
-	ticker := time.NewTicker(time.Second)
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	nic_ticker := time.NewTicker(time.Minute)
+	arp_ticker := time.NewTicker(10 * time.Second)
+	mac_ticker := time.NewTicker(10 * time.Second)
+
 	for {
+		var update_nic bool
+		var update_arp bool
+		var update_mac bool
+		var update_fwd bool
+		var update_nat bool
+
 		select {
 		case <-ticker.C:
-			c.mutex.Lock()
+		}
 
-			ips := map[IP4]bool{}
+		var done bool
 
-			for _, s := range c.service {
-				for ip, _ := range s.backend {
-					c.icmp.Ping(ip.String())
-					ips[ip] = true
-				}
+		for !done {
+			select {
+
+			case <-nic_ticker.C:
+				update_nic = true
+			case <-arp_ticker.C:
+				update_arp = true
+			case <-mac_ticker.C:
+				update_mac = true
+			case <-c.update_fwd:
+				update_mac = true
+				update_fwd = true
+			case <-c.update_nat:
+				update_mac = true
+				update_nat = true
+			default:
+				done = true
 			}
+		}
 
-			c.update_arp(ips)
+		c.mutex.Lock()
 
+		if update_nic {
+			// rescan interfaces
+			// if changed: update redirects, update nat, update fwd
+		}
+
+		if update_arp {
+			c.arp()
+		}
+
+		if update_mac {
+			if c.update_mac(c.natMap.RIPs()) { // true if something changed
+				update_fwd = true
+				update_nat = true
+			}
+		}
+
+		if update_nat {
+			if changed, _ := c.natMap.Index(); changed {
+				fmt.Println("UPDATE NAT")
+				c.updateNAT()
+			}
+		}
+
+		if update_fwd {
 			for _, service := range c.service {
 				service.sync(c.hwaddr, c.tags, c.maps)
 			}
-
-			c.mutex.Unlock()
-
-		case <-c.update:
 		}
+
+		c.mutex.Unlock()
+
 	}
 }
 
-func (b *Client2) update_arp(ips map[IP4]bool) bool {
+func (c *Client2) arp() {
+	// ping all real IP addresses, causing an ARP lookup if not fresh
+	for ip, _ := range c.natMap.RIPs() {
+		c.icmp.Ping(IP4(ip).String())
+	}
+}
+
+func (b *Client2) update_mac(ips map[[4]byte]bool) bool {
 	hwaddr := map[IP4]MAC{}
 
 	var changed bool
 
 	arp := arp()
 
-	fmt.Println(arp, ips)
+	//fmt.Println(arp, ips)
 
 	for ip, _ := range ips {
 		//fmt.Println("ARPPING:", ip)
@@ -292,16 +465,13 @@ func (b *Client2) update_arp(ips map[IP4]bool) bool {
 	b.hwaddr = hwaddr
 
 	if changed {
-		fmt.Println("ARP:", hwaddr)
+		fmt.Println("MAC:", hwaddr)
 	}
 
 	return changed
 }
 
 func (c *Client2) scan_interfaces() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
 	fmt.Println("IFS:")
 	c.ifaces = VlanInterfaces(c.VLANs)
 }
@@ -374,9 +544,243 @@ func (b *Client2) Destinations(s Service) ([]DestinationExtended, error) {
 	}
 
 	sort.SliceStable(destinations, func(i, j int) bool {
-		//return nltoh(a[i]) < nltoh(a[j])
 		return destinations[i].Destination.Address.Compare(destinations[j].Destination.Address) < 0
 	})
 
 	return destinations, nil
 }
+
+/**********************************************************************/
+
+func (c *Client2) natAddr(i uint16) IP4 {
+	ns := htons(i)
+	return IP4{10, 255, ns[0], ns[1]}
+}
+
+func (b *Client2) natEntry(vip, rip, nat IP4, realhw MAC, vlanid uint16, idx iface) (ret []natkeyval) {
+
+	vlanip := idx.ip4
+	vlanhw := idx.mac
+	vlanif := idx.idx
+
+	var vc5bip IP4 = b.netns.IpB
+	var vc5bhw MAC = b.netns.HwB
+	var vc5ahw MAC = b.netns.HwA
+	var vethif uint32 = uint32(b.netns.IdA)
+
+	if realhw.IsNil() {
+		return
+	}
+
+	key := bpf_natkey{src_ip: vc5bip, dst_ip: nat, src_mac: vc5bhw, dst_mac: vc5ahw}
+	val := bpf_natval{src_ip: vlanip, dst_ip: vip, src_mac: vlanhw, dst_mac: realhw, ifindex: vlanif, vlan: vlanid}
+
+	ret = append(ret, natkeyval{key: key, val: val})
+
+	key = bpf_natkey{src_ip: vip, src_mac: realhw, dst_ip: vlanip, dst_mac: vlanhw}
+	val = bpf_natval{src_ip: nat, src_mac: vc5ahw, dst_ip: vc5bip, dst_mac: vc5bhw, ifindex: vethif}
+
+	ret = append(ret, natkeyval{key: key, val: val})
+
+	return
+}
+
+func (c *Client2) natEntries() (nkv []natkeyval) {
+
+	if c.netns == nil {
+		return
+	}
+
+	for k, v := range c.natMap.All() {
+		vip := k[0]
+		rip := k[1]
+		nat := c.natAddr(v)
+		mac := c.hwaddr[rip]
+		vid := c.tags[netip.AddrFrom4(rip)]
+		idx := c.ifaces[vid]
+
+		if mac.IsNil() {
+			continue
+		}
+
+		if (len(c.VLANs) != 0 && vid == 0) || (len(c.VLANs) == 0 && vid != 0) {
+			continue
+		}
+
+		if vid == 0 && c.netns.phys.idx == 0 {
+			continue
+		}
+
+		if vid == 0 {
+			idx = c.netns.phys
+		}
+
+		nkv = append(nkv, c.natEntry(vip, rip, nat, mac, vid, idx)...)
+	}
+
+	return
+}
+
+func (c *Client2) updateNAT() {
+
+	if c.netns == nil {
+		return
+	}
+
+	var nat []natkeyval
+
+	if c.netns != nil {
+		nat = c.natEntries()
+	}
+
+	var updated, deleted int
+
+	old := map[bpf_natkey]bpf_natval{}
+	for _, e := range c.nat {
+		old[e.key] = e.val
+	}
+
+	// apply all entries
+	for _, e := range nat {
+		k := e.key
+		v := e.val
+
+		if x, ok := old[k]; !ok || v != x {
+			updated++
+			xdp.BpfMapUpdateElem(c.maps.nat(), uP(&(e.key)), uP(&(e.val)), xdp.BPF_ANY)
+		}
+
+		delete(old, k)
+	}
+
+	for k, _ := range old {
+		deleted++
+		xdp.BpfMapDeleteElem(c.maps.nat(), uP(&(k)))
+	}
+
+	c.nat = nat
+
+	fmt.Println("NAT: entries", len(nat), "updated", updated, "deleted", deleted)
+}
+
+func (c *Client2) update_redirects() {
+	for vid, iface := range c.ifaces {
+		fmt.Println("RDR:", vid, iface.mac, iface.idx)
+		c.maps.update_redirect(vid, iface.mac, iface.idx)
+	}
+}
+
+func (c *Client2) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
+	if !vip.Is4() || !rip.Is4() {
+		return r, false
+	}
+
+	ip, ok := c.NATAddr(vip.As4(), rip.As4())
+
+	return netip.AddrFrom4(ip), ok
+}
+
+func (c *Client2) NATAddr(vip, rip IP4) (r IP4, _ bool) {
+	i := c.natMap.Get(vip, rip)
+
+	if i == 0 {
+		return r, false
+	}
+
+	return c.natAddr(i), true
+}
+
+func (c *Client2) Namespace() string {
+	return NAMESPACE
+}
+
+func (c *Client2) NamespaceAddress() string {
+	return IP.String()
+}
+
+func (c *Client2) Info() (i Info) {
+	/*
+	   rx_packets     uint64
+	   rx_octets      uint64
+	   perf_packets   uint64
+	   perf_timens    uint64
+	   perf_timer     uint64
+	   settings_timer uint64
+	   new_flows      uint64
+	   dropped        uint64
+	   qfailed        uint64
+	   blocked        uint64
+	*/
+	g := c.maps.lookup_globals()
+	i.Packets = g.rx_packets
+	i.Octets = g.rx_octets
+	i.Flows = g.new_flows
+	i.Latency = g.latency()
+	i.Dropped = g.dropped
+	i.Blocked = g.blocked
+	i.NotQueued = g.qfailed
+	return
+}
+
+func (c *Client2) UpdateVLANs(vlans map[uint16]net.IPNet) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.VLANs = vlans
+
+	c.scan_interfaces()
+
+	for ip, _ := range c.natMap.RIPs() {
+		addr := netip.AddrFrom4(ip)
+		c.tags[addr] = c.tag(addr)
+	}
+}
+
+func (c *Client2) Prefixes() [PREFIXES]uint64 {
+	return c.maps.ReadPrefixCounters()
+}
+
+func (c *Client2) Service(s Service) (se ServiceExtended, e error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if !s.Address.Is4() {
+		return se, errors.New("Not IPv4")
+	}
+
+	svc, err := s.key()
+
+	if err != nil {
+		return se, err
+	}
+
+	service, ok := c.service[svc]
+
+	if !ok {
+		return se, errors.New("Service does not exist")
+	}
+
+	se.Service = service.dup()
+
+	for rip, _ := range service.backend {
+		v := bpf_vrpp{vip: svc.addr.As4(), rip: rip, port: htons(svc.port), protocol: svc.prot}
+		s := bpf_counter{}
+		c.maps.lookup_vrpp_counter(&v, &s)
+		se.Stats.Packets += s.packets
+		se.Stats.Octets += s.octets
+		se.Stats.Flows += s.flows
+	}
+
+	return se, nil
+}
+
+/*
+./main.go:94:18: client.Namespace undefined (type *xvs.Client2 has no field or method Namespace)
+./main.go:94:71: client.NamespaceAddress undefined (type *xvs.Client2 has no field or method NamespaceAddress)
+./main.go:170:22: client.Info undefined (type *xvs.Client2 has no field or method Info)
+./main.go:180:22: client.Info undefined (type *xvs.Client2 has no field or method Info)
+./main.go:200:21: client.Info undefined (type *xvs.Client2 has no field or method Info)
+./main.go:214:15: client.Prefixes undefined (type *xvs.Client2 has no field or method Prefixes)
+./main.go:245:12: client.UpdateVLANs undefined (type *xvs.Client2 has no field or method UpdateVLANs)
+./main.go:523:20: client.Service undefined (type *xvs.Client2 has no field or method Service)
+*/

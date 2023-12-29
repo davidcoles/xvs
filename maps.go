@@ -30,6 +30,7 @@ import (
 	"regexp"
 	"sort"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/bpf"
@@ -814,4 +815,16 @@ func ulimit_l() error {
 		return err
 	}
 	return nil
+}
+
+func (m *Maps) background() {
+	var era uint8
+	m.Era(era)
+
+	ticker := time.NewTicker(10 * time.Second)
+
+	for _ = range ticker.C {
+		era++
+		m.Era(era)
+	}
 }
