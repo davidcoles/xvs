@@ -44,7 +44,7 @@ func BPF() ([]byte, error) {
 	z, err := gzip.NewReader(bytes.NewReader(bpf_gz))
 
 	if err != nil {
-		return nil, err
+		return nil, errors.New("Couldn't decompress eBPF code")
 	}
 
 	return ioutil.ReadAll(z)

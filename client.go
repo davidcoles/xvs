@@ -270,6 +270,7 @@ func (b *Client) update_arp() bool {
 	arp := b.arp()
 
 	for _, ip := range b.nat_map.rip() {
+		//fmt.Println("ARPPING:", ip)
 
 		new, ok := arp[ip]
 
@@ -731,7 +732,10 @@ func (b *Client) update_service(svc svc, s *Service, arp map[IP4]MAC, force bool
 		vid := b.tag1(ip)
 		if !ip.IsNil() && !mac.IsNil() && real.Weight > 0 && vid < 4095 {
 			bpf_reals[ip] = bpf_real{rip: ip, mac: mac, vid: htons(vid)}
+		} else {
+			fmt.Println(ip, mac, real.Weight, vid)
 		}
+
 	}
 
 	key := &bpf_service{vip: svc.IP, port: htons(svc.Port), protocol: uint8(svc.Protocol)}
@@ -1066,4 +1070,137 @@ func DefaultInterface(addr IP4) *net.Interface {
 	}
 
 	return nil
+}
+
+func (c *Client) SetService(s Service, dst []Destination) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	svc, err := s.svc()
+
+	if err != nil {
+		return err
+	}
+
+	vip := svc.IP
+	port := svc.Port
+	protocol := svc.Protocol
+
+	service, ok := c.service[svc]
+
+	if !ok {
+		s.backend = map[IP4]*Destination{}
+		s.state = nil
+
+		service = &s
+		c.service[svc] = &s
+
+		c.maps.update_vrpp_counter(&bpf_vrpp{vip: vip}, &bpf_counter{}, xdp.BPF_NOEXIST)
+	}
+
+	service.update(s)
+
+	new := map[IP4]*Destination{}
+
+	for _, d := range dst {
+
+		if !d.Address.Is4() {
+			continue
+		}
+
+		rip := IP4(d.Address.As4())
+
+		x := d
+		new[rip] = &x
+
+		if _, ok := s.backend[rip]; !ok {
+			// create map entries (if they don't already exist)
+			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol)}
+			c.maps.update_vrpp_counter(&vr, &bpf_counter{}, xdp.BPF_NOEXIST)
+			c.maps.update_vrpp_concurrent(0, &vr, nil, xdp.BPF_NOEXIST)
+			c.maps.update_vrpp_concurrent(1, &vr, nil, xdp.BPF_NOEXIST)
+		}
+
+		// calculate VLAN ID if it does not already exist
+		if _, ok := c.tag_map.ent(rip); !ok {
+			c.tag_map.set(rip, c.tag(rip))
+		}
+	}
+
+	for rip, _ := range s.backend {
+		if _, ok := new[rip]; !ok {
+			// delete map entries
+			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol)}
+			xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&vr))
+			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&vr))
+			vr.pad = 1
+			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&vr))
+		}
+	}
+
+	service.backend = new
+
+	// TODO
+	// write vip/rip to map if it does not exist - trigger update of nat->kernel
+
+	// to index nat - scan all services and remove ununsed vip/rip
+	// delete old nat rules
+	// rebuild nat map
+	// install new rules
+
+	c.update_nat_map()
+	//for vid, iface := range c.ifaces {
+	//	c.maps.update_redirect(vid, iface.mac, iface.idx)
+	//}
+	///////c.update_redirects()
+	//c.update_nat_no_lock()
+	service.state = nil
+	c.update_service(svc, service, c.hwaddr, false)
+
+	return nil
+}
+
+func (c *Client) update_nat_no_lock() {
+
+	if c.netns == nil {
+		return
+	}
+
+	var nat []natkeyval
+
+	nat_map := c.nat_map.get()
+	tag_map := c.tag_map.get()
+
+	if c.netns != nil {
+		nat = c.nat_entries(c.ifaces, nat_map, tag_map, c.hwaddr)
+	}
+
+	var updated, deleted int
+
+	old := map[bpf_natkey]bpf_natval{}
+	for _, e := range c.nat {
+		old[e.key] = e.val
+	}
+
+	// apply all entries
+	for _, e := range nat {
+		k := e.key
+		v := e.val
+
+		if x, ok := old[k]; !ok || v != x {
+			updated++
+			xdp.BpfMapUpdateElem(c.maps.nat(), uP(&(e.key)), uP(&(e.val)), xdp.BPF_ANY)
+		}
+
+		delete(old, k)
+	}
+
+	for k, _ := range old {
+		deleted++
+		xdp.BpfMapDeleteElem(c.maps.nat(), uP(&(k)))
+	}
+
+	c.nat = nat
+
+	fmt.Println("NAT: entries", len(nat), "updated", updated, "deleted", deleted)
 }

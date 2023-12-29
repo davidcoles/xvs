@@ -82,7 +82,7 @@ func main() {
 		}
 	}
 
-	client := &xvs.Client{
+	client := &xvs.Client2{
 		Interfaces: links,
 		Address:    addr,
 		VLANs:      vlans,
@@ -98,18 +98,32 @@ func main() {
 
 	fmt.Println(vlans)
 
+	/*
+		svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
+		err = client.CreateService(svc)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		//defer client.RemoveService(svc)
+
+		for _, r := range rip {
+			dst := xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1}
+			client.CreateDestination(svc, dst)
+		}
+	*/
+
+	var dst []xvs.Destination
+	for _, r := range rip {
+		dst = append(dst, xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1})
+	}
+
 	svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
-	err = client.CreateService(svc)
+	err = client.SetService(svc, dst)
 
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	defer client.RemoveService(svc)
-
-	for _, r := range rip {
-		dst := xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1}
-		client.CreateDestination(svc, dst)
 	}
 
 	sleep(60)

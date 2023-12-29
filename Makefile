@@ -58,3 +58,6 @@ debian-dependencies:
 wc:
 	wc *.go xdp/*.go maglev/*.go bpf/*.go
 	wc xdp/*.h xdp/*.c bpf/*.c bpf/*.h
+
+test:
+	cd foo && go test -v

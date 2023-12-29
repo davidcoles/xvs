@@ -180,70 +180,6 @@ func (c *Client) targets() (r []IP4) {
 	return
 }
 
-type Service struct {
-	Address  netip.Addr
-	Port     uint16
-	Protocol protocol
-
-	Sticky bool
-	//Scheduler uint8
-	//Leastconns       bool
-	//LeastconnsIP     IP4
-	//LeastconnsWeight uint8
-
-	backend map[IP4]*Destination
-	state   *be_state
-}
-
-func (s *Service) Service(x svc) Service {
-	var r Service
-	r = *s
-	r.backend = map[IP4]*Destination{}
-	r.state = nil
-	return r
-}
-
-type ServiceExtended struct {
-	Service Service
-	Stats   Stats
-}
-
-func (s *Service) update(u Service) {
-	//s.Scheduler = u.Scheduler
-	s.Sticky = u.Sticky
-	//s.Leastconns = u.Leastconns
-	//s.LeastconnsIP = u.LeastconnsIP
-	//s.LeastconnsWeight = u.LeastconnsWeight
-}
-
-func (s *Service) svc() (svc, error) {
-	if !s.Address.Is4() {
-		return svc{}, errors.New("Not IPv4")
-	}
-	ip := s.Address.As4()
-	return svc{IP: ip, Port: s.Port, Protocol: s.Protocol}, nil
-}
-
-type Destination struct {
-	Address netip.Addr
-	Weight  uint8
-}
-
-func (d *Destination) rip() (IP4, error) {
-	if !d.Address.Is4() {
-		return IP4{}, errors.New("Not IPv4")
-	}
-
-	return d.Address.As4(), nil
-}
-
-func (d *Destination) extend(ip IP4) DestinationExtended {
-	var de DestinationExtended
-	de.Destination.Address = netip.AddrFrom4(ip)
-	de.Destination.Weight = d.Weight
-	return de
-}
-
 type Info struct {
 	Packets   uint64
 	Octets    uint64
@@ -317,6 +253,7 @@ func (c *Client) vlanIDs() []vc {
 	return vlans
 }
 
+/*
 func (c *Client) tag(ips []IP4) map[IP4]uint16 {
 	vlans := c.vlanIDs()
 	r := map[IP4]uint16{}
@@ -334,8 +271,22 @@ outer:
 
 	return r
 }
+*/
 
 func (c *Client) tag1(i IP4) uint16 {
+	vlans := c.vlanIDs()
+
+	ip := net.IP(i[:])
+	for _, v := range vlans {
+		if v.net.Contains(ip) {
+			return v.vid
+		}
+	}
+
+	return 0
+}
+
+func (c *Client) tag(i IP4) uint16 {
 	vlans := c.vlanIDs()
 
 	ip := net.IP(i[:])
