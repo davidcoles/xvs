@@ -18,6 +18,7 @@
 
 package xvs
 
+/*
 import (
 	"errors"
 	"fmt"
@@ -30,15 +31,6 @@ import (
 	"github.com/davidcoles/xvs/bpf"
 	"github.com/davidcoles/xvs/xdp"
 )
-
-type be_state struct {
-	sticky      bool
-	fallback    bool
-	leastconns  IP4
-	weight      uint8
-	bpf_backend bpf_backend
-	bpf_reals   map[IP4]bpf_real
-}
 
 type Client struct {
 	Interfaces []string
@@ -83,18 +75,6 @@ func (c *Client) Prefixes() [PREFIXES]uint64 {
 }
 
 func (c *Client) Info() (i Info) {
-	/*
-	   rx_packets     uint64
-	   rx_octets      uint64
-	   perf_packets   uint64
-	   perf_timens    uint64
-	   perf_timer     uint64
-	   settings_timer uint64
-	   new_flows      uint64
-	   dropped        uint64
-	   qfailed        uint64
-	   blocked        uint64
-	*/
 	g := c.maps.lookup_globals()
 	i.Packets = g.rx_packets
 	i.Octets = g.rx_octets
@@ -397,8 +377,6 @@ func (c *Client) update_nat_map() {
 		}
 	}()
 }
-
-/********************************************************************************/
 
 func (b *Client) UpdateVLANs(vlans map[uint16]net.IPNet) {
 	b.mutex.Lock()
@@ -706,8 +684,6 @@ func (b *Client) RemoveDestination(s Service, d Destination) error {
 	return nil
 }
 
-/********************************************************************************/
-
 func (b *Client) removeDestination(svc svc, s *Service, rip IP4, bulk bool) {
 
 	delete(s.backend, rip)
@@ -756,112 +732,7 @@ func (b *Client) update_service(svc svc, s *Service, arp map[IP4]MAC, force bool
 }
 
 // func update_backend(curr, prev *be_state, l types.Logger) bool {
-func update_backend(curr, prev *be_state) bool {
 
-	if !curr.diff(prev) {
-		return false
-	}
-
-	var flag [4]byte
-
-	if curr.sticky {
-		flag[0] |= bpf.F_STICKY
-	}
-
-	if curr.fallback {
-		flag[0] |= bpf.F_FALLBACK
-	}
-
-	mapper := map[[4]byte]uint8{}
-
-	var list []IP4
-
-	for ip, _ := range curr.bpf_reals {
-		list = append(list, ip)
-	}
-
-	sort.SliceStable(list, func(i, j int) bool {
-		return nltoh(list[i]) < nltoh(list[j])
-	})
-
-	var real [256]bpf_real
-
-	for i, ip := range list {
-		if i < 255 {
-			idx := uint8(i) + 1
-			mapper[ip] = idx
-			real[idx] = curr.bpf_reals[ip]
-		} else {
-			fmt.Println("more than 255 hosts", ip, i)
-		}
-	}
-
-	curr.bpf_backend.real = real
-	curr.bpf_backend.hash, _ = maglev8192(mapper)
-
-	var rip IP4
-	var mac MAC
-	var vid [2]byte
-
-	if !curr.leastconns.IsNil() {
-		if n, ok := mapper[curr.leastconns]; ok {
-			flag[1] = curr.weight
-			rip = real[n].rip
-			mac = real[n].mac
-			vid = real[n].vid
-		}
-	}
-
-	curr.bpf_backend.real[0] = bpf_real{rip: rip, mac: mac, vid: vid, flag: flag}
-
-	return true
-}
-
-func (curr *be_state) diff(prev *be_state) bool {
-
-	if prev == nil {
-		return true
-	}
-
-	if curr.sticky != prev.sticky ||
-		curr.fallback != prev.fallback ||
-		curr.leastconns != prev.leastconns ||
-		curr.weight != prev.weight {
-		return true
-	}
-
-	if bpf_reals_differ(curr.bpf_reals, prev.bpf_reals) {
-		return true
-	}
-
-	return false
-}
-
-func bpf_reals_differ(a, b map[IP4]bpf_real) bool {
-	for k, v := range a {
-		if x, ok := b[k]; !ok {
-			return true
-		} else {
-			if x != v {
-				return true
-			}
-		}
-	}
-
-	for k, _ := range b {
-		if _, ok := a[k]; !ok {
-			return true
-		}
-	}
-
-	return false
-}
-
-type iface struct {
-	idx uint32
-	ip4 IP4
-	mac MAC
-}
 
 func (b *Client) nat_entries(ifaces map[uint16]iface, nat_map nat_map, tag_map tag_map, arp map[IP4]MAC) (nkv []natkeyval) {
 
@@ -897,11 +768,6 @@ func (b *Client) nat_entries(ifaces map[uint16]iface, nat_map nat_map, tag_map t
 	}
 
 	return
-}
-
-type natkeyval struct {
-	key bpf_natkey
-	val bpf_natval
 }
 
 func (b *Client) NATAddr(vip, rip IP4) (r IP4, _ bool) {
@@ -957,120 +823,7 @@ func (b *Client) natEntry(vip, rip, nat IP4, realhw MAC, vlanid uint16, idx ifac
 	return
 }
 
-func VlanInterfaces(in map[uint16]net.IPNet) map[uint16]iface {
-	out := map[uint16]iface{}
 
-	for vid, pref := range in {
-		if iface, ok := VlanInterface(pref); ok {
-			out[vid] = iface
-		}
-	}
-
-	return out
-}
-
-func VlanInterface(prefix net.IPNet) (ret iface, _ bool) {
-	ifaces, err := net.Interfaces()
-
-	if err != nil {
-		return
-	}
-
-	for _, i := range ifaces {
-
-		if i.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-
-		if i.Flags&net.FlagUp == 0 {
-			continue
-		}
-
-		if i.Flags&net.FlagBroadcast == 0 {
-			continue
-		}
-
-		if len(i.HardwareAddr) != 6 {
-			continue
-		}
-
-		var mac MAC
-		copy(mac[:], i.HardwareAddr[:])
-
-		addr, err := i.Addrs()
-
-		if err == nil {
-			for _, a := range addr {
-				cidr := a.String()
-				ip, ipnet, err := net.ParseCIDR(cidr)
-
-				if err == nil && ipnet.String() == prefix.String() {
-					ip4 := ip.To4()
-					if len(ip4) == 4 && ip4 != nil {
-						return iface{idx: uint32(i.Index), ip4: IP4(ip4), mac: mac}, true
-					}
-				}
-			}
-		}
-	}
-
-	return
-}
-
-func DefaultInterface(addr IP4) *net.Interface {
-
-	fmt.Println(addr)
-
-	ADDR := net.IP(addr[:])
-
-	ifaces, err := net.Interfaces()
-
-	if err != nil {
-		return nil
-	}
-
-	for _, i := range ifaces {
-
-		if i.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-
-		if i.Flags&net.FlagUp == 0 {
-			continue
-		}
-
-		if i.Flags&net.FlagBroadcast == 0 {
-			continue
-		}
-
-		if len(i.HardwareAddr) != 6 {
-			continue
-		}
-
-		var mac MAC
-		copy(mac[:], i.HardwareAddr[:])
-
-		addr, err := i.Addrs()
-
-		if err == nil {
-			for _, a := range addr {
-
-				cidr := a.String()
-				ip, _, err := net.ParseCIDR(cidr)
-
-				ip4 := ip.To4()
-
-				fmt.Println(err, ip4, ip)
-
-				if err == nil && ip4 != nil && ip.Equal(ADDR) {
-					return &i
-				}
-			}
-		}
-	}
-
-	return nil
-}
 
 func (c *Client) SetService(s Service, dst []Destination) error {
 	c.mutex.Lock()
@@ -1204,3 +957,80 @@ func (c *Client) update_nat_no_lock() {
 
 	fmt.Println("NAT: entries", len(nat), "updated", updated, "deleted", deleted)
 }
+
+func (c *Client) targets() (r []IP4) {
+
+	t := map[IP4]bool{}
+
+	nm := c.nat_map.get()
+
+	for k, _ := range nm {
+		rip := k[1]
+		t[rip] = true
+	}
+
+	for k, _ := range t {
+		r = append(r, k)
+	}
+
+	return
+}
+func (c *Client) vlanIDs() []vc {
+	var vlans []vc
+
+	for k, v := range c.vlans {
+		vlans = append(vlans, vc{k, v})
+	}
+	sort.SliceStable(vlans, func(i, j int) bool {
+		return vlans[i].vid < vlans[j].vid
+	})
+
+	return vlans
+}
+
+
+func (c *Client) tag1(i IP4) uint16 {
+	vlans := c.vlanIDs()
+
+	ip := net.IP(i[:])
+	for _, v := range vlans {
+		if v.net.Contains(ip) {
+			return v.vid
+		}
+	}
+
+	return 0
+}
+
+func (c *Client) tag(i IP4) uint16 {
+	vlans := c.vlanIDs()
+
+	ip := net.IP(i[:])
+	for _, v := range vlans {
+		if v.net.Contains(ip) {
+			return v.vid
+		}
+	}
+
+	return 0
+}
+
+func (c *Client) tag(ips []IP4) map[IP4]uint16 {
+	vlans := c.vlanIDs()
+	r := map[IP4]uint16{}
+
+outer:
+	for _, i := range ips {
+		ip := net.IP(i[:])
+		for _, v := range vlans {
+			if v.net.Contains(ip) {
+				r[i] = v.vid
+				continue outer
+			}
+		}
+	}
+
+	return r
+}
+
+*/

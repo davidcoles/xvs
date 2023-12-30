@@ -1,3 +1,23 @@
+/*
+ * VC5 load balancer. Copyright (C) 2021-present David Coles
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
+// TODO: manage record for VIP
+
 package xvs
 
 import (
@@ -8,10 +28,18 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/davidcoles/xvs/nat"
 	"github.com/davidcoles/xvs/xdp"
 )
+
+type uP = unsafe.Pointer
+
+type vc struct {
+	vid uint16
+	net net.IPNet
+}
 
 type key struct {
 	addr netip.Addr
@@ -106,10 +134,20 @@ func (c *Client2) RemoveService(s Service) error {
 	if svc.addr.Is4() {
 		sb := bpf_service{vip: svc.addr.As4(), port: htons(svc.port), protocol: svc.prot}
 		xdp.BpfMapDeleteElem(c.maps.service_backend(), uP(&sb))
-		xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&bpf_vrpp{vip: s.Address.As4()}))
+		// TODO //xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&bpf_vrpp{vip: s.Address.As4()}))
 	}
 
 	delete(c.service, svc)
+
+	select {
+	case c.update_nat <- true:
+	default:
+	}
+
+	select {
+	case c.update_fwd <- true:
+	default:
+	}
 
 	return nil
 }
@@ -168,8 +206,12 @@ func (c *Client2) SetService(s Service, dst []Destination) error {
 	return c.setService(&s, dst)
 }
 
-func (c *Client2) setService(s *Service, dst []Destination) error {
-	svc, err := s.key()
+func (c *Client2) setService(xns *Service, dst []Destination) error {
+
+	foo := *xns
+	ns := &foo
+
+	svc, err := ns.key()
 
 	if err != nil {
 		return err
@@ -183,18 +225,21 @@ func (c *Client2) setService(s *Service, dst []Destination) error {
 	port := svc.port
 	protocol := svc.prot
 
+	var changed bool
+
 	service, ok := c.service[svc]
 
 	if !ok {
-		s.backend = map[IP4]*Destination{}
-		s.state = nil
-
-		service = s
-		c.service[svc] = s
+		changed = true
+		service = ns
+		fmt.Println("NEW:", vip, port, protocol)
+		ns.backend = map[IP4]*Destination{}
+		ns.state = nil
+		c.service[svc] = service
 
 		c.maps.update_vrpp_counter(&bpf_vrpp{vip: vip}, &bpf_counter{}, xdp.BPF_NOEXIST)
 	} else {
-		service.update(*s)
+		service.update(*ns)
 	}
 
 	new := map[IP4]*Destination{}
@@ -210,7 +255,7 @@ func (c *Client2) setService(s *Service, dst []Destination) error {
 		x := d
 		new[rip] = &x
 
-		if _, ok := s.backend[rip]; !ok {
+		if _, ok := service.backend[rip]; !ok {
 			// create map entries (if they don't already exist)
 			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol)}
 			c.maps.update_vrpp_counter(&vr, &bpf_counter{}, xdp.BPF_NOEXIST)
@@ -222,10 +267,7 @@ func (c *Client2) setService(s *Service, dst []Destination) error {
 
 		if n == 0 { // vip/rip combination wasn't in NAT map exist - fire off a ping and signal to rebuild index
 			c.icmp.Ping(rip.String())
-			select {
-			case c.update_nat <- true:
-			default:
-			}
+			changed = true
 		}
 
 		if _, exists := c.tags[d.Address]; !exists {
@@ -235,7 +277,7 @@ func (c *Client2) setService(s *Service, dst []Destination) error {
 		}
 	}
 
-	for rip, _ := range s.backend {
+	for rip, _ := range service.backend {
 		if _, ok := new[rip]; !ok {
 			// delete map entries
 			v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 0}
@@ -243,15 +285,26 @@ func (c *Client2) setService(s *Service, dst []Destination) error {
 			xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&v0))
 			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v0))
 			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v1))
+			changed = true
 		}
+
 	}
 
 	service.backend = new
 
-	select {
-	case c.update_fwd <- true:
-	default:
+	if changed {
+		select {
+		case c.update_nat <- true:
+		default:
+		}
 	}
+
+	//select {
+	//case c.update_fwd <- true:
+	//default:
+	//}
+
+	service.sync(c.hwaddr, c.tags, c.maps)
 
 	return nil
 }
@@ -262,6 +315,7 @@ func (c *Client2) Start() error {
 
 	c.service = map[key]*Service{}
 	c.hwaddr = map[IP4]MAC{}
+	c.ifaces = map[uint16]iface{}
 	c.tags = map[netip.Addr]uint16{}
 	c.natMap = nat.NatMap{}
 
@@ -368,7 +422,6 @@ func (c *Client2) background() {
 
 		for !done {
 			select {
-
 			case <-nic_ticker.C:
 				update_nic = true
 			case <-arp_ticker.C:
@@ -389,8 +442,16 @@ func (c *Client2) background() {
 		c.mutex.Lock()
 
 		if update_nic {
-			// rescan interfaces
-			// if changed: update redirects, update nat, update fwd
+			if c.scan_interfaces() {
+				c.update_redirects()
+				update_fwd = true
+				update_nat = true
+				// retag
+				for ip, _ := range c.natMap.RIPs() {
+					addr := netip.AddrFrom4(ip)
+					c.tags[addr] = c.tag(addr)
+				}
+			}
 		}
 
 		if update_arp {
@@ -405,10 +466,13 @@ func (c *Client2) background() {
 		}
 
 		if update_nat {
-			if changed, _ := c.natMap.Index(); changed {
-				fmt.Println("UPDATE NAT")
-				c.updateNAT()
-			}
+			c.natMap.Clean(c.tuples())
+			c.natMap.Index()
+			//deleted := c.natMap.Clean(c.tuples())
+			//changed, _ := c.natMap.Index()
+			//if deleted || changed {
+			c.updateNAT()
+			//}
 		}
 
 		if update_fwd {
@@ -418,8 +482,22 @@ func (c *Client2) background() {
 		}
 
 		c.mutex.Unlock()
-
 	}
+}
+
+type ip4 = [4]byte
+
+func (c *Client2) tuples() map[[2]ip4]bool {
+	m := map[[2]ip4]bool{}
+	for _, s := range c.service {
+		for r, _ := range s.backend {
+			if s.Address.Is4() {
+				v := s.Address.As4()
+				m[[2]ip4{v, r}] = true
+			}
+		}
+	}
+	return m
 }
 
 func (c *Client2) arp() {
@@ -471,9 +549,30 @@ func (b *Client2) update_mac(ips map[[4]byte]bool) bool {
 	return changed
 }
 
-func (c *Client2) scan_interfaces() {
-	fmt.Println("IFS:")
+func (c *Client2) scan_interfaces() bool {
+
+	var changed bool
+
+	old := c.ifaces
 	c.ifaces = VlanInterfaces(c.VLANs)
+
+	for k, v := range c.ifaces {
+		o, exists := old[k]
+
+		if !exists || v != o {
+			changed = true
+		}
+
+		delete(old, k)
+	}
+
+	if len(old) > 0 {
+		changed = true
+	}
+
+	fmt.Println("IFS:", changed)
+
+	return changed
 }
 
 func (b *Client2) Services() ([]ServiceExtended, error) {
@@ -664,10 +763,18 @@ func (c *Client2) updateNAT() {
 }
 
 func (c *Client2) update_redirects() {
-	for vid, iface := range c.ifaces {
-		fmt.Println("RDR:", vid, iface.mac, iface.idx)
-		c.maps.update_redirect(vid, iface.mac, iface.idx)
+	for vid := uint16(0); vid < 4096; vid++ {
+		iface, exists := c.ifaces[vid]
+		if exists {
+			fmt.Println("RDR:", vid, iface.mac, iface.idx)
+		}
+		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not founc
 	}
+
+	//for vid, iface := range c.ifaces {
+	//	fmt.Println("RDR:", vid, iface.mac, iface.idx)
+	//	c.maps.update_redirect(vid, iface.mac, iface.idx)
+	//}
 }
 
 func (c *Client2) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
@@ -773,14 +880,3 @@ func (c *Client2) Service(s Service) (se ServiceExtended, e error) {
 
 	return se, nil
 }
-
-/*
-./main.go:94:18: client.Namespace undefined (type *xvs.Client2 has no field or method Namespace)
-./main.go:94:71: client.NamespaceAddress undefined (type *xvs.Client2 has no field or method NamespaceAddress)
-./main.go:170:22: client.Info undefined (type *xvs.Client2 has no field or method Info)
-./main.go:180:22: client.Info undefined (type *xvs.Client2 has no field or method Info)
-./main.go:200:21: client.Info undefined (type *xvs.Client2 has no field or method Info)
-./main.go:214:15: client.Prefixes undefined (type *xvs.Client2 has no field or method Prefixes)
-./main.go:245:12: client.UpdateVLANs undefined (type *xvs.Client2 has no field or method UpdateVLANs)
-./main.go:523:20: client.Service undefined (type *xvs.Client2 has no field or method Service)
-*/

@@ -24,6 +24,7 @@ import (
 	"compress/gzip"
 	_ "embed"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -827,4 +828,30 @@ func (m *Maps) background() {
 		era++
 		m.Era(era)
 	}
+}
+
+type IP4 [4]byte
+type MAC [6]byte
+
+func (i IP4) String() string { return fmt.Sprintf("%d.%d.%d.%d", i[0], i[1], i[2], i[3]) }
+func (i *IP4) IsNil() bool   { return i[0] == 0 && i[1] == 0 && i[2] == 0 && i[3] == 0 }
+
+func (m MAC) String() string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+func (m *MAC) string() string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+func (m *MAC) MarshalText() ([]byte, error) {
+	return []byte(m.string()), nil
+}
+
+func (m *MAC) IsNil() bool {
+	return m[0] == 0 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[4] == 0 && m[5] == 0
+}
+
+func nltoh(n [4]byte) uint32 {
+	return uint32(n[0])<<24 | uint32(n[1])<<16 | uint32(n[2])<<8 | uint32(n[0])
 }
