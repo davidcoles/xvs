@@ -30,6 +30,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -54,6 +55,8 @@ func BPF() ([]byte, error) {
 
 type maps = Maps
 type Maps struct {
+	C           chan bool
+	mutex       sync.Mutex
 	xdp         *xdp.XDP
 	fd          map[string]int
 	setting     bpf_setting
@@ -296,7 +299,23 @@ func (m *Maps) lookup_vrpp_counter(v *bpf_vrpp, c *bpf_counter) int {
 	return ret
 }
 
-func (m *Maps) update_vrpp_concurrent(era uint8, v *bpf_vrpp, a *bpf_active, flag uint64) int {
+func (m *Maps) read_and_clear_concurrent(vip, rip IP4, port uint16, protocol uint8) uint64 {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	v := &bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: protocol, pad: (m.setting.era + 1) % 2}
+	a := &bpf_active{}
+	n := &bpf_active{}
+	m.lookup_vrpp_concurrent(v, a)
+	m.update_vrpp_concurrent(v, n, xdp.BPF_ANY)
+
+	if a.current < 0 {
+		return 0
+	}
+
+	return uint64(a.current)
+}
+
+func (m *Maps) update_vrpp_concurrent(v *bpf_vrpp, a *bpf_active, flag uint64) int {
 
 	all := make([]bpf_active, xdp.BpfNumPossibleCpus())
 
@@ -306,24 +325,13 @@ func (m *Maps) update_vrpp_concurrent(era uint8, v *bpf_vrpp, a *bpf_active, fla
 		}
 	}
 
-	if era != 0 {
-		v.pad = 1
-	} else {
-		v.pad = 0
-	}
-
 	return xdp.BpfMapUpdateElem(m.vrpp_concurrent(), uP(v), uP(&(all[0])), flag)
 }
 
-func (m *Maps) lookup_vrpp_concurrent(era bool, v *bpf_vrpp, a *bpf_active) int {
+// func (m *Maps) lookup_vrpp_concurrent(era bool, v *bpf_vrpp, a *bpf_active) int {
+func (m *Maps) lookup_vrpp_concurrent(v *bpf_vrpp, a *bpf_active) int {
 
 	co := make([]bpf_active, xdp.BpfNumPossibleCpus())
-
-	if era {
-		v.pad = 1
-	} else {
-		v.pad = 0
-	}
 
 	ret := xdp.BpfMapLookupElem(m.vrpp_concurrent(), uP(v), uP(&(co[0])))
 
@@ -407,6 +415,9 @@ func (m *Maps) Distributed(d bool) {
 }
 
 func (m *Maps) Era(era uint8) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	m.setting.era = era
 	m.write_settings()
 }
@@ -726,6 +737,7 @@ func open(obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*
 	var m maps
 	m.fd = make(map[string]int)
 	m.defcon = 5
+	m.C = make(chan bool, 1)
 
 	m.xdp, err = xdp.LoadBpfProgram(obj)
 
@@ -829,6 +841,11 @@ func (m *Maps) background() {
 	for _ = range ticker.C {
 		era++
 		m.Era(era)
+
+		select {
+		case m.C <- true:
+		default:
+		}
 	}
 }
 

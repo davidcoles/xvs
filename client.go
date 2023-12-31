@@ -47,6 +47,7 @@ type key struct {
 	prot uint8
 }
 
+type Client = Client2
 type Client2 struct {
 	Interfaces []string
 	VLANs      map[uint16]net.IPNet
@@ -127,15 +128,7 @@ func (c *Client2) RemoveService(s Service) error {
 		return errors.New("Service does not exist")
 	}
 
-	for ip, _ := range service.backend {
-		c.maps.removeDestination(svc, ip)
-	}
-
-	if svc.addr.Is4() {
-		sb := bpf_service{vip: svc.addr.As4(), port: htons(svc.port), protocol: svc.prot}
-		xdp.BpfMapDeleteElem(c.maps.service_backend(), uP(&sb))
-		// TODO //xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&bpf_vrpp{vip: s.Address.As4()}))
-	}
+	service.remove(c.maps)
 
 	delete(c.service, svc)
 
@@ -187,17 +180,6 @@ func (c *Client2) CreateDestination(s Service, d Destination) error {
 	dst = append(dst, d)
 
 	return c.setService(service, dst)
-}
-
-func (m *Maps) removeDestination(svc key, rip IP4) {
-
-	if svc.addr.Is4() {
-		vr := bpf_vrpp{vip: svc.addr.As4(), rip: rip, port: htons(svc.port), protocol: svc.prot}
-		xdp.BpfMapDeleteElem(m.vrpp_counter(), uP(&vr))
-		xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&vr))
-		vr.pad = 1
-		xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&vr))
-	}
 }
 
 func (c *Client2) SetService(s Service, dst []Destination) error {
@@ -252,16 +234,19 @@ func (c *Client2) setService(xns *Service, dst []Destination) error {
 
 		rip := IP4(d.Address.As4())
 
+		if o, ok := service.backend[rip]; !ok {
+			// create map entries (if they don't already exist)
+			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 0}
+			v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 1}
+			c.maps.update_vrpp_counter(&vr, &bpf_counter{}, xdp.BPF_NOEXIST)
+			c.maps.update_vrpp_concurrent(&vr, nil, xdp.BPF_NOEXIST)
+			c.maps.update_vrpp_concurrent(&v1, nil, xdp.BPF_NOEXIST)
+		} else {
+			d.current = o.current
+		}
+
 		x := d
 		new[rip] = &x
-
-		if _, ok := service.backend[rip]; !ok {
-			// create map entries (if they don't already exist)
-			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol)}
-			c.maps.update_vrpp_counter(&vr, &bpf_counter{}, xdp.BPF_NOEXIST)
-			c.maps.update_vrpp_concurrent(0, &vr, nil, xdp.BPF_NOEXIST)
-			c.maps.update_vrpp_concurrent(1, &vr, nil, xdp.BPF_NOEXIST)
-		}
 
 		n := c.natMap.Add(vip, rip)
 
@@ -302,7 +287,6 @@ func (c *Client2) setService(xns *Service, dst []Destination) error {
 	//case c.update_fwd <- true:
 	//default:
 	//}
-
 	service.sync(c.hwaddr, c.tags, c.maps)
 
 	return nil
@@ -414,6 +398,13 @@ func (c *Client2) background() {
 
 		select {
 		case <-ticker.C:
+		case <-c.maps.C:
+			// concurrents
+			c.mutex.Lock()
+			for _, s := range c.service {
+				s.concurrent(c.maps)
+			}
+			c.mutex.Unlock()
 		}
 
 		var done bool
@@ -587,13 +578,14 @@ func (b *Client2) Services() ([]ServiceExtended, error) {
 			continue
 		}
 
-		for rip, _ := range service.backend {
+		for rip, d := range service.backend {
 			v := bpf_vrpp{vip: service.Address.As4(), rip: rip, port: htons(service.Port), protocol: uint8(service.Protocol)}
 			c := bpf_counter{}
 			b.maps.lookup_vrpp_counter(&v, &c)
 			se.Stats.Packets += c.packets
 			se.Stats.Octets += c.octets
 			se.Stats.Flows += c.flows
+			se.Stats.Current += d.current
 		}
 
 		services = append(services, se)
@@ -636,6 +628,7 @@ func (b *Client2) Destinations(s Service) ([]DestinationExtended, error) {
 		de.Stats.Packets = c.packets
 		de.Stats.Octets = c.octets
 		de.Stats.Flows = c.flows
+		de.Stats.Current = d.current
 		de.MAC = b.hwaddr[rip]
 		destinations = append(destinations, de)
 	}
@@ -855,13 +848,14 @@ func (c *Client2) Service(s Service) (se ServiceExtended, e error) {
 
 	se.Service = service.dup()
 
-	for rip, _ := range service.backend {
+	for rip, d := range service.backend {
 		v := bpf_vrpp{vip: svc.addr.As4(), rip: rip, port: htons(svc.port), protocol: svc.prot}
 		s := bpf_counter{}
 		c.maps.lookup_vrpp_counter(&v, &s)
 		se.Stats.Packets += s.packets
 		se.Stats.Octets += s.octets
 		se.Stats.Flows += s.flows
+		se.Stats.Current += d.current
 	}
 
 	return se, nil
