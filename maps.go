@@ -797,6 +797,8 @@ func open(obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*
 		return nil, errors.New("Failed to write settings")
 	}
 
+	go m.background()
+
 	return &m, nil
 }
 

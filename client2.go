@@ -265,7 +265,7 @@ func (c *Client2) setService(xns *Service, dst []Destination) error {
 
 		n := c.natMap.Add(vip, rip)
 
-		if n == 0 { // vip/rip combination wasn't in NAT map exist - fire off a ping and signal to rebuild index
+		if n == 0 { // vip/rip combination wasn't in NAT map - fire off a ping and signal to rebuild index
 			c.icmp.Ping(rip.String())
 			changed = true
 		}
@@ -287,7 +287,6 @@ func (c *Client2) setService(xns *Service, dst []Destination) error {
 			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v1))
 			changed = true
 		}
-
 	}
 
 	service.backend = new
@@ -394,7 +393,6 @@ func (c *Client2) Start() error {
 	c.scan_interfaces()
 	c.update_redirects()
 
-	go c.maps.background()
 	go c.background()
 
 	return nil
@@ -806,18 +804,6 @@ func (c *Client2) NamespaceAddress() string {
 }
 
 func (c *Client2) Info() (i Info) {
-	/*
-	   rx_packets     uint64
-	   rx_octets      uint64
-	   perf_packets   uint64
-	   perf_timens    uint64
-	   perf_timer     uint64
-	   settings_timer uint64
-	   new_flows      uint64
-	   dropped        uint64
-	   qfailed        uint64
-	   blocked        uint64
-	*/
 	g := c.maps.lookup_globals()
 	i.Packets = g.rx_packets
 	i.Octets = g.rx_octets

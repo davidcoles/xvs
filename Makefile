@@ -41,8 +41,8 @@ bpf/bpf.o.gz: bpf/bpf.o
 libbpf:
 	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
 
-#libbpf/src/libbpf.a: libbpf
-#	cd libbpf/src && $(MAKE)
+libbpf/src/libbpf.a: libbpf
+	cd libbpf/src && $(MAKE)
 
 clean:
 	rm -f bpf/bpf.o bpf/bpf.o.gz
@@ -59,5 +59,9 @@ wc:
 	wc *.go xdp/*.go maglev/*.go bpf/*.go
 	wc xdp/*.h xdp/*.c bpf/*.c bpf/*.h
 
-test:
-	cd foo && go test -v
+test: libbpf/src/libbpf.a
+	#cd maglev/ && go test -v
+	#cd nat/    && go test -v
+	env
+	go test -v
+
