@@ -109,12 +109,18 @@ func (c *Client2) tag(i netip.Addr) uint16 {
 func (c *Client2) CreateService(s Service) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	return c.setService(&s, nil)
+	return c.setService(s, nil)
 }
 
 func (c *Client2) RemoveService(s Service) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if s.Address.Is4() {
+		return errors.New("Not IPv4")
+	}
+
+	vip := s.Address.As4()
 
 	svc, err := s.key()
 
@@ -128,9 +134,19 @@ func (c *Client2) RemoveService(s Service) error {
 		return errors.New("Service does not exist")
 	}
 
-	service.remove(c.maps)
-
 	delete(c.service, svc)
+
+	var more bool
+
+	for k, _ := range c.service {
+		if k.addr == service.Address {
+			more = true
+		}
+	}
+
+	for _, rip := range service.remove(c.maps, more) {
+		c.natMap.Del(vip, rip)
+	}
 
 	select {
 	case c.update_nat <- true:
@@ -179,21 +195,18 @@ func (c *Client2) CreateDestination(s Service, d Destination) error {
 
 	dst = append(dst, d)
 
-	return c.setService(service, dst)
+	return c.setService(s, dst)
 }
 
 func (c *Client2) SetService(s Service, dst []Destination) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	return c.setService(&s, dst)
+	return c.setService(s, dst)
 }
 
-func (c *Client2) setService(xns *Service, dst []Destination) error {
+func (c *Client2) setService(s Service, dst []Destination) error {
 
-	foo := *xns
-	ns := &foo
-
-	svc, err := ns.key()
+	svc, err := s.key()
 
 	if err != nil {
 		return err
@@ -213,41 +226,16 @@ func (c *Client2) setService(xns *Service, dst []Destination) error {
 
 	if !ok {
 		changed = true
-		service = ns
+		service = s.dupp()
 		fmt.Println("NEW:", vip, port, protocol)
-		ns.backend = map[IP4]*Destination{}
-		ns.state = nil
 		c.service[svc] = service
-
-		c.maps.update_vrpp_counter(&bpf_vrpp{vip: vip}, &bpf_counter{}, xdp.BPF_NOEXIST)
 	} else {
-		service.update(*ns)
+		service.update(s)
 	}
 
-	new := map[IP4]*Destination{}
+	sync, add, del := service.set(c.maps, dst)
 
-	for _, d := range dst {
-
-		if !d.Address.Is4() {
-			continue
-		}
-
-		rip := IP4(d.Address.As4())
-
-		if o, ok := service.backend[rip]; !ok {
-			// create map entries (if they don't already exist)
-			vr := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 0}
-			v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 1}
-			c.maps.update_vrpp_counter(&vr, &bpf_counter{}, xdp.BPF_NOEXIST)
-			c.maps.update_vrpp_concurrent(&vr, nil, xdp.BPF_NOEXIST)
-			c.maps.update_vrpp_concurrent(&v1, nil, xdp.BPF_NOEXIST)
-		} else {
-			d.current = o.current
-		}
-
-		x := d
-		new[rip] = &x
-
+	for _, rip := range add {
 		n := c.natMap.Add(vip, rip)
 
 		if n == 0 { // vip/rip combination wasn't in NAT map - fire off a ping and signal to rebuild index
@@ -255,28 +243,19 @@ func (c *Client2) setService(xns *Service, dst []Destination) error {
 			changed = true
 		}
 
-		if _, exists := c.tags[d.Address]; !exists {
-			tag := c.tag(d.Address)
-			fmt.Println("TAG:", d.Address, tag)
-			c.tags[d.Address] = tag
+		d := netip.AddrFrom4(rip)
+		if _, exists := c.tags[d]; !exists {
+			tag := c.tag(d)
+			fmt.Println("TAG:", d, tag)
+			c.tags[d] = tag
 		}
 	}
 
-	for rip, _ := range service.backend {
-		if _, ok := new[rip]; !ok {
-			// delete map entries
-			v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 0}
-			v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: uint8(protocol), pad: 1}
-			xdp.BpfMapDeleteElem(c.maps.vrpp_counter(), uP(&v0))
-			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v0))
-			xdp.BpfMapDeleteElem(c.maps.vrpp_concurrent(), uP(&v1))
-			changed = true
-		}
+	for _, rip := range del {
+		c.natMap.Del(vip, rip)
 	}
 
-	service.backend = new
-
-	if changed {
+	if sync || changed {
 		select {
 		case c.update_nat <- true:
 		default:
@@ -564,41 +543,23 @@ func (c *Client2) scan_interfaces() bool {
 	return changed
 }
 
-func (b *Client2) Services() ([]ServiceExtended, error) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
+func (c *Client2) Services() (services []ServiceExtended, e error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	var services []ServiceExtended
-
-	for _, service := range b.service {
+	for _, s := range c.service {
 		var se ServiceExtended
-		se.Service = service.dup()
-
-		if !service.Address.Is4() {
-			continue
-		}
-
-		for rip, d := range service.backend {
-			v := bpf_vrpp{vip: service.Address.As4(), rip: rip, port: htons(service.Port), protocol: uint8(service.Protocol)}
-			c := bpf_counter{}
-			b.maps.lookup_vrpp_counter(&v, &c)
-			se.Stats.Packets += c.packets
-			se.Stats.Octets += c.octets
-			se.Stats.Flows += c.flows
-			se.Stats.Current += d.current
-		}
-
+		se.Service = s.dup()
+		se.Stats = s.stats(c.maps)
 		services = append(services, se)
 	}
 
-	return services, nil
+	return
 }
 
-func (b *Client2) Destinations(s Service) ([]DestinationExtended, error) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
-	var destinations []DestinationExtended
+func (c *Client2) Destinations(s Service) (destinations []DestinationExtended, e error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	svc, err := s.key()
 
@@ -606,7 +567,7 @@ func (b *Client2) Destinations(s Service) ([]DestinationExtended, error) {
 		return destinations, err
 	}
 
-	service, ok := b.service[svc]
+	service, ok := c.service[svc]
 
 	if !ok {
 		return destinations, errors.New("Service does not exist")
@@ -616,21 +577,9 @@ func (b *Client2) Destinations(s Service) ([]DestinationExtended, error) {
 		return destinations, errors.New("Not IPv4")
 	}
 
-	vip := svc.addr.As4()
-	port := svc.port
-	protocol := svc.prot
-
-	for rip, d := range service.backend {
-		de := d.extend(rip)
-		v := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: protocol}
-		c := bpf_counter{}
-		b.maps.lookup_vrpp_counter(&v, &c)
-		de.Stats.Packets = c.packets
-		de.Stats.Octets = c.octets
-		de.Stats.Flows = c.flows
-		de.Stats.Current = d.current
-		de.MAC = b.hwaddr[rip]
-		destinations = append(destinations, de)
+	for rip, d := range service.destinations(c.maps) {
+		d.MAC = c.hwaddr[rip]
+		destinations = append(destinations, d)
 	}
 
 	sort.SliceStable(destinations, func(i, j int) bool {
@@ -846,17 +795,5 @@ func (c *Client2) Service(s Service) (se ServiceExtended, e error) {
 		return se, errors.New("Service does not exist")
 	}
 
-	se.Service = service.dup()
-
-	for rip, d := range service.backend {
-		v := bpf_vrpp{vip: svc.addr.As4(), rip: rip, port: htons(svc.port), protocol: svc.prot}
-		s := bpf_counter{}
-		c.maps.lookup_vrpp_counter(&v, &s)
-		se.Stats.Packets += s.packets
-		se.Stats.Octets += s.octets
-		se.Stats.Flows += s.flows
-		se.Stats.Current += d.current
-	}
-
-	return se, nil
+	return service.extend(c.maps), nil
 }

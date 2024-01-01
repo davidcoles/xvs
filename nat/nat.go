@@ -44,7 +44,7 @@ func (f NatMap) Get(v, r IP4) uint16 {
 	return f[k]
 }
 
-func (f NatMap) del(v, r IP4) {
+func (f NatMap) Del(v, r IP4) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	k := [2]IP4{v, r}
