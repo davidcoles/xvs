@@ -51,24 +51,13 @@ type ServiceExtended struct {
 	Stats   Stats
 }
 
-func (s *Service) update(u Service) {
-	s.Sticky = u.Sticky
-}
+func (s *Service) update(u Service) (changed bool) {
+	if s.Sticky != u.Sticky {
+		s.Sticky = u.Sticky
+		changed = true
+	}
 
-func (s *Service) removeDestination(vip, rip IP4, port uint16, prot uint8, m *Maps) {
-	v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 0}
-	v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 1}
-	xdp.BpfMapDeleteElem(m.vrpp_counter(), uP(&v0))
-	xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&v0))
-	xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&v1))
-}
-
-func (s *Service) addDestination(vip, rip IP4, port uint16, prot uint8, m *Maps) {
-	v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 0}
-	v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 1}
-	m.update_vrpp_counter(&v0, &bpf_counter{}, xdp.BPF_NOEXIST)
-	m.update_vrpp_concurrent(&v0, nil, xdp.BPF_NOEXIST)
-	m.update_vrpp_concurrent(&v1, nil, xdp.BPF_NOEXIST)
+	return
 }
 
 func (s *Service) remove(maps *Maps, more bool) (del []IP4) {
@@ -76,7 +65,7 @@ func (s *Service) remove(maps *Maps, more bool) (del []IP4) {
 	if s.Address.Is4() {
 
 		for ip, _ := range s.backend {
-			s.removeDestination(s.Address.As4(), ip, s.Port, uint8(s.Protocol), maps)
+			s.delDestination(s.Address.As4(), ip, s.Port, uint8(s.Protocol), maps)
 			del = append(del, ip)
 		}
 
@@ -117,11 +106,13 @@ func (s *Service) concurrent(m *Maps) {
 	}
 }
 
-func (s *Service) set(maps *Maps, dst []Destination) (changed bool, ip4 []IP4, rem []IP4) {
+func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []IP4, del []IP4) {
 
 	if !s.Address.Is4() {
 		return
 	}
+
+	s.update(svc)
 
 	vip := s.Address.As4()
 
@@ -138,23 +129,24 @@ func (s *Service) set(maps *Maps, dst []Destination) (changed bool, ip4 []IP4, r
 
 		rip := IP4(d.Address.As4())
 
-		ip4 = append(ip4, rip)
+		//ip4 = append(ip4, rip)
 
 		new[rip] = &d
 
 		if o, ok := s.backend[rip]; !ok {
-			// create map entries (if they don't already exist)
-			s.addDestination(vip, rip, s.Port, uint8(s.Protocol), maps) // delete map entries
+			add = append(add, rip)
+			//s.addDestination(vip, rip, s.Port, uint8(s.Protocol), maps) // create map entries
+			s._addDestination(&d, maps)
 		} else {
 			d.current = o.current // preserve counter
 		}
 	}
 
-	for rip, _ := range s.backend {
+	for rip, d := range s.backend {
 		if _, ok := new[rip]; !ok {
-			rem = append(rem, rip)
-			s.removeDestination(vip, rip, s.Port, uint8(s.Protocol), maps) // delete map entries
-			changed = true
+			del = append(del, rip)
+			//s.delDestination(vip, rip, s.Port, uint8(s.Protocol), maps) // delete map entries
+			s._delDestination(d, maps)
 		}
 	}
 
@@ -165,15 +157,7 @@ func (s *Service) set(maps *Maps, dst []Destination) (changed bool, ip4 []IP4, r
 
 func (s *Service) extend(maps *Maps) (se ServiceExtended) {
 	se.Service = s.dup()
-	for rip, d := range s.backend {
-		v := bpf_vrpp{vip: s.Address.As4(), rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol)}
-		c := bpf_counter{}
-		maps.lookup_vrpp_counter(&v, &c)
-		se.Stats.Packets += c.packets
-		se.Stats.Octets += c.octets
-		se.Stats.Flows += c.flows
-		se.Stats.Current += d.current
-	}
+	se.Stats = s.stats(maps)
 	return
 }
 
@@ -182,16 +166,24 @@ func (s *Service) stats(maps *Maps) (stats Stats) {
 		return
 	}
 
+	vip := s.Address.As4()
+
 	for rip, d := range s.backend {
-		v := bpf_vrpp{vip: s.Address.As4(), rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol)}
-		c := bpf_counter{}
-		maps.lookup_vrpp_counter(&v, &c)
-		stats.Packets += c.packets
-		stats.Octets += c.octets
-		stats.Flows += c.flows
-		stats.Current += d.current
+		//stats.add(s.dstats(maps, rip, d.current))
+		stats.add(d.stats(maps, vip, rip, s.Port, uint8(s.Protocol)))
 	}
 
+	return
+}
+
+func (s *Service) dstats(maps *Maps, rip IP4, current uint64) (stats Stats) {
+	v := bpf_vrpp{vip: s.Address.As4(), rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol)}
+	c := bpf_counter{}
+	maps.lookup_vrpp_counter(&v, &c)
+	stats.Packets = c.packets
+	stats.Octets = c.octets
+	stats.Flows = c.flows
+	stats.Current = current
 	return
 }
 
@@ -200,17 +192,12 @@ func (s *Service) destinations(maps *Maps) map[IP4]DestinationExtended {
 
 	if s.Address.Is4() {
 
-		vip := s.Address.As4()
+		//vip := s.Address.As4()
 
 		for rip, d := range s.backend {
 			de := d.extend(rip)
-			v := bpf_vrpp{vip: vip, rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol)}
-			c := bpf_counter{}
-			maps.lookup_vrpp_counter(&v, &c)
-			de.Stats.Packets = c.packets
-			de.Stats.Octets = c.octets
-			de.Stats.Flows = c.flows
-			de.Stats.Current = d.current
+			de.Stats = s.dstats(maps, rip, d.current)
+			//de.Stats = d.stats(maps, vip, rip, s.Port, uint8(s.Protocol))
 			destinations[rip] = de
 		}
 	}
@@ -283,4 +270,57 @@ type DestinationExtended struct {
 
 func (d *Destination) dup() Destination {
 	return *d
+}
+
+func (d *Destination) stats(m *Maps, vip, rip IP4, port uint16, prot uint8) (stats Stats) {
+	v := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot}
+	c := bpf_counter{}
+	m.lookup_vrpp_counter(&v, &c)
+	stats.Packets = c.packets
+	stats.Octets = c.octets
+	stats.Flows = c.flows
+	stats.Current = d.current
+	return
+}
+
+func (s *Service) delDestination(vip, rip IP4, port uint16, prot uint8, m *Maps) {
+	v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 0}
+	v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 1}
+	xdp.BpfMapDeleteElem(m.vrpp_counter(), uP(&v0))
+	xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&v0))
+	xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&v1))
+}
+
+func (s *Service) addDestination(vip, rip IP4, port uint16, prot uint8, m *Maps) {
+	v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 0}
+	v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: prot, pad: 1}
+	m.update_vrpp_counter(&v0, &bpf_counter{}, xdp.BPF_NOEXIST)
+	m.update_vrpp_concurrent(&v0, nil, xdp.BPF_NOEXIST)
+	m.update_vrpp_concurrent(&v1, nil, xdp.BPF_NOEXIST)
+}
+
+func (s *Service) _addDestination(d *Destination, m *Maps) {
+	if !s.Address.Is4() || !d.Address.Is4() {
+		return
+	}
+	vip := s.Address.As4()
+	rip := d.Address.As4()
+	v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol), pad: 0}
+	v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol), pad: 1}
+	m.update_vrpp_counter(&v0, &bpf_counter{}, xdp.BPF_NOEXIST)
+	m.update_vrpp_concurrent(&v0, nil, xdp.BPF_NOEXIST)
+	m.update_vrpp_concurrent(&v1, nil, xdp.BPF_NOEXIST)
+}
+
+func (s *Service) _delDestination(d *Destination, m *Maps) {
+	if !s.Address.Is4() || !d.Address.Is4() {
+		return
+	}
+	vip := s.Address.As4()
+	rip := d.Address.As4()
+	v0 := bpf_vrpp{vip: vip, rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol), pad: 0}
+	v1 := bpf_vrpp{vip: vip, rip: rip, port: htons(s.Port), protocol: uint8(s.Protocol), pad: 1}
+	xdp.BpfMapDeleteElem(m.vrpp_counter(), uP(&v0))
+	xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&v0))
+	xdp.BpfMapDeleteElem(m.vrpp_concurrent(), uP(&v1))
 }

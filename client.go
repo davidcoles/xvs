@@ -217,28 +217,23 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 	}
 
 	vip := svc.addr.As4()
-	port := svc.port
-	protocol := svc.prot
-
-	var changed bool
 
 	service, ok := c.service[svc]
 
 	if !ok {
-		changed = true
 		service = s.dupp()
-		fmt.Println("NEW:", vip, port, protocol)
+		fmt.Println("NEW:", vip, svc.port, svc.prot)
 		c.service[svc] = service
-	} else {
-		service.update(s)
 	}
 
-	sync, add, del := service.set(c.maps, dst)
+	add, del := service.set(c.maps, s, dst)
+
+	var changed bool
 
 	for _, rip := range add {
-		n := c.natMap.Add(vip, rip)
 
-		if n == 0 { // vip/rip combination wasn't in NAT map - fire off a ping and signal to rebuild index
+		if c.natMap.Add(vip, rip) == 0 {
+			// vip/rip combination wasn't in NAT map - fire off a ping and signal to rebuild index
 			c.icmp.Ping(rip.String())
 			changed = true
 		}
@@ -251,21 +246,17 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 		}
 	}
 
-	for _, rip := range del {
-		c.natMap.Del(vip, rip)
-	}
+	// we don't delete entries from NAT map because other servies
+	// might have the same vip/rip combination - we should rebuild
+	// from scratch
 
-	if sync || changed {
+	if changed || len(del) > 0 {
 		select {
 		case c.update_nat <- true:
 		default:
 		}
 	}
 
-	//select {
-	//case c.update_fwd <- true:
-	//default:
-	//}
 	service.sync(c.hwaddr, c.tags, c.maps)
 
 	return nil

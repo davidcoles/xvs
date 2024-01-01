@@ -43,6 +43,13 @@ type Stats struct {
 	Current uint64
 }
 
+func (s *Stats) add(a Stats) {
+	s.Packets += a.Packets
+	s.Octets += a.Octets
+	s.Flows += a.Flows
+	s.Current += a.Current
+}
+
 func (s Stats) String() string {
 	return fmt.Sprintf("p:%d o:%d f:%d", s.Packets, s.Octets, s.Flows)
 }
