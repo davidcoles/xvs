@@ -529,7 +529,7 @@ func (c *Client2) scan_interfaces() bool {
 		changed = true
 	}
 
-	fmt.Println("IFS:", changed)
+	//fmt.Println("IFS:", changed)
 
 	return changed
 }
@@ -539,10 +539,7 @@ func (c *Client2) Services() (services []ServiceExtended, e error) {
 	defer c.mutex.Unlock()
 
 	for _, s := range c.service {
-		var se ServiceExtended
-		se.Service = s.dup()
-		se.Stats = s.stats(c.maps)
-		services = append(services, se)
+		services = append(services, s.extend(c.maps))
 	}
 
 	return
