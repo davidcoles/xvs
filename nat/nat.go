@@ -20,6 +20,7 @@ package nat
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -100,10 +101,13 @@ func (f NatMap) RIPs() map[IP4]bool {
 }
 
 func (f NatMap) Clean(m map[[2]IP4]bool) (c bool) {
+	mutex.Lock()
+	defer mutex.Unlock()
 	for k, _ := range f {
 		if _, exists := m[k]; !exists {
 			c = true
 			delete(f, k)
+			fmt.Println("REMOVING", k)
 		}
 	}
 	return

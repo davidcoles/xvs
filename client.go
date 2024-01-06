@@ -116,11 +116,9 @@ func (c *Client2) RemoveService(s Service) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if s.Address.Is4() {
+	if !s.Address.Is4() {
 		return errors.New("Not IPv4")
 	}
-
-	vip := s.Address.As4()
 
 	svc, err := s.key()
 
@@ -144,9 +142,7 @@ func (c *Client2) RemoveService(s Service) error {
 		}
 	}
 
-	for _, rip := range service.remove(c.maps, more) {
-		c.natMap.Del(vip, rip)
-	}
+	service.remove(c.maps, more)
 
 	select {
 	case c.update_nat <- true:
@@ -369,7 +365,7 @@ func (c *Client2) background() {
 		select {
 		case <-ticker.C:
 		case <-c.maps.C:
-			// concurrents
+			// era changed - update concurrents
 			c.mutex.Lock()
 			for _, s := range c.service {
 				s.concurrent(c.maps)
@@ -403,6 +399,7 @@ func (c *Client2) background() {
 		if update_nic {
 			if c.scan_interfaces() {
 				c.update_redirects()
+				// all this all probably not necessary? ...
 				update_fwd = true
 				update_nat = true
 				// retag
@@ -425,6 +422,7 @@ func (c *Client2) background() {
 		}
 
 		if update_nat {
+			fmt.Println("CLEAR")
 			c.natMap.Clean(c.tuples())
 			c.natMap.Index()
 			//deleted := c.natMap.Clean(c.tuples())
@@ -446,7 +444,7 @@ func (c *Client2) background() {
 
 type ip4 = [4]byte
 
-func (c *Client2) tuples() map[[2]ip4]bool {
+func (c *Client2) tuples_() map[[2]ip4]bool {
 	m := map[[2]ip4]bool{}
 	for _, s := range c.service {
 		for r, _ := range s.backend {
@@ -457,6 +455,16 @@ func (c *Client2) tuples() map[[2]ip4]bool {
 		}
 	}
 	return m
+}
+
+func (c *Client2) tuples() map[[2]ip4]bool {
+	tuples := map[[2]ip4]bool{}
+	for _, s := range c.service {
+		for _, t := range s.tuples() {
+			tuples[t] = true
+		}
+	}
+	return tuples
 }
 
 func (c *Client2) arp() {
@@ -687,7 +695,7 @@ func (c *Client2) updateNAT() {
 
 	c.nat = nat
 
-	fmt.Println("NAT: entries", len(nat), "updated", updated, "deleted", deleted)
+	fmt.Println("NAT:", len(nat), "entries,", updated, "updated,", deleted, "deleted")
 }
 
 func (c *Client2) update_redirects() {
@@ -698,11 +706,6 @@ func (c *Client2) update_redirects() {
 		}
 		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not founc
 	}
-
-	//for vid, iface := range c.ifaces {
-	//	fmt.Println("RDR:", vid, iface.mac, iface.idx)
-	//	c.maps.update_redirect(vid, iface.mac, iface.idx)
-	//}
 }
 
 func (c *Client2) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {

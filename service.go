@@ -19,7 +19,6 @@
 package xvs
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -28,17 +27,16 @@ import (
 )
 
 const (
-	TCP protocol = 0x06
-	UDP protocol = 0x11
+	TCP Protocol = 0x06
+	UDP Protocol = 0x11
 )
 
-type Protocol uint8
-type protocol = Protocol
+type Protocol = uint8
 
 type Service struct {
 	Address  netip.Addr
 	Port     uint16
-	Protocol protocol
+	Protocol Protocol
 
 	Sticky bool
 
@@ -120,8 +118,7 @@ func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []IP4, de
 	new := map[IP4]*Destination{}
 
 	for _, x := range dst {
-		//d := x.dup() // we will take a pointer, so don't use the loop var!
-		d := *(&x)
+		d := x // we will take a pointer, so don't use the loop var!
 
 		if !d.Address.Is4() {
 			continue
@@ -161,12 +158,18 @@ func (s *Service) extend(maps *Maps) (se ServiceExtended) {
 	return
 }
 
+func (s *Service) destination(d *Destination, m *Maps) (de DestinationExtended) {
+	de.Destination = *d
+	de.Stats = s.stats(d, m)
+	return
+}
+
 func (s *Service) destinations(maps *Maps) map[IP4]DestinationExtended {
 	destinations := map[IP4]DestinationExtended{}
 
 	if s.Address.Is4() {
 		for rip, d := range s.backend {
-			destinations[rip] = d.extend(s, maps)
+			destinations[rip] = s.destination(d, maps)
 		}
 	}
 
@@ -204,6 +207,15 @@ func (s *Service) sync(arp map[IP4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
 			s.state = val
 		}
 	}
+}
+
+func (s *Service) tuples() (ret [][2]ip4) {
+	if s.Address.Is4() {
+		for rip, _ := range s.backend {
+			ret = append(ret, [2]ip4{s.Address.As4(), rip})
+		}
+	}
+	return
 }
 
 func (s *Service) stats(d *Destination, m *Maps) (stats Stats) {
@@ -256,26 +268,8 @@ type Destination struct {
 	current uint64
 }
 
-func (d *Destination) rip() (IP4, error) {
-	if !d.Address.Is4() {
-		return IP4{}, errors.New("Not IPv4")
-	}
-
-	return d.Address.As4(), nil
-}
-
-func (d *Destination) extend(s *Service, m *Maps) (de DestinationExtended) {
-	de.Destination = *d
-	de.Stats = s.stats(d, m)
-	return
-}
-
 type DestinationExtended struct {
 	Destination Destination
 	MAC         MAC
 	Stats       Stats
-}
-
-func (d *Destination) dup() Destination {
-	return *d
 }

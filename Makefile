@@ -56,7 +56,7 @@ debian-dependencies:
 	apt-get install build-essential libelf-dev clang libc6-dev llvm
 
 wc:
-	wc *.go xdp/*.go maglev/*.go bpf/*.go
+	wc *.go */*.go
 	wc xdp/*.h xdp/*.c bpf/*.c bpf/*.h
 
 test: libbpf/src/libbpf.a
