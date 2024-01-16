@@ -156,28 +156,6 @@ func (curr *be_state) diff(prev *be_state) bool {
 	return false
 }
 
-/*
-	func bpf_reals_differ(a, b map[IP4]bpf_real) bool {
-		for k, v := range a {
-			if x, ok := b[k]; !ok {
-				return true
-			} else {
-				if x != v {
-					return true
-				}
-			}
-		}
-
-		for k, _ := range b {
-			if _, ok := a[k]; !ok {
-				return true
-			}
-		}
-
-		return false
-	}
-*/
-
 func DefaultInterface(addr IP4) *net.Interface {
 
 	fmt.Println(addr)

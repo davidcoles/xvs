@@ -16,8 +16,6 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-// TODO: manage record for VIP
-
 package xvs
 
 import (
@@ -30,7 +28,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/davidcoles/xvs/nat"
 	"github.com/davidcoles/xvs/xdp"
 )
 
@@ -65,7 +62,7 @@ type Client2 struct {
 	icmp  *ICMP
 	netns *netns
 
-	natMap nat.NatMap
+	natMap natmap
 
 	update_fwd chan bool
 	update_nat chan bool
@@ -266,7 +263,7 @@ func (c *Client2) Start() error {
 	c.hwaddr = map[IP4]MAC{}
 	c.ifaces = map[uint16]iface{}
 	c.tags = map[netip.Addr]uint16{}
-	c.natMap = nat.NatMap{}
+	c.natMap = natmap{}
 
 	c.update_fwd = make(chan bool, 1)
 	c.update_nat = make(chan bool, 1)
@@ -399,7 +396,7 @@ func (c *Client2) background() {
 		if update_nic {
 			if c.scan_interfaces() {
 				c.update_redirects()
-				// all this all probably not necessary? ...
+				// all this probably not necessary? ...
 				update_fwd = true
 				update_nat = true
 				// retag

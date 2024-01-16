@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-package nat
+package xvs
 
 import (
 	"errors"
@@ -26,43 +26,42 @@ import (
 
 var mutex sync.RWMutex
 
-type IP4 = [4]byte
-type NatMap map[[2]IP4]uint16
+type natmap map[[2]ip4]uint16
 
-func (f NatMap) Add(v, r IP4) uint16 {
+func (f natmap) Add(v, r ip4) uint16 {
 	mutex.Lock()
 	defer mutex.Unlock()
-	k := [2]IP4{v, r}
+	k := [2]ip4{v, r}
 	n := f[k]
 	f[k] = n // existing value if exists, 0 otherwise
 	return n
 }
 
-func (f NatMap) Get(v, r IP4) uint16 {
+func (f natmap) Get(v, r ip4) uint16 {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	k := [2]IP4{v, r}
+	k := [2]ip4{v, r}
 	return f[k]
 }
 
-func (f NatMap) Del(v, r IP4) {
+func (f natmap) Del(v, r ip4) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	k := [2]IP4{v, r}
+	k := [2]ip4{v, r}
 	delete(f, k)
 }
 
-func (f NatMap) All() map[[2]IP4]uint16 {
+func (f natmap) All() map[[2]ip4]uint16 {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	m := map[[2]IP4]uint16{}
+	m := map[[2]ip4]uint16{}
 	for k, v := range f {
 		m[k] = v
 	}
 	return m
 }
 
-func (f NatMap) Index() (b bool, e error) {
+func (f natmap) Index() (b bool, e error) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	m := map[uint16]bool{}
@@ -89,10 +88,10 @@ func (f NatMap) Index() (b bool, e error) {
 	return b, e
 }
 
-func (f NatMap) RIPs() map[IP4]bool {
+func (f natmap) RIPs() map[ip4]bool {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	rips := map[IP4]bool{}
+	rips := map[ip4]bool{}
 	for k, _ := range f {
 		r := k[1]
 		rips[r] = true
@@ -100,7 +99,7 @@ func (f NatMap) RIPs() map[IP4]bool {
 	return rips
 }
 
-func (f NatMap) Clean(m map[[2]IP4]bool) (c bool) {
+func (f natmap) Clean(m map[[2]ip4]bool) (c bool) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	for k, _ := range f {

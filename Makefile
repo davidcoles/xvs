@@ -55,13 +55,9 @@ distclean: clean
 debian-dependencies:
 	apt-get install build-essential libelf-dev clang libc6-dev llvm
 
-wc:
-	wc *.go */*.go
-	wc xdp/*.h xdp/*.c bpf/*.c bpf/*.h
+cloc:
+	cloc *.go */*.go */*.h */*.c
 
 test: libbpf/src/libbpf.a
-	#cd maglev/ && go test -v
-	#cd nat/    && go test -v
-	env
-	go test -v
+	cd maglev/ && go test -v
 
