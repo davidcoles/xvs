@@ -19,7 +19,7 @@
 package xvs
 
 import (
-	"fmt"
+	//"fmt"
 	"net/netip"
 	"time"
 
@@ -203,7 +203,8 @@ func (s *Service) sync(arp map[IP4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
 
 		if val.update_backend(s.state) {
 			maps.update_service_backend(key, &(val.bpf_backend), xdp.BPF_ANY)
-			fmt.Println("FWD:", vip, port, protocol, val.bpf_backend.hash[:32], time.Now().Sub(now))
+			//fmt.Println("FWD:", vip, port, protocol, val.bpf_backend.hash[:32], time.Now().Sub(now))
+			maps.log().INFO("FORWARD", vip, port, protocol, val.bpf_backend.hash[:32], time.Now().Sub(now))
 			s.state = val
 		}
 	}

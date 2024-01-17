@@ -20,7 +20,7 @@ package xvs
 
 import (
 	"errors"
-	"fmt"
+	//"fmt"
 	"sync"
 )
 
@@ -106,7 +106,7 @@ func (f natmap) Clean(m map[[2]ip4]bool) (c bool) {
 		if _, exists := m[k]; !exists {
 			c = true
 			delete(f, k)
-			fmt.Println("REMOVING", k)
+			//fmt.Println("REMOVING", k)
 		}
 	}
 	return

@@ -56,6 +56,7 @@ func BPF() ([]byte, error) {
 type maps = Maps
 type Maps struct {
 	C           chan bool
+	logger      Log
 	mutex       sync.Mutex
 	xdp         *xdp.XDP
 	fd          map[string]int
@@ -726,7 +727,17 @@ func pow(x int) uint64 {
 	return 0
 }
 
-func open(obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*Maps, error) {
+func (m *Maps) log() Log {
+	l := m.logger
+
+	if l == nil {
+		return Nil{}
+	}
+
+	return l
+}
+
+func open(log Log, obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*Maps, error) {
 
 	err := ulimit_l()
 
@@ -734,7 +745,8 @@ func open(obj []byte, native, multi bool, vetha, vethb string, eth ...string) (*
 		return nil, err
 	}
 
-	var m maps
+	var m Maps
+	m.logger = log
 	m.fd = make(map[string]int)
 	m.defcon = 5
 	m.C = make(chan bool, 1)

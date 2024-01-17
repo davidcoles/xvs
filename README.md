@@ -52,3 +52,24 @@ configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
 A more complete example with health check and BGP route health
 injection is currently available at
 [VC5ng](https://github.com/davidcoles/vc5ng).
+
+
+## Performance
+
+This has mostly been tested using Icecast backend servers with clients
+pulling a mix of low and high bitrate streams (48kbps - 192kbps).
+
+A VMWare guest (4 core, 8GB) using the XDP generic driver was able to
+support 100K concurrent clients, 380Mbps/700Kpps through the load
+balancer and 8Gbps of traffic from the backends directly to the
+clients. Going above 700Kpps cause connections to be dropped,
+regardless of the number of cores or memory assigned to the VM, so I
+suspect that there is a limit on the number of interrupts that the VM
+is able to handle per second.
+
+On a single (non-virtualised) Intel Xeon Gold 6314U CPU (2.30GHz 32
+physical cores, with hyperthreading enabled for 64 logical cores) and
+an Intel 10G 4P X710-T4L-t ethernet card, I was able to run 700K
+streams at 2Gbps/3.8Mpps ingress traffic and 46.5Gbps egress. The
+server was more than 90% idle. Unfortunately I did not have the
+resources available to create more clients/servers.

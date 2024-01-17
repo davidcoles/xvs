@@ -20,7 +20,7 @@ package xvs
 
 import (
 	"errors"
-	"fmt"
+	//"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -52,6 +52,7 @@ type Client2 struct {
 	Native     bool
 	Redirect   bool
 	Address    netip.Addr // find default interface when not in VLAN mode
+	Logger     Log
 
 	service map[key]*Service
 	ifaces  map[uint16]iface
@@ -69,6 +70,16 @@ type Client2 struct {
 	mutex      sync.Mutex
 
 	nat []natkeyval
+}
+
+func (c *Client2) log() Log {
+	l := c.Logger
+
+	if l == nil {
+		return Nil{}
+	}
+
+	return l
 }
 
 func (c *Client2) vlanIDs() []vc {
@@ -215,7 +226,8 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 
 	if !ok {
 		service = s.dupp()
-		fmt.Println("NEW:", vip, svc.port, svc.prot)
+		//fmt.Println("NEW:", vip, svc.port, svc.prot)
+		c.log().INFO("NEW", vip, svc.port, svc.prot)
 		c.service[svc] = service
 	}
 
@@ -234,7 +246,8 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 		d := netip.AddrFrom4(rip)
 		if _, exists := c.tags[d]; !exists {
 			tag := c.tag(d)
-			fmt.Println("TAG:", d, tag)
+			//fmt.Println("TAG:", d, tag)
+			c.log().INFO("TAG", d, tag)
 			c.tags[d] = tag
 		}
 	}
@@ -307,7 +320,8 @@ func (c *Client2) Start() error {
 		vetha = c.netns.IfA
 		vethb = c.netns.IfB
 
-		fmt.Println(c.netns)
+		//fmt.Println(c.netns)
+		c.log().INFO("NETNS", c.netns)
 	}
 
 	c.icmp = &ICMP{}
@@ -323,7 +337,7 @@ func (c *Client2) Start() error {
 		return err
 	}
 
-	c.maps, err = open(bpf, c.Native, len(c.VLANs) > 0 && c.Redirect, vetha, vethb, phy...)
+	c.maps, err = open(c.Logger, bpf, c.Native, len(c.VLANs) > 0 && c.Redirect, vetha, vethb, phy...)
 
 	if err != nil {
 		return err
@@ -419,7 +433,8 @@ func (c *Client2) background() {
 		}
 
 		if update_nat {
-			fmt.Println("CLEAR")
+			//fmt.Println("CLEAR")
+			c.log().INFO("CLEAR")
 			c.natMap.Clean(c.tuples())
 			c.natMap.Index()
 			//deleted := c.natMap.Clean(c.tuples())
@@ -471,7 +486,7 @@ func (c *Client2) arp() {
 	}
 }
 
-func (b *Client2) update_mac(ips map[[4]byte]bool) bool {
+func (c *Client2) update_mac(ips map[[4]byte]bool) bool {
 	hwaddr := map[IP4]MAC{}
 
 	var changed bool
@@ -489,7 +504,7 @@ func (b *Client2) update_mac(ips map[[4]byte]bool) bool {
 			continue
 		}
 
-		old, ok := b.hwaddr[ip]
+		old, ok := c.hwaddr[ip]
 
 		if !ok || new != old {
 			changed = true
@@ -497,17 +512,18 @@ func (b *Client2) update_mac(ips map[[4]byte]bool) bool {
 
 		hwaddr[ip] = new
 
-		delete(b.hwaddr, ip)
+		delete(c.hwaddr, ip)
 	}
 
-	if len(b.hwaddr) != 0 {
+	if len(c.hwaddr) != 0 {
 		changed = true
 	}
 
-	b.hwaddr = hwaddr
+	c.hwaddr = hwaddr
 
 	if changed {
-		fmt.Println("MAC:", hwaddr)
+		//fmt.Println("MAC:", hwaddr)
+		c.log().INFO("MAC", hwaddr)
 	}
 
 	return changed
@@ -692,14 +708,16 @@ func (c *Client2) updateNAT() {
 
 	c.nat = nat
 
-	fmt.Println("NAT:", len(nat), "entries,", updated, "updated,", deleted, "deleted")
+	//fmt.Println("NAT:", len(nat), "entries,", updated, "updated,", deleted, "deleted")
+	c.log().INFO("NAT", len(nat), "entries,", updated, "updated,", deleted, "deleted")
 }
 
 func (c *Client2) update_redirects() {
 	for vid := uint16(0); vid < 4096; vid++ {
 		iface, exists := c.ifaces[vid]
 		if exists {
-			fmt.Println("RDR:", vid, iface.mac, iface.idx)
+			//fmt.Println("RDR:", vid, iface.mac, iface.idx)
+			c.log().INFO("RDR", vid, iface.mac, iface.idx)
 		}
 		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not founc
 	}
