@@ -731,7 +731,7 @@ func (m *Maps) log() Log {
 	l := m.logger
 
 	if l == nil {
-		return Nil{}
+		return &Nil{}
 	}
 
 	return l
@@ -864,21 +864,19 @@ func (m *Maps) background() {
 type IP4 [4]byte
 type MAC [6]byte
 
-func (i IP4) String() string { return fmt.Sprintf("%d.%d.%d.%d", i[0], i[1], i[2], i[3]) }
-func (i *IP4) IsNil() bool   { return i[0] == 0 && i[1] == 0 && i[2] == 0 && i[3] == 0 }
+const _IP4 = "%d.%d.%d.%d"
+const _MAC = "%02x:%02x:%02x:%02x:%02x:%02x"
 
-func (m MAC) String() string {
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
-}
+func (i *IP4) string() string { return fmt.Sprintf(_IP4, i[0], i[1], i[2], i[3]) }
+func (m *MAC) string() string { return fmt.Sprintf(_MAC, m[0], m[1], m[2], m[3], m[4], m[5]) }
 
-func (m *MAC) string() string {
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
-}
+func (i IP4) String() string { return i.string() }
+func (m MAC) String() string { return m.string() }
 
-func (m *MAC) MarshalText() ([]byte, error) {
-	return []byte(m.string()), nil
-}
+func (i IP4) MarshalText() ([]byte, error) { return []byte(i.string()), nil }
+func (m MAC) MarshalText() ([]byte, error) { return []byte(m.string()), nil }
 
+func (i *IP4) IsNil() bool { return i[0] == 0 && i[1] == 0 && i[2] == 0 && i[3] == 0 }
 func (m *MAC) IsNil() bool {
 	return m[0] == 0 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[4] == 0 && m[5] == 0
 }

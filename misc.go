@@ -261,7 +261,7 @@ func VlanInterface(prefix net.IPNet) (ret iface, _ bool) {
 				if err == nil && ipnet.String() == prefix.String() {
 					ip4 := ip.To4()
 					if len(ip4) == 4 && ip4 != nil {
-						return iface{idx: uint32(i.Index), ip4: IP4(ip4), mac: mac}, true
+						return iface{idx: uint32(i.Index), ip4: IP4(ip4), mac: mac, nic: i.Name}, true
 					}
 				}
 			}
@@ -280,6 +280,11 @@ type iface struct {
 	idx uint32
 	ip4 IP4
 	mac MAC
+	nic string
+}
+
+func (i iface) MarshalText() ([]byte, error) {
+	return []byte(fmt.Sprintf("%s:%d:%s:%s", i.nic, i.idx, i.ip4, i.mac)), nil
 }
 
 type be_state struct {

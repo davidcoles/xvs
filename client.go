@@ -20,7 +20,7 @@ package xvs
 
 import (
 	"errors"
-	//"fmt"
+	"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -32,6 +32,7 @@ import (
 )
 
 type uP = unsafe.Pointer
+type KV = map[string]any
 
 type vc struct {
 	vid uint16
@@ -44,8 +45,17 @@ type key struct {
 	prot uint8
 }
 
-type Client = Client2
-type Client2 struct {
+func prot(p uint8) string {
+	switch p {
+	case 6:
+		return "tcp"
+	case 17:
+		return "udp"
+	}
+	return fmt.Sprint(p)
+}
+
+type Client struct {
 	Interfaces []string
 	VLANs      map[uint16]net.IPNet
 	NAT        bool
@@ -72,17 +82,17 @@ type Client2 struct {
 	nat []natkeyval
 }
 
-func (c *Client2) log() Log {
+func (c *Client) log() Log {
 	l := c.Logger
 
 	if l == nil {
-		return Nil{}
+		return &Nil{}
 	}
 
 	return l
 }
 
-func (c *Client2) vlanIDs() []vc {
+func (c *Client) vlanIDs() []vc {
 	var vlans []vc
 
 	for k, v := range c.VLANs {
@@ -95,7 +105,7 @@ func (c *Client2) vlanIDs() []vc {
 	return vlans
 }
 
-func (c *Client2) tag(i netip.Addr) uint16 {
+func (c *Client) tag(i netip.Addr) uint16 {
 	vlans := c.vlanIDs()
 
 	if !i.Is4() {
@@ -114,13 +124,13 @@ func (c *Client2) tag(i netip.Addr) uint16 {
 	return 0
 }
 
-func (c *Client2) CreateService(s Service) error {
+func (c *Client) CreateService(s Service) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.setService(s, nil)
 }
 
-func (c *Client2) RemoveService(s Service) error {
+func (c *Client) RemoveService(s Service) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -165,7 +175,7 @@ func (c *Client2) RemoveService(s Service) error {
 	return nil
 }
 
-func (c *Client2) CreateDestination(s Service, d Destination) error {
+func (c *Client) CreateDestination(s Service, d Destination) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -202,13 +212,13 @@ func (c *Client2) CreateDestination(s Service, d Destination) error {
 	return c.setService(s, dst)
 }
 
-func (c *Client2) SetService(s Service, dst []Destination) error {
+func (c *Client) SetService(s Service, dst []Destination) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.setService(s, dst)
 }
 
-func (c *Client2) setService(s Service, dst []Destination) error {
+func (c *Client) setService(s Service, dst []Destination) error {
 
 	svc, err := s.key()
 
@@ -226,8 +236,7 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 
 	if !ok {
 		service = s.dupp()
-		//fmt.Println("NEW:", vip, svc.port, svc.prot)
-		c.log().INFO("NEW", vip, svc.port, svc.prot)
+		c.log().INFO("service", KV{"event": "new-service", "vip": vip, "port": svc.port, "protocol": svc.prot})
 		c.service[svc] = service
 	}
 
@@ -246,8 +255,7 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 		d := netip.AddrFrom4(rip)
 		if _, exists := c.tags[d]; !exists {
 			tag := c.tag(d)
-			//fmt.Println("TAG:", d, tag)
-			c.log().INFO("TAG", d, tag)
+			c.log().INFO("tag", d, tag)
 			c.tags[d] = tag
 		}
 	}
@@ -268,7 +276,7 @@ func (c *Client2) setService(s Service, dst []Destination) error {
 	return nil
 }
 
-func (c *Client2) Start() error {
+func (c *Client) Start() error {
 
 	phy := c.Interfaces
 
@@ -321,7 +329,7 @@ func (c *Client2) Start() error {
 		vethb = c.netns.IfB
 
 		//fmt.Println(c.netns)
-		c.log().INFO("NETNS", c.netns)
+		c.log().INFO("netns", c.netns)
 	}
 
 	c.icmp = &ICMP{}
@@ -359,7 +367,7 @@ func (c *Client2) Start() error {
 	return nil
 }
 
-func (c *Client2) background() {
+func (c *Client) background() {
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	nic_ticker := time.NewTicker(time.Minute)
@@ -433,15 +441,9 @@ func (c *Client2) background() {
 		}
 
 		if update_nat {
-			//fmt.Println("CLEAR")
-			c.log().INFO("CLEAR")
 			c.natMap.Clean(c.tuples())
 			c.natMap.Index()
-			//deleted := c.natMap.Clean(c.tuples())
-			//changed, _ := c.natMap.Index()
-			//if deleted || changed {
 			c.updateNAT()
-			//}
 		}
 
 		if update_fwd {
@@ -456,7 +458,7 @@ func (c *Client2) background() {
 
 type ip4 = [4]byte
 
-func (c *Client2) tuples_() map[[2]ip4]bool {
+func (c *Client) tuples_() map[[2]ip4]bool {
 	m := map[[2]ip4]bool{}
 	for _, s := range c.service {
 		for r, _ := range s.backend {
@@ -469,7 +471,7 @@ func (c *Client2) tuples_() map[[2]ip4]bool {
 	return m
 }
 
-func (c *Client2) tuples() map[[2]ip4]bool {
+func (c *Client) tuples() map[[2]ip4]bool {
 	tuples := map[[2]ip4]bool{}
 	for _, s := range c.service {
 		for _, t := range s.tuples() {
@@ -479,24 +481,21 @@ func (c *Client2) tuples() map[[2]ip4]bool {
 	return tuples
 }
 
-func (c *Client2) arp() {
+func (c *Client) arp() {
 	// ping all real IP addresses, causing an ARP lookup if not fresh
 	for ip, _ := range c.natMap.RIPs() {
 		c.icmp.Ping(IP4(ip).String())
 	}
 }
 
-func (c *Client2) update_mac(ips map[[4]byte]bool) bool {
+func (c *Client) update_mac(ips map[[4]byte]bool) bool {
 	hwaddr := map[IP4]MAC{}
 
 	var changed bool
 
 	arp := arp()
 
-	//fmt.Println(arp, ips)
-
 	for ip, _ := range ips {
-		//fmt.Println("ARPPING:", ip)
 
 		new, ok := arp[ip]
 
@@ -522,14 +521,13 @@ func (c *Client2) update_mac(ips map[[4]byte]bool) bool {
 	c.hwaddr = hwaddr
 
 	if changed {
-		//fmt.Println("MAC:", hwaddr)
-		c.log().INFO("MAC", hwaddr)
+		c.log().DEBUG("mac", KV{"hwaddr": hwaddr})
 	}
 
 	return changed
 }
 
-func (c *Client2) scan_interfaces() bool {
+func (c *Client) scan_interfaces() bool {
 
 	var changed bool
 
@@ -555,7 +553,7 @@ func (c *Client2) scan_interfaces() bool {
 	return changed
 }
 
-func (c *Client2) Services() (services []ServiceExtended, e error) {
+func (c *Client) Services() (services []ServiceExtended, e error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -566,7 +564,7 @@ func (c *Client2) Services() (services []ServiceExtended, e error) {
 	return
 }
 
-func (c *Client2) Destinations(s Service) (destinations []DestinationExtended, e error) {
+func (c *Client) Destinations(s Service) (destinations []DestinationExtended, e error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -600,12 +598,12 @@ func (c *Client2) Destinations(s Service) (destinations []DestinationExtended, e
 
 /**********************************************************************/
 
-func (c *Client2) natAddr(i uint16) IP4 {
+func (c *Client) natAddr(i uint16) IP4 {
 	ns := htons(i)
 	return IP4{10, 255, ns[0], ns[1]}
 }
 
-func (b *Client2) natEntry(vip, rip, nat IP4, realhw MAC, vlanid uint16, idx iface) (ret []natkeyval) {
+func (b *Client) natEntry(vip, rip, nat IP4, realhw MAC, vlanid uint16, idx iface) (ret []natkeyval) {
 
 	vlanip := idx.ip4
 	vlanhw := idx.mac
@@ -633,7 +631,7 @@ func (b *Client2) natEntry(vip, rip, nat IP4, realhw MAC, vlanid uint16, idx ifa
 	return
 }
 
-func (c *Client2) natEntries() (nkv []natkeyval) {
+func (c *Client) natEntries() (nkv []natkeyval) {
 
 	if c.netns == nil {
 		return
@@ -669,7 +667,7 @@ func (c *Client2) natEntries() (nkv []natkeyval) {
 	return
 }
 
-func (c *Client2) updateNAT() {
+func (c *Client) updateNAT() {
 
 	if c.netns == nil {
 		return
@@ -708,22 +706,21 @@ func (c *Client2) updateNAT() {
 
 	c.nat = nat
 
-	//fmt.Println("NAT:", len(nat), "entries,", updated, "updated,", deleted, "deleted")
-	c.log().INFO("NAT", len(nat), "entries,", updated, "updated,", deleted, "deleted")
+	c.log().DEBUG("nat", KV{"entries": len(nat), "updated": updated, "deleted,": deleted})
 }
 
-func (c *Client2) update_redirects() {
+func (c *Client) update_redirects() {
 	for vid := uint16(0); vid < 4096; vid++ {
+		iface, _ := c.ifaces[vid]
 		iface, exists := c.ifaces[vid]
 		if exists {
-			//fmt.Println("RDR:", vid, iface.mac, iface.idx)
-			c.log().INFO("RDR", vid, iface.mac, iface.idx)
+			c.log().DEBUG("redirect", KV{"vlan": vid, "mac": iface.mac, "index": iface.idx, "interface": iface.nic, "ip": iface.ip4})
 		}
-		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not founc
+		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not found
 	}
 }
 
-func (c *Client2) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
+func (c *Client) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
 	if !vip.Is4() || !rip.Is4() {
 		return r, false
 	}
@@ -733,7 +730,7 @@ func (c *Client2) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
 	return netip.AddrFrom4(ip), ok
 }
 
-func (c *Client2) NATAddr(vip, rip IP4) (r IP4, _ bool) {
+func (c *Client) NATAddr(vip, rip IP4) (r IP4, _ bool) {
 	i := c.natMap.Get(vip, rip)
 
 	if i == 0 {
@@ -743,15 +740,15 @@ func (c *Client2) NATAddr(vip, rip IP4) (r IP4, _ bool) {
 	return c.natAddr(i), true
 }
 
-func (c *Client2) Namespace() string {
+func (c *Client) Namespace() string {
 	return NAMESPACE
 }
 
-func (c *Client2) NamespaceAddress() string {
+func (c *Client) NamespaceAddress() string {
 	return IP.String()
 }
 
-func (c *Client2) Info() (i Info) {
+func (c *Client) Info() (i Info) {
 	g := c.maps.lookup_globals()
 	i.Packets = g.rx_packets
 	i.Octets = g.rx_octets
@@ -763,7 +760,7 @@ func (c *Client2) Info() (i Info) {
 	return
 }
 
-func (c *Client2) UpdateVLANs(vlans map[uint16]net.IPNet) {
+func (c *Client) UpdateVLANs(vlans map[uint16]net.IPNet) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -777,11 +774,11 @@ func (c *Client2) UpdateVLANs(vlans map[uint16]net.IPNet) {
 	}
 }
 
-func (c *Client2) Prefixes() [PREFIXES]uint64 {
+func (c *Client) Prefixes() [PREFIXES]uint64 {
 	return c.maps.ReadPrefixCounters()
 }
 
-func (c *Client2) Service(s Service) (se ServiceExtended, e error) {
+func (c *Client) Service(s Service) (se ServiceExtended, e error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 

@@ -14,12 +14,12 @@ type Log interface {
 
 type Nil struct{}
 
-func (n Nil) Println(...any)         {}
-func (n Nil) EMERG(string, ...any)   {}
-func (n Nil) ALERT(string, ...any)   {}
-func (n Nil) CRIT(string, ...any)    {}
-func (n Nil) ERR(string, ...any)     {}
-func (n Nil) WARNING(string, ...any) {}
-func (n Nil) NOTICE(string, ...any)  {}
-func (n Nil) INFO(string, ...any)    {}
-func (n Nil) DEBUG(string, ...any)   {}
+func (n *Nil) Println(...any)         {}
+func (n *Nil) EMERG(string, ...any)   {}
+func (n *Nil) ALERT(string, ...any)   {}
+func (n *Nil) CRIT(string, ...any)    {}
+func (n *Nil) ERR(string, ...any)     {}
+func (n *Nil) WARNING(string, ...any) {}
+func (n *Nil) NOTICE(string, ...any)  {}
+func (n *Nil) INFO(string, ...any)    {}
+func (n *Nil) DEBUG(string, ...any)   {}

@@ -19,7 +19,7 @@
 package xvs
 
 import (
-	//"fmt"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -183,7 +183,7 @@ func (s *Service) sync(arp map[IP4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
 
 	if s.Address.Is4() {
 
-		vip := s.Address.As4()
+		vip := IP4(s.Address.As4())
 		bpf_reals := map[IP4]bpf_real{}
 
 		for ip, real := range s.backend {
@@ -203,8 +203,10 @@ func (s *Service) sync(arp map[IP4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
 
 		if val.update_backend(s.state) {
 			maps.update_service_backend(key, &(val.bpf_backend), xdp.BPF_ANY)
-			//fmt.Println("FWD:", vip, port, protocol, val.bpf_backend.hash[:32], time.Now().Sub(now))
-			maps.log().INFO("FORWARD", vip, port, protocol, val.bpf_backend.hash[:32], time.Now().Sub(now))
+			kv := KV{"vip": vip, "port": port, "protocol": protocol, "backends": fmt.Sprint(val.bpf_backend.hash[:32]),
+				"duration_ms": int64(time.Now().Sub(now) / time.Millisecond)}
+			maps.log().INFO("forward", kv)
+
 			s.state = val
 		}
 	}
