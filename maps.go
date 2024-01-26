@@ -40,6 +40,11 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
+const (
+	FLOW_S  = bpf.FLOW_S
+	STATE_S = bpf.STATE_S
+)
+
 //go:embed bpf/bpf.o.gz
 var bpf_gz []byte
 
@@ -411,6 +416,8 @@ func (m *Maps) MultiNIC(mode bool) {
 }
 
 func (m *Maps) Distributed(d bool) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.distributed = d
 	m.write_settings()
 }

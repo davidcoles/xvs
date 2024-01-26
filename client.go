@@ -64,6 +64,8 @@ type Client struct {
 	Address    netip.Addr // find default interface when not in VLAN mode
 	Logger     Log
 
+	Share bool // share connection state via flow queue
+
 	service map[key]*Service
 	ifaces  map[uint16]iface
 	hwaddr  map[IP4]MAC // IPv4 only
@@ -350,6 +352,8 @@ func (c *Client) Start() error {
 	if err != nil {
 		return err
 	}
+
+	c.maps.Distributed(c.Share)
 
 	if c.netns != nil {
 		err = c.netns.Open()
@@ -799,4 +803,27 @@ func (c *Client) Service(s Service) (se ServiceExtended, e error) {
 	}
 
 	return service.extend(c.maps), nil
+}
+
+func (c *Client) ReadFlow() []byte {
+	var entry [FLOW_S + STATE_S]byte
+
+	if xdp.BpfMapLookupAndDeleteElem(c.maps.flow_queue(), nil, uP(&entry)) != 0 {
+		return nil
+	}
+
+	return entry[:]
+}
+
+func (c *Client) WriteFlow(fs []byte) {
+
+	if len(fs) != FLOW_S+STATE_S {
+		return
+	}
+
+	flow := uP(&fs[0])
+	state := uP(&fs[FLOW_S])
+	time := (*uint32)(state)
+	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
+	xdp.BpfMapUpdateElem(c.maps.flow_share(), flow, state, xdp.BPF_ANY)
 }
