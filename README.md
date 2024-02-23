@@ -18,7 +18,7 @@ The code implements an IPv4 Layer-2 Direct Server Return load
 balancer. Backend servers need to be on the same VLAN as the load
 balancer. Multiple VLANs/interfaces are supported.
 
-Layer-3 DSR and IPv6 support is planned.
+Layer 3 DSR and IPv6 support is planned.
 
 ## Sample application
 
@@ -34,7 +34,8 @@ Compile/run with:
 Replace `ens192` with your ethernet interface name, `10.1.2.3` with
 the address of the machine you are running the program on,
 `192.168.101.1` with the VIP you want to use and `10.1.2.10-12` with
-any number of real server addresses.
+any number of real server addresses. For this simple example
+everything needs to be on the same VLAN/subnet.
 
 On a seperate client machine on the same subnet you should add a static route for the VIP, eg.:
 
@@ -46,12 +47,12 @@ You should then be able to contact the service:
 
 No healthchecking is done, so you'll have to make sure that a
 webserver is running on the real servers and that the VIP has been
-configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
+configured on the loopback address on them (`ip a add 192.168.101.1 dev lo`).
 
 
 A more complete example with health check and BGP route health
 injection is currently available at
-[VC5ng](https://github.com/davidcoles/vc5ng).
+[VC5](https://github.com/davidcoles/vc5).
 
 
 ## Performance

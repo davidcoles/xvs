@@ -82,7 +82,7 @@ func main() {
 		}
 	}
 
-	client := &xvs.Client2{
+	client := &xvs.Client{
 		Interfaces: links,
 		Address:    addr,
 		VLANs:      vlans,

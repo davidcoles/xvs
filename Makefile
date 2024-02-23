@@ -11,11 +11,13 @@ FLOW_STATE_SIZE ?= 1000000  # 1M
 FLOW_SHARE_SIZE ?= 1000000  # 1M
 FLOW_QUEUE_SIZE ?= 10000
 
-default:
-	test -f bpf/bpf.o.gz || $(MAKE) bpf/bpf.o.gz
+default: bpfblob
 
-example: bpf/bpf.o.gz
+example: bpfblob
 	cd balancer && $(MAKE)
+
+bpfblob:
+	test -f bpf/bpf.o.gz || $(MAKE) bpf/bpf.o.gz
 
 bpf/bpf.o.gz: bpf/bpf.o
 	gzip -9 bpf/bpf.o
