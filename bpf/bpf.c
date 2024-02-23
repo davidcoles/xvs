@@ -345,9 +345,9 @@ static __always_inline void store_tcp_flow(struct iphdr *ipv4, __be16 src, __be1
     if(global) global->new_flows++;
 }
 
-static __always_inline void be_tcp_counter(__be32 vip, __be16 port, __be32 rip, int octets, int new_flow)
+static __always_inline void be_counter(__be32 vip, __be16 port, __u8 protocol, __be32 rip, int octets, int new_flow)
 {
-    struct vrpp vr = { .vip = vip, .rip = rip, .port = port, .protocol = IPPROTO_TCP };
+    struct vrpp vr = { .vip = vip, .rip = rip, .port = port, .protocol = protocol };
     struct counter *co = bpf_map_lookup_elem(&vrpp_counter, &vr);
     if(co) {
 	co->octets += octets;
@@ -585,7 +585,7 @@ static __always_inline int existing_tcp_flow(struct context *context)
     if(DO_CONNS(context->features)) be_tcp_concurrent(context, state);
     /**********************************************************************/
     
-    be_tcp_counter(ipv4->daddr, tcp->dest, state->rip, octets, 0);
+    be_counter(ipv4->daddr, tcp->dest, ipv4->protocol, state->rip, octets, 0);
     
     __u32 prefix = bpf_ntohl(ipv4->saddr) >> 12; // obtain /20
     __u64 *traffic = bpf_map_lookup_elem(&prefix_counters, &prefix);
@@ -654,7 +654,9 @@ static __always_inline int new_flow(struct context *context, __be16 src, __be16 
 	
 	if(ipv4->protocol == IPPROTO_TCP) { // maybe don't store initial SYN?
 	    if(DO_STATE(f)) store_tcp_flow(ipv4, src, dst, real->rip, real->mac, real->vid, global);
-	    if(DO_STATS(f)) be_tcp_counter(ipv4->daddr, dst, real->rip, octets, DO_STATE(f));
+	    if(DO_STATS(f)) be_counter(ipv4->daddr, dst, ipv4->protocol, real->rip, octets, DO_STATE(f));
+	} else {
+	    if(DO_STATS(f)) be_counter(ipv4->daddr, dst, ipv4->protocol, real->rip, octets, 0);
 	}
 
 	__u32 prefix = bpf_ntohl(ipv4->saddr) >> 12; // obtain /20
