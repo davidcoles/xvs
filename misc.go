@@ -156,7 +156,7 @@ func (curr *be_state) diff(prev *be_state) bool {
 	return false
 }
 
-func DefaultInterface(addr ip4) *net.Interface {
+func defaultInterface(addr ip4) *net.Interface {
 
 	fmt.Println(addr)
 

@@ -57,7 +57,7 @@ func (s *Service) update(u Service) (changed bool) {
 	return
 }
 
-func (s *Service) remove(maps *Maps, more bool) (del []ip4) {
+func (s *Service) remove(maps *maps, more bool) (del []ip4) {
 
 	if s.Address.Is4() {
 
@@ -94,7 +94,7 @@ func (s *Service) key() (key, error) {
 	return key{addr: s.Address, port: s.Port, prot: uint8(s.Protocol)}, nil
 }
 
-func (s *Service) concurrent(m *Maps) {
+func (s *Service) concurrent(m *maps) {
 	if s.Address.Is4() {
 		vip := s.Address.As4()
 		for rip, b := range s.backend {
@@ -103,7 +103,7 @@ func (s *Service) concurrent(m *Maps) {
 	}
 }
 
-func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []ip4, del []ip4) {
+func (s *Service) set(maps *maps, svc Service, dst []Destination) (add []ip4, del []ip4) {
 
 	if !s.Address.Is4() {
 		return
@@ -148,7 +148,7 @@ func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []ip4, de
 	return
 }
 
-func (s *Service) extend(maps *Maps) (se ServiceExtended) {
+func (s *Service) extend(maps *maps) (se ServiceExtended) {
 	se.Service = s.dup()
 
 	for _, d := range s.destinations(maps) {
@@ -158,13 +158,13 @@ func (s *Service) extend(maps *Maps) (se ServiceExtended) {
 	return
 }
 
-func (s *Service) destination(d *Destination, m *Maps) (de DestinationExtended) {
+func (s *Service) destination(d *Destination, m *maps) (de DestinationExtended) {
 	de.Destination = *d
 	de.Stats = s.stats(d, m)
 	return
 }
 
-func (s *Service) destinations(maps *Maps) map[ip4]DestinationExtended {
+func (s *Service) destinations(maps *maps) map[ip4]DestinationExtended {
 	destinations := map[ip4]DestinationExtended{}
 
 	if s.Address.Is4() {
@@ -176,7 +176,7 @@ func (s *Service) destinations(maps *Maps) map[ip4]DestinationExtended {
 	return destinations
 }
 
-func (s *Service) sync(arp map[ip4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
+func (s *Service) sync(arp map[ip4]MAC, tag map[netip.Addr]uint16, maps *maps) {
 
 	port := s.Port
 	protocol := uint8(s.Protocol)
@@ -221,7 +221,7 @@ func (s *Service) tuples() (ret [][2]b4) {
 	return
 }
 
-func (s *Service) stats(d *Destination, m *Maps) (stats Stats) {
+func (s *Service) stats(d *Destination, m *maps) (stats Stats) {
 	if !s.Address.Is4() || !d.Address.Is4() {
 		return
 	}
@@ -237,7 +237,7 @@ func (s *Service) stats(d *Destination, m *Maps) (stats Stats) {
 	return
 }
 
-func (s *Service) addDestination(d *Destination, m *Maps) {
+func (s *Service) addDestination(d *Destination, m *maps) {
 	if !s.Address.Is4() || !d.Address.Is4() {
 		return
 	}
@@ -250,7 +250,7 @@ func (s *Service) addDestination(d *Destination, m *Maps) {
 	m.update_vrpp_concurrent(&v1, nil, xdp.BPF_NOEXIST)
 }
 
-func (s *Service) delDestination(d *Destination, m *Maps) {
+func (s *Service) delDestination(d *Destination, m *maps) {
 	if !s.Address.Is4() || !d.Address.Is4() {
 		return
 	}

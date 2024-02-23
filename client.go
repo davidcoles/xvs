@@ -312,7 +312,7 @@ func (c *Client) Start() error {
 			}
 
 			default_ip = ip4(addr.As4())
-			default_if = DefaultInterface(default_ip)
+			default_if = defaultInterface(default_ip)
 
 			if default_if == nil {
 				return errors.New("Couldn't locate interface for IP: " + addr.String())
