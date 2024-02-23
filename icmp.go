@@ -23,11 +23,11 @@ import (
 	"time"
 )
 
-type ICMP struct {
+type icmp struct {
 	submit chan string
 }
 
-func (i *ICMP) Start() error {
+func (i *icmp) Start() error {
 
 	conn, err := net.ListenPacket("ip4:icmp", "")
 	if err != nil {
@@ -40,18 +40,18 @@ func (i *ICMP) Start() error {
 	return nil
 }
 
-func (s *ICMP) Ping(target string) {
+func (s *icmp) Ping(target string) {
 	select {
 	case s.submit <- target:
 	default:
 	}
 }
 
-func (s *ICMP) Stop() {
+func (s *icmp) Stop() {
 	close(s.submit)
 }
 
-func (s *ICMP) echoRequest() []byte {
+func (s *icmp) echoRequest() []byte {
 
 	var csum uint32
 	wb := make([]byte, 8)
@@ -74,7 +74,7 @@ func (s *ICMP) echoRequest() []byte {
 	return wb
 }
 
-func (s *ICMP) probe(conn net.PacketConn) {
+func (s *icmp) probe(conn net.PacketConn) {
 
 	defer conn.Close()
 

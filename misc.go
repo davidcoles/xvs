@@ -73,7 +73,7 @@ func (curr *be_state) update_backend(prev *be_state) bool {
 
 	mapper := map[[4]byte]uint8{}
 
-	var list []IP4
+	var list []ip4
 
 	for ip, _ := range curr.bpf_reals {
 		list = append(list, ip)
@@ -98,7 +98,7 @@ func (curr *be_state) update_backend(prev *be_state) bool {
 	curr.bpf_backend.real = real
 	curr.bpf_backend.hash, _ = maglev8192(mapper)
 
-	var rip IP4
+	var rip ip4
 	var mac MAC
 	var vid [2]byte
 
@@ -118,7 +118,7 @@ func (curr *be_state) update_backend(prev *be_state) bool {
 
 func (curr *be_state) diff(prev *be_state) bool {
 
-	bpf_reals_differ := func(a, b map[IP4]bpf_real) bool {
+	bpf_reals_differ := func(a, b map[ip4]bpf_real) bool {
 		for k, v := range a {
 			if x, ok := b[k]; !ok {
 				return true
@@ -156,7 +156,7 @@ func (curr *be_state) diff(prev *be_state) bool {
 	return false
 }
 
-func DefaultInterface(addr IP4) *net.Interface {
+func DefaultInterface(addr ip4) *net.Interface {
 
 	fmt.Println(addr)
 
@@ -211,11 +211,11 @@ func DefaultInterface(addr IP4) *net.Interface {
 	return nil
 }
 
-func VlanInterfaces(in map[uint16]net.IPNet) map[uint16]iface {
+func vlanInterfaces(in map[uint16]net.IPNet) map[uint16]iface {
 	out := map[uint16]iface{}
 
 	for vid, pref := range in {
-		if iface, ok := VlanInterface(pref); ok {
+		if iface, ok := vlanInterface(pref); ok {
 			out[vid] = iface
 		}
 	}
@@ -223,7 +223,7 @@ func VlanInterfaces(in map[uint16]net.IPNet) map[uint16]iface {
 	return out
 }
 
-func VlanInterface(prefix net.IPNet) (ret iface, _ bool) {
+func vlanInterface(prefix net.IPNet) (ret iface, _ bool) {
 	ifaces, err := net.Interfaces()
 
 	if err != nil {
@@ -259,9 +259,9 @@ func VlanInterface(prefix net.IPNet) (ret iface, _ bool) {
 				ip, ipnet, err := net.ParseCIDR(cidr)
 
 				if err == nil && ipnet.String() == prefix.String() {
-					ip4 := ip.To4()
-					if len(ip4) == 4 && ip4 != nil {
-						return iface{idx: uint32(i.Index), ip4: IP4(ip4), mac: mac, nic: i.Name}, true
+					ipv4 := ip.To4()
+					if len(ipv4) == 4 && ipv4 != nil {
+						return iface{idx: uint32(i.Index), ip4: ip4(ipv4), mac: mac, nic: i.Name}, true
 					}
 				}
 			}
@@ -278,7 +278,7 @@ type natkeyval struct {
 
 type iface struct {
 	idx uint32
-	ip4 IP4
+	ip4 ip4
 	mac MAC
 	nic string
 }
@@ -290,8 +290,8 @@ func (i iface) MarshalText() ([]byte, error) {
 type be_state struct {
 	sticky      bool
 	fallback    bool
-	leastconns  IP4
+	leastconns  ip4
 	weight      uint8
 	bpf_backend bpf_backend
-	bpf_reals   map[IP4]bpf_real
+	bpf_reals   map[ip4]bpf_real
 }

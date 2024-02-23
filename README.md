@@ -20,6 +20,10 @@ balancer. Multiple VLANs/interfaces are supported.
 
 Layer 3 DSR and IPv6 support is planned.
 
+## Documentation
+
+https://pkg.go.dev/github.com/davidcoles/xvs
+
 ## Sample application
 
 A simple application in the `balancer/` directory will balance traffic

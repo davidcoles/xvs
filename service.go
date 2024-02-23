@@ -40,7 +40,7 @@ type Service struct {
 
 	Sticky bool
 
-	backend map[IP4]*Destination
+	backend map[ip4]*Destination
 	state   *be_state
 }
 
@@ -57,7 +57,7 @@ func (s *Service) update(u Service) (changed bool) {
 	return
 }
 
-func (s *Service) remove(maps *Maps, more bool) (del []IP4) {
+func (s *Service) remove(maps *Maps, more bool) (del []ip4) {
 
 	if s.Address.Is4() {
 
@@ -80,7 +80,7 @@ func (s *Service) remove(maps *Maps, more bool) (del []IP4) {
 func (s *Service) dup() Service {
 	var r Service
 	r = *s
-	r.backend = map[IP4]*Destination{}
+	r.backend = map[ip4]*Destination{}
 	r.state = nil
 	return r
 }
@@ -103,7 +103,7 @@ func (s *Service) concurrent(m *Maps) {
 	}
 }
 
-func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []IP4, del []IP4) {
+func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []ip4, del []ip4) {
 
 	if !s.Address.Is4() {
 		return
@@ -115,7 +115,7 @@ func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []IP4, de
 
 	maps.update_vrpp_counter(&bpf_vrpp{vip: vip}, &bpf_counter{}, xdp.BPF_NOEXIST)
 
-	new := map[IP4]*Destination{}
+	new := map[ip4]*Destination{}
 
 	for _, x := range dst {
 		d := x // we will take a pointer, so don't use the loop var!
@@ -124,7 +124,7 @@ func (s *Service) set(maps *Maps, svc Service, dst []Destination) (add []IP4, de
 			continue
 		}
 
-		rip := IP4(d.Address.As4())
+		rip := ip4(d.Address.As4())
 
 		new[rip] = &d
 
@@ -164,8 +164,8 @@ func (s *Service) destination(d *Destination, m *Maps) (de DestinationExtended) 
 	return
 }
 
-func (s *Service) destinations(maps *Maps) map[IP4]DestinationExtended {
-	destinations := map[IP4]DestinationExtended{}
+func (s *Service) destinations(maps *Maps) map[ip4]DestinationExtended {
+	destinations := map[ip4]DestinationExtended{}
 
 	if s.Address.Is4() {
 		for rip, d := range s.backend {
@@ -176,15 +176,15 @@ func (s *Service) destinations(maps *Maps) map[IP4]DestinationExtended {
 	return destinations
 }
 
-func (s *Service) sync(arp map[IP4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
+func (s *Service) sync(arp map[ip4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
 
 	port := s.Port
 	protocol := uint8(s.Protocol)
 
 	if s.Address.Is4() {
 
-		vip := IP4(s.Address.As4())
-		bpf_reals := map[IP4]bpf_real{}
+		vip := ip4(s.Address.As4())
+		bpf_reals := map[ip4]bpf_real{}
 
 		for ip, real := range s.backend {
 			mac := arp[ip]
@@ -203,19 +203,19 @@ func (s *Service) sync(arp map[IP4]MAC, tag map[netip.Addr]uint16, maps *Maps) {
 
 		if val.update_backend(s.state) {
 			maps.update_service_backend(key, &(val.bpf_backend), xdp.BPF_ANY)
-			kv := KV{"vip": vip, "port": port, "protocol": protocol, "backends": fmt.Sprint(val.bpf_backend.hash[:32]),
+			log := kv{"vip": vip, "port": port, "protocol": protocol, "backends": fmt.Sprint(val.bpf_backend.hash[:32]),
 				"duration_ms": int64(time.Now().Sub(now) / time.Millisecond)}
-			maps.log().INFO("forward", kv)
+			maps.log().INFO("forward", log)
 
 			s.state = val
 		}
 	}
 }
 
-func (s *Service) tuples() (ret [][2]ip4) {
+func (s *Service) tuples() (ret [][2]b4) {
 	if s.Address.Is4() {
 		for rip, _ := range s.backend {
-			ret = append(ret, [2]ip4{s.Address.As4(), rip})
+			ret = append(ret, [2]b4{s.Address.As4(), rip})
 		}
 	}
 	return

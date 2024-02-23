@@ -25,23 +25,23 @@ import (
 
 const NAMESPACE = "vc5"
 
-var IP IP4 = IP4{10, 255, 255, 254}
+var IP ip4 = ip4{10, 255, 255, 254}
 
 type netns struct {
 	IdA      int
 	IfA, IfB string
-	IpA, IpB IP4
+	IpA, IpB ip4
 	HwA, HwB MAC
 	//Index    int
 	NS string
 
 	//xPhysif uint32
 	//xPhyshw MAC
-	//xPhysip IP4
+	//xPhysip ip4
 	phys iface
 }
 
-func (n *netns) Init(ip IP4, out *net.Interface) error {
+func (n *netns) Init(ip ip4, out *net.Interface) error {
 
 	//n.xPhysip = ip
 	//n.xPhysif = uint32(out.Index)
@@ -110,7 +110,7 @@ ip link add ` + if1 + ` type veth peer name ` + if2 + `
 	return err
 }
 
-func setup2(ns, if1, if2 string, i1, i2 IP4) error {
+func setup2(ns, if1, if2 string, i1, i2 ip4) error {
 	ip1 := i1.String()
 	ip2 := i2.String()
 	cb := i1

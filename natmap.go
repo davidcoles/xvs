@@ -26,35 +26,35 @@ import (
 
 var mutex sync.RWMutex
 
-type natmap map[[2]ip4]uint16
+type natmap map[[2]b4]uint16
 
-func (f natmap) Add(v, r ip4) uint16 {
+func (f natmap) Add(v, r b4) uint16 {
 	mutex.Lock()
 	defer mutex.Unlock()
-	k := [2]ip4{v, r}
+	k := [2]b4{v, r}
 	n := f[k]
 	f[k] = n // existing value if exists, 0 otherwise
 	return n
 }
 
-func (f natmap) Get(v, r ip4) uint16 {
+func (f natmap) Get(v, r b4) uint16 {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	k := [2]ip4{v, r}
+	k := [2]b4{v, r}
 	return f[k]
 }
 
-func (f natmap) Del(v, r ip4) {
+func (f natmap) Del(v, r b4) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	k := [2]ip4{v, r}
+	k := [2]b4{v, r}
 	delete(f, k)
 }
 
-func (f natmap) All() map[[2]ip4]uint16 {
+func (f natmap) All() map[[2]b4]uint16 {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	m := map[[2]ip4]uint16{}
+	m := map[[2]b4]uint16{}
 	for k, v := range f {
 		m[k] = v
 	}
@@ -88,10 +88,10 @@ func (f natmap) Index() (b bool, e error) {
 	return b, e
 }
 
-func (f natmap) RIPs() map[ip4]bool {
+func (f natmap) RIPs() map[b4]bool {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	rips := map[ip4]bool{}
+	rips := map[b4]bool{}
 	for k, _ := range f {
 		r := k[1]
 		rips[r] = true
@@ -99,7 +99,7 @@ func (f natmap) RIPs() map[ip4]bool {
 	return rips
 }
 
-func (f natmap) Clean(m map[[2]ip4]bool) (c bool) {
+func (f natmap) Clean(m map[[2]b4]bool) (c bool) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	for k, _ := range f {

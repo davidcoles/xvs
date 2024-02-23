@@ -60,6 +60,14 @@ debian-dependencies:
 cloc:
 	cloc *.go */*.go */*.h */*.c
 
-test: libbpf/src/libbpf.a
+tests:
 	cd maglev/ && go test -v
 
+# to be run before pushing back to origin
+release-checks:
+	output="$$(git status --untracked-files=no --porcelain)"; echo "$$output"; test -z "$$output"
+	$(MAKE) distclean
+	$(MAKE) tests
+	$(MAKE) example
+	$(MAKE) distclean
+	git status

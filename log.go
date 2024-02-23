@@ -12,14 +12,14 @@ type Log interface {
 	DEBUG(string, ...interface{})
 }
 
-type Nil struct{}
+type nul struct{}
 
-func (n *Nil) Println(...any)         {}
-func (n *Nil) EMERG(string, ...any)   {}
-func (n *Nil) ALERT(string, ...any)   {}
-func (n *Nil) CRIT(string, ...any)    {}
-func (n *Nil) ERR(string, ...any)     {}
-func (n *Nil) WARNING(string, ...any) {}
-func (n *Nil) NOTICE(string, ...any)  {}
-func (n *Nil) INFO(string, ...any)    {}
-func (n *Nil) DEBUG(string, ...any)   {}
+func (n *nul) Println(...any)         {}
+func (n *nul) EMERG(string, ...any)   {}
+func (n *nul) ALERT(string, ...any)   {}
+func (n *nul) CRIT(string, ...any)    {}
+func (n *nul) ERR(string, ...any)     {}
+func (n *nul) WARNING(string, ...any) {}
+func (n *nul) NOTICE(string, ...any)  {}
+func (n *nul) INFO(string, ...any)    {}
+func (n *nul) DEBUG(string, ...any)   {}

@@ -32,7 +32,7 @@ import (
 )
 
 type uP = unsafe.Pointer
-type KV = map[string]any
+type kv = map[string]any
 
 type vc struct {
 	vid uint16
@@ -68,11 +68,11 @@ type Client struct {
 
 	service map[key]*Service
 	ifaces  map[uint16]iface
-	hwaddr  map[IP4]MAC // IPv4 only
+	hwaddr  map[ip4]MAC // IPv4 only
 	tags    map[netip.Addr]uint16
 
 	maps  *maps
-	icmp  *ICMP
+	icmp  *icmp
 	netns *netns
 
 	natMap natmap
@@ -88,7 +88,7 @@ func (c *Client) log() Log {
 	l := c.Logger
 
 	if l == nil {
-		return &Nil{}
+		return &nul{}
 	}
 
 	return l
@@ -238,7 +238,7 @@ func (c *Client) setService(s Service, dst []Destination) error {
 
 	if !ok {
 		service = s.dupp()
-		c.log().INFO("service", KV{"event": "new-service", "vip": vip, "port": svc.port, "protocol": svc.prot})
+		c.log().INFO("service", kv{"event": "new-service", "vip": vip, "port": svc.port, "protocol": svc.prot})
 		c.service[svc] = service
 	}
 
@@ -283,7 +283,7 @@ func (c *Client) Start() error {
 	phy := c.Interfaces
 
 	c.service = map[key]*Service{}
-	c.hwaddr = map[IP4]MAC{}
+	c.hwaddr = map[ip4]MAC{}
 	c.ifaces = map[uint16]iface{}
 	c.tags = map[netip.Addr]uint16{}
 	c.natMap = natmap{}
@@ -295,7 +295,7 @@ func (c *Client) Start() error {
 
 	if c.NAT {
 
-		var default_ip IP4
+		var default_ip ip4
 		var default_if *net.Interface
 
 		if len(c.VLANs) < 1 {
@@ -311,7 +311,7 @@ func (c *Client) Start() error {
 				return errors.New("Not an IPv4 address: " + addr.String())
 			}
 
-			default_ip = IP4(addr.As4())
+			default_ip = ip4(addr.As4())
 			default_if = DefaultInterface(default_ip)
 
 			if default_if == nil {
@@ -334,7 +334,7 @@ func (c *Client) Start() error {
 		c.log().INFO("netns", c.netns)
 	}
 
-	c.icmp = &ICMP{}
+	c.icmp = &icmp{}
 	err := c.icmp.Start()
 
 	if err != nil {
@@ -460,23 +460,23 @@ func (c *Client) background() {
 	}
 }
 
-type ip4 = [4]byte
+type b4 = [4]byte
 
-func (c *Client) tuples_() map[[2]ip4]bool {
-	m := map[[2]ip4]bool{}
+func (c *Client) tuples_() map[[2]b4]bool {
+	m := map[[2]b4]bool{}
 	for _, s := range c.service {
 		for r, _ := range s.backend {
 			if s.Address.Is4() {
 				v := s.Address.As4()
-				m[[2]ip4{v, r}] = true
+				m[[2]b4{v, r}] = true
 			}
 		}
 	}
 	return m
 }
 
-func (c *Client) tuples() map[[2]ip4]bool {
-	tuples := map[[2]ip4]bool{}
+func (c *Client) tuples() map[[2]b4]bool {
+	tuples := map[[2]b4]bool{}
 	for _, s := range c.service {
 		for _, t := range s.tuples() {
 			tuples[t] = true
@@ -488,12 +488,12 @@ func (c *Client) tuples() map[[2]ip4]bool {
 func (c *Client) arp() {
 	// ping all real IP addresses, causing an ARP lookup if not fresh
 	for ip, _ := range c.natMap.RIPs() {
-		c.icmp.Ping(IP4(ip).String())
+		c.icmp.Ping(ip4(ip).String())
 	}
 }
 
 func (c *Client) update_mac(ips map[[4]byte]bool) bool {
-	hwaddr := map[IP4]MAC{}
+	hwaddr := map[ip4]MAC{}
 
 	var changed bool
 
@@ -525,7 +525,7 @@ func (c *Client) update_mac(ips map[[4]byte]bool) bool {
 	c.hwaddr = hwaddr
 
 	if changed {
-		c.log().DEBUG("mac", KV{"hwaddr": hwaddr})
+		c.log().DEBUG("mac", kv{"hwaddr": hwaddr})
 	}
 
 	return changed
@@ -536,7 +536,7 @@ func (c *Client) scan_interfaces() bool {
 	var changed bool
 
 	old := c.ifaces
-	c.ifaces = VlanInterfaces(c.VLANs)
+	c.ifaces = vlanInterfaces(c.VLANs)
 
 	for k, v := range c.ifaces {
 		o, exists := old[k]
@@ -602,18 +602,18 @@ func (c *Client) Destinations(s Service) (destinations []DestinationExtended, e 
 
 /**********************************************************************/
 
-func (c *Client) natAddr(i uint16) IP4 {
+func (c *Client) natAddr(i uint16) ip4 {
 	ns := htons(i)
-	return IP4{10, 255, ns[0], ns[1]}
+	return ip4{10, 255, ns[0], ns[1]}
 }
 
-func (b *Client) natEntry(vip, rip, nat IP4, realhw MAC, vlanid uint16, idx iface) (ret []natkeyval) {
+func (b *Client) natEntry(vip, rip, nat ip4, realhw MAC, vlanid uint16, idx iface) (ret []natkeyval) {
 
 	vlanip := idx.ip4
 	vlanhw := idx.mac
 	vlanif := idx.idx
 
-	var vc5bip IP4 = b.netns.IpB
+	var vc5bip ip4 = b.netns.IpB
 	var vc5bhw MAC = b.netns.HwB
 	var vc5ahw MAC = b.netns.HwA
 	var vethif uint32 = uint32(b.netns.IdA)
@@ -710,7 +710,7 @@ func (c *Client) updateNAT() {
 
 	c.nat = nat
 
-	c.log().DEBUG("nat", KV{"entries": len(nat), "updated": updated, "deleted,": deleted})
+	c.log().DEBUG("nat", kv{"entries": len(nat), "updated": updated, "deleted,": deleted})
 }
 
 func (c *Client) update_redirects() {
@@ -718,7 +718,7 @@ func (c *Client) update_redirects() {
 		iface, _ := c.ifaces[vid]
 		iface, exists := c.ifaces[vid]
 		if exists {
-			c.log().DEBUG("redirect", KV{"vlan": vid, "mac": iface.mac, "index": iface.idx, "interface": iface.nic, "ip": iface.ip4})
+			c.log().DEBUG("redirect", kv{"vlan": vid, "mac": iface.mac, "index": iface.idx, "interface": iface.nic, "ip": iface.ip4})
 		}
 		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not found
 	}
@@ -729,12 +729,12 @@ func (c *Client) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
 		return r, false
 	}
 
-	ip, ok := c.NATAddr(vip.As4(), rip.As4())
+	ip, ok := c.nataddr(vip.As4(), rip.As4())
 
 	return netip.AddrFrom4(ip), ok
 }
 
-func (c *Client) NATAddr(vip, rip IP4) (r IP4, _ bool) {
+func (c *Client) nataddr(vip, rip ip4) (r ip4, _ bool) {
 	i := c.natMap.Get(vip, rip)
 
 	if i == 0 {

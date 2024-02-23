@@ -102,16 +102,16 @@ type bpf_setting struct {
 }
 
 type bpf_natkey struct {
-	src_ip  IP4 //__be32 src_ip;
-	dst_ip  IP4 //__be32 dst_ip;
+	src_ip  ip4 //__be32 src_ip;
+	dst_ip  ip4 //__be32 dst_ip;
 	src_mac MAC //__u8 src_mac[6];
 	dst_mac MAC //__u8 dst_mac[6];
 }
 
 type bpf_natval struct {
 	ifindex uint32  //__u32 ifindex;
-	src_ip  IP4     //__be32 src_ip;
-	dst_ip  IP4     //__be32 dst_ip;
+	src_ip  ip4     //__be32 src_ip;
+	dst_ip  ip4     //__be32 dst_ip;
 	vlan    uint16  //__u16 vlan;
 	_pad    [2]byte //__u8 _pad[2];
 	src_mac MAC     //__u8 src_mac[6];
@@ -169,17 +169,17 @@ type bpf_active struct {
 	current int64
 }
 
-type real_info struct {
-	idx uint16
-	mac MAC
-}
+//type real_info struct {
+//	idx uint16
+//	mac MAC
+//}
 
-type Target struct {
-	VIP      IP4
-	RIP      IP4
-	Port     uint16
-	Protocol uint8
-}
+//type Target struct {
+//	VIP      ip4
+//	RIP      ip4
+//	Port     uint16
+//	Protocol uint8
+//}
 
 func (c *bpf_counter) add(a bpf_counter) {
 	c.octets += a.octets
@@ -305,7 +305,7 @@ func (m *Maps) lookup_vrpp_counter(v *bpf_vrpp, c *bpf_counter) int {
 	return ret
 }
 
-func (m *Maps) read_and_clear_concurrent(vip, rip IP4, port uint16, protocol uint8) uint64 {
+func (m *Maps) read_and_clear_concurrent(vip, rip ip4, port uint16, protocol uint8) uint64 {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	v := &bpf_vrpp{vip: vip, rip: rip, port: htons(port), protocol: protocol, pad: (m.setting.era + 1) % 2}
@@ -457,9 +457,9 @@ func (m *Maps) lookup_globals() bpf_global { //(g *bpf_global) int {
 	return g
 }
 
-func natAddress(n uint16, ip IP4) IP4 {
+func natAddress(n uint16, ip ip4) ip4 {
 	hl := htons(n)
-	var nat IP4
+	var nat ip4
 	if n != 0 {
 		nat[0] = ip[0]
 		nat[1] = ip[1]
@@ -490,10 +490,10 @@ func htons(p uint16) [2]byte {
 	return hl
 }
 
-func arp() map[IP4]MAC {
+func arp() map[ip4]MAC {
 
-	ip2mac := make(map[IP4]MAC)
-	ip2nic := make(map[IP4]*net.Interface)
+	ip2mac := make(map[ip4]MAC)
+	ip2nic := make(map[ip4]*net.Interface)
 
 	re := regexp.MustCompile(`^(\S+)\s+0x1\s+0x[26]\s+(\S+)\s+\S+\s+(\S+)$`)
 
@@ -535,7 +535,7 @@ func arp() map[IP4]MAC {
 				continue
 			}
 
-			var ip4 IP4
+			var ip4 ip4
 			var mac [6]byte
 
 			copy(ip4[:], ip[:])
@@ -563,8 +563,8 @@ func maglev8192(m map[[4]byte]uint8) (r [8192]uint8, b bool) {
 		return r, false
 	}
 
-	//a := IP4s(make([]IP4, len(m)))
-	a := make([]IP4, len(m))
+	//a := ip4s(make([]ip4, len(m)))
+	a := make([]ip4, len(m))
 
 	n := 0
 	for k, _ := range m {
@@ -738,7 +738,7 @@ func (m *Maps) log() Log {
 	l := m.logger
 
 	if l == nil {
-		return &Nil{}
+		return &nul{}
 	}
 
 	return l
@@ -868,22 +868,24 @@ func (m *Maps) background() {
 	}
 }
 
-type IP4 [4]byte
+// type IP4 [4]byte
+// type IP4 = ip4
+type ip4 [4]byte
 type MAC [6]byte
 
-const _IP4 = "%d.%d.%d.%d"
+const _ip4 = "%d.%d.%d.%d"
 const _MAC = "%02x:%02x:%02x:%02x:%02x:%02x"
 
-func (i *IP4) string() string { return fmt.Sprintf(_IP4, i[0], i[1], i[2], i[3]) }
+func (i *ip4) string() string { return fmt.Sprintf(_ip4, i[0], i[1], i[2], i[3]) }
 func (m *MAC) string() string { return fmt.Sprintf(_MAC, m[0], m[1], m[2], m[3], m[4], m[5]) }
 
-func (i IP4) String() string { return i.string() }
+func (i ip4) String() string { return i.string() }
 func (m MAC) String() string { return m.string() }
 
-func (i IP4) MarshalText() ([]byte, error) { return []byte(i.string()), nil }
+func (i ip4) MarshalText() ([]byte, error) { return []byte(i.string()), nil }
 func (m MAC) MarshalText() ([]byte, error) { return []byte(m.string()), nil }
 
-func (i *IP4) IsNil() bool { return i[0] == 0 && i[1] == 0 && i[2] == 0 && i[3] == 0 }
+func (i *ip4) IsNil() bool { return i[0] == 0 && i[1] == 0 && i[2] == 0 && i[3] == 0 }
 func (m *MAC) IsNil() bool {
 	return m[0] == 0 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[4] == 0 && m[5] == 0
 }
