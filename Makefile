@@ -70,4 +70,5 @@ release-checks:
 	$(MAKE) tests
 	$(MAKE) example
 	$(MAKE) distclean
+	git reset --hard
 	git status
