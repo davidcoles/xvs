@@ -20,6 +20,7 @@ package xvs
 
 import (
 	"fmt"
+	//"net"
 	"net/netip"
 	"time"
 
@@ -34,11 +35,11 @@ const (
 type Protocol = uint8
 
 type Service struct {
-	Address  netip.Addr
-	Port     uint16
-	Protocol Protocol
+	Address  netip.Addr // The Virtual IP address of the service
+	Port     uint16     // Layer 4 port number
+	Protocol Protocol   // IP protocol number; TCP (6), and UDP (17) are current supported
 
-	Sticky bool
+	Sticky bool // Only use source and destination IP addresses when determining backend
 
 	backend map[ip4]*Destination
 	state   *be_state
@@ -92,6 +93,10 @@ func (s *Service) dupp() *Service {
 
 func (s *Service) key() (key, error) {
 	return key{addr: s.Address, port: s.Port, prot: uint8(s.Protocol)}, nil
+}
+
+func (s *Service) key_() key {
+	return key{addr: s.Address, port: s.Port, prot: uint8(s.Protocol)}
 }
 
 func (s *Service) concurrent(m *maps) {
@@ -176,7 +181,7 @@ func (s *Service) destinations(maps *maps) map[ip4]DestinationExtended {
 	return destinations
 }
 
-func (s *Service) sync(arp map[ip4]MAC, tag map[netip.Addr]uint16, maps *maps) {
+func (s *Service) sync(arp map[ip4]mac, tag map[netip.Addr]uint16, maps *maps) {
 
 	port := s.Port
 	protocol := uint8(s.Protocol)
@@ -189,7 +194,7 @@ func (s *Service) sync(arp map[ip4]MAC, tag map[netip.Addr]uint16, maps *maps) {
 		for ip, real := range s.backend {
 			mac := arp[ip]
 			vid := tag[netip.AddrFrom4(ip)]
-			if !ip.IsNil() && !mac.IsNil() && real.Weight > 0 && vid < 4095 {
+			if !ip.isnil() && !mac.isnil() && real.Weight > 0 && vid < 4095 {
 				bpf_reals[ip] = bpf_real{rip: ip, mac: mac, vid: htons(vid)}
 			} else {
 				//fmt.Println("UNAVAILABLE", ip, mac, real.Weight, vid)
@@ -266,8 +271,8 @@ func (s *Service) delDestination(d *Destination, m *maps) {
 /**********************************************************************/
 
 type Destination struct {
-	Address netip.Addr
-	Weight  uint8
+	Address netip.Addr // Destinationserver IP address
+	Weight  uint8      // Not full implemented; 0 - don't use, non-zero enables the destination
 	current uint64
 }
 

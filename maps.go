@@ -41,17 +41,18 @@ import (
 )
 
 const (
-	FLOW_S  = bpf.FLOW_S
-	STATE_S = bpf.STATE_S
+	_FLOW_S  = bpf.FLOW_S
+	_STATE_S = bpf.STATE_S
 )
 
 // type maps = Maps
 // type Maps struct {
-type Maps = maps
+//type Maps = maps
 
 //go:embed bpf/bpf.o.gz
 var bpf_gz []byte
 
+// Return a copy of the eBPF code embedded into the library
 func BPF() ([]byte, error) {
 	z, err := gzip.NewReader(bytes.NewReader(bpf_gz))
 
@@ -107,8 +108,8 @@ type bpf_setting struct {
 type bpf_natkey struct {
 	src_ip  ip4 //__be32 src_ip;
 	dst_ip  ip4 //__be32 dst_ip;
-	src_mac MAC //__u8 src_mac[6];
-	dst_mac MAC //__u8 dst_mac[6];
+	src_mac mac //__u8 src_mac[6];
+	dst_mac mac //__u8 dst_mac[6];
 }
 
 type bpf_natval struct {
@@ -117,8 +118,8 @@ type bpf_natval struct {
 	dst_ip  ip4     //__be32 dst_ip;
 	vlan    uint16  //__u16 vlan;
 	_pad    [2]byte //__u8 _pad[2];
-	src_mac MAC     //__u8 src_mac[6];
-	dst_mac MAC     //__u8 dst_mac[6];
+	src_mac mac     //__u8 src_mac[6];
+	dst_mac mac     //__u8 dst_mac[6];
 }
 
 //var SETTINGS bpf_setting = bpf_setting{defcon: 5, distributed: 1}
@@ -174,7 +175,7 @@ type bpf_active struct {
 
 //type real_info struct {
 //	idx uint16
-//	mac MAC
+//	mac mac
 //}
 
 //type Target struct {
@@ -243,7 +244,7 @@ func (m *maps) ReadPrefixCounters() [PREFIXES]uint64 {
 	return prefixes
 }
 
-func (m *maps) update_redirect(vid uint16, mac MAC, idx uint32) {
+func (m *maps) update_redirect(vid uint16, mac mac, idx uint32) {
 	vid32 := uint32(vid)
 	xdp.BpfMapUpdateElem(m.redirect_mac(), uP(&vid32), uP(&(mac)), xdp.BPF_ANY)
 	xdp.BpfMapUpdateElem(m.redirect_map(), uP(&vid32), uP(&(idx)), xdp.BPF_ANY)
@@ -493,9 +494,9 @@ func htons(p uint16) [2]byte {
 	return hl
 }
 
-func arp() map[ip4]MAC {
+func arp() map[ip4]mac {
 
-	ip2mac := make(map[ip4]MAC)
+	ip2mac := make(map[ip4]mac)
 	ip2nic := make(map[ip4]*net.Interface)
 
 	re := regexp.MustCompile(`^(\S+)\s+0x1\s+0x[26]\s+(\S+)\s+\S+\s+(\S+)$`)
@@ -871,27 +872,27 @@ func (m *maps) background() {
 	}
 }
 
-// type IP4 [4]byte
-// type IP4 = ip4
+type b4 = [4]byte
+type b6 = [6]byte
+
 type ip4 [4]byte
-type MAC [6]byte
+type mac [6]byte
+type MAC = mac
+
+func b4s(i b4) string { return fmt.Sprintf(_ip4, i[0], i[1], i[2], i[3]) }
+func b6s(m b6) string { return fmt.Sprintf(_mac, m[0], m[1], m[2], m[3], m[4], m[5]) }
 
 const _ip4 = "%d.%d.%d.%d"
-const _MAC = "%02x:%02x:%02x:%02x:%02x:%02x"
+const _mac = "%02x:%02x:%02x:%02x:%02x:%02x"
 
-func (i *ip4) string() string { return fmt.Sprintf(_ip4, i[0], i[1], i[2], i[3]) }
-func (m *MAC) string() string { return fmt.Sprintf(_MAC, m[0], m[1], m[2], m[3], m[4], m[5]) }
+func (i ip4) String() string { return b4s(i) }
+func (m mac) String() string { return b6s(m) }
 
-func (i ip4) String() string { return i.string() }
-func (m MAC) String() string { return m.string() }
+func (i *ip4) MarshalText() ([]byte, error) { return []byte(b4s(*i)), nil }
+func (m *mac) MarshalText() ([]byte, error) { return []byte(b6s(*m)), nil }
 
-func (i ip4) MarshalText() ([]byte, error) { return []byte(i.string()), nil }
-func (m MAC) MarshalText() ([]byte, error) { return []byte(m.string()), nil }
-
-func (i *ip4) IsNil() bool { return i[0] == 0 && i[1] == 0 && i[2] == 0 && i[3] == 0 }
-func (m *MAC) IsNil() bool {
-	return m[0] == 0 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[4] == 0 && m[5] == 0
-}
+func (i ip4) isnil() bool { var nul ip4; return i == nul }
+func (m mac) isnil() bool { var nul mac; return m == nul }
 
 func nltoh(n [4]byte) uint32 {
 	return uint32(n[0])<<24 | uint32(n[1])<<16 | uint32(n[2])<<8 | uint32(n[0])

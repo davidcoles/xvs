@@ -23,15 +23,15 @@ import (
 	"os/exec"
 )
 
-const NAMESPACE = "vc5"
+const _NAMESPACE = "vc5"
 
-var IP ip4 = ip4{10, 255, 255, 254}
+var _IP ip4 = ip4{10, 255, 255, 254}
 
 type netns struct {
 	IdA      int
 	IfA, IfB string
 	IpA, IpB ip4
-	HwA, HwB MAC
+	HwA, HwB mac
 	//Index    int
 	NS string
 
@@ -53,12 +53,12 @@ func (n *netns) Init(ip ip4, out *net.Interface) error {
 		copy(n.phys.mac[:], out.HardwareAddr[:])
 	}
 
-	n.NS = NAMESPACE
-	n.IfA = NAMESPACE
-	n.IfB = NAMESPACE + "ns"
+	n.NS = _NAMESPACE
+	n.IfA = _NAMESPACE
+	n.IfB = _NAMESPACE + "ns"
 
-	n.IpA = [4]byte{IP[0], IP[1], 255, 253}
-	n.IpB = [4]byte{IP[0], IP[1], 255, 254}
+	n.IpA = [4]byte{_IP[0], _IP[1], 255, 253}
+	n.IpB = [4]byte{_IP[0], _IP[1], 255, 254}
 
 	clean(n.IfA, n.NS)
 

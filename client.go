@@ -56,19 +56,18 @@ func prot(p uint8) string {
 }
 
 type Client struct {
-	Interfaces []string
-	VLANs      map[uint16]net.IPNet
-	NAT        bool
-	Native     bool
-	Redirect   bool
-	Address    netip.Addr // find default interface when not in VLAN mode
-	Logger     Log
-
-	Share bool // share connection state via flow queue
+	Interfaces []string             // Name of Interfaces which should programmed with eBPF code
+	VLANs      map[uint16]net.IPNet // VLAN ID to IP subnet prefix mappings
+	NAT        bool                 // Create interfaces and namespace for performing healthchecks
+	Native     bool                 // Load eBPF program in native driver mode
+	Redirect   bool                 // Don't use VLAN tagging; use bpf_redirect_map() instead
+	Address    netip.Addr           // Address of the default interface when not in VLAN mode
+	Share      bool                 // Share connection state via flow queue
+	Logger     Log                  // Simple logging class
 
 	service map[key]*Service
 	ifaces  map[uint16]iface
-	hwaddr  map[ip4]MAC // IPv4 only
+	hwaddr  map[ip4]mac // IPv4 only
 	tags    map[netip.Addr]uint16
 
 	maps  *maps
@@ -126,9 +125,21 @@ func (c *Client) tag(i netip.Addr) uint16 {
 	return 0
 }
 
+func (c *Client) exists(s Service) bool {
+
+	_, ok := c.service[s.key_()]
+
+	return ok
+}
+
 func (c *Client) CreateService(s Service) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if c.exists(s) {
+		return errors.New("Service exists")
+	}
+
 	return c.setService(s, nil)
 }
 
@@ -140,19 +151,15 @@ func (c *Client) RemoveService(s Service) error {
 		return errors.New("Not IPv4")
 	}
 
-	svc, err := s.key()
+	key := s.key_()
 
-	if err != nil {
-		return err
-	}
-
-	service, ok := c.service[svc]
+	service, ok := c.service[key]
 
 	if !ok {
 		return errors.New("Service does not exist")
 	}
 
-	delete(c.service, svc)
+	delete(c.service, key)
 
 	var more bool
 
@@ -238,7 +245,7 @@ func (c *Client) setService(s Service, dst []Destination) error {
 
 	if !ok {
 		service = s.dupp()
-		c.log().INFO("service", kv{"event": "new-service", "vip": vip, "port": svc.port, "protocol": svc.prot})
+		c.log().INFO("service", kv{"event": "new-service", "vip": b4s(vip), "port": svc.port, "protocol": svc.prot})
 		c.service[svc] = service
 	}
 
@@ -283,7 +290,7 @@ func (c *Client) Start() error {
 	phy := c.Interfaces
 
 	c.service = map[key]*Service{}
-	c.hwaddr = map[ip4]MAC{}
+	c.hwaddr = map[ip4]mac{}
 	c.ifaces = map[uint16]iface{}
 	c.tags = map[netip.Addr]uint16{}
 	c.natMap = natmap{}
@@ -460,20 +467,18 @@ func (c *Client) background() {
 	}
 }
 
-type b4 = [4]byte
-
-func (c *Client) tuples_() map[[2]b4]bool {
-	m := map[[2]b4]bool{}
-	for _, s := range c.service {
-		for r, _ := range s.backend {
-			if s.Address.Is4() {
-				v := s.Address.As4()
-				m[[2]b4{v, r}] = true
-			}
-		}
-	}
-	return m
-}
+//func (c *Client) tuples_() map[[2]b4]bool {
+//	m := map[[2]b4]bool{}
+//	for _, s := range c.service {
+//		for r, _ := range s.backend {
+//			if s.Address.Is4() {
+//				v := s.Address.As4()
+//				m[[2]b4{v, r}] = true
+//			}
+//		}
+//	}
+//	return m
+//}
 
 func (c *Client) tuples() map[[2]b4]bool {
 	tuples := map[[2]b4]bool{}
@@ -493,7 +498,7 @@ func (c *Client) arp() {
 }
 
 func (c *Client) update_mac(ips map[[4]byte]bool) bool {
-	hwaddr := map[ip4]MAC{}
+	hwaddr := map[ip4]mac{}
 
 	var changed bool
 
@@ -510,6 +515,9 @@ func (c *Client) update_mac(ips map[[4]byte]bool) bool {
 		old, ok := c.hwaddr[ip]
 
 		if !ok || new != old {
+
+			c.log().DEBUG("arp", kv{"ip": b4s(ip), "mac": b6s(new)})
+
 			changed = true
 		}
 
@@ -524,9 +532,9 @@ func (c *Client) update_mac(ips map[[4]byte]bool) bool {
 
 	c.hwaddr = hwaddr
 
-	if changed {
-		c.log().DEBUG("mac", kv{"hwaddr": hwaddr})
-	}
+	//if changed {
+	//	c.log().DEBUG("mac", kv{"hwaddr": hwaddr})
+	//}
 
 	return changed
 }
@@ -589,7 +597,9 @@ func (c *Client) Destinations(s Service) (destinations []DestinationExtended, e 
 	}
 
 	for rip, d := range service.destinations(c.maps) {
-		d.MAC = c.hwaddr[rip]
+		//mac := c.hwaddr[rip]
+		//d.MAC = mac[:]
+		d.MAC = MAC(c.hwaddr[rip])
 		destinations = append(destinations, d)
 	}
 
@@ -607,18 +617,18 @@ func (c *Client) natAddr(i uint16) ip4 {
 	return ip4{10, 255, ns[0], ns[1]}
 }
 
-func (b *Client) natEntry(vip, rip, nat ip4, realhw MAC, vlanid uint16, idx iface) (ret []natkeyval) {
+func (b *Client) natEntry(vip, rip, nat ip4, realhw mac, vlanid uint16, idx iface) (ret []natkeyval) {
 
 	vlanip := idx.ip4
 	vlanhw := idx.mac
 	vlanif := idx.idx
 
 	var vc5bip ip4 = b.netns.IpB
-	var vc5bhw MAC = b.netns.HwB
-	var vc5ahw MAC = b.netns.HwA
+	var vc5bhw mac = b.netns.HwB
+	var vc5ahw mac = b.netns.HwA
 	var vethif uint32 = uint32(b.netns.IdA)
 
-	if realhw.IsNil() {
+	if realhw.isnil() {
 		return
 	}
 
@@ -649,7 +659,7 @@ func (c *Client) natEntries() (nkv []natkeyval) {
 		vid := c.tags[netip.AddrFrom4(rip)]
 		idx := c.ifaces[vid]
 
-		if mac.IsNil() {
+		if mac.isnil() {
 			continue
 		}
 
@@ -718,7 +728,8 @@ func (c *Client) update_redirects() {
 		iface, _ := c.ifaces[vid]
 		iface, exists := c.ifaces[vid]
 		if exists {
-			c.log().DEBUG("redirect", kv{"vlan": vid, "mac": iface.mac, "index": iface.idx, "interface": iface.nic, "ip": iface.ip4})
+			log := kv{"vlan": vid, "mac": b6s(iface.mac), "index": iface.idx, "interface": iface.nic, "ip": b4s(iface.ip4)}
+			c.log().DEBUG("redirect", log)
 		}
 		c.maps.update_redirect(vid, iface.mac, iface.idx) // write nil value if not found
 	}
@@ -745,11 +756,11 @@ func (c *Client) nataddr(vip, rip ip4) (r ip4, _ bool) {
 }
 
 func (c *Client) Namespace() string {
-	return NAMESPACE
+	return _NAMESPACE
 }
 
 func (c *Client) NamespaceAddress() string {
-	return IP.String()
+	return _IP.String()
 }
 
 func (c *Client) Info() (i Info) {
@@ -805,8 +816,13 @@ func (c *Client) Service(s Service) (se ServiceExtended, e error) {
 	return service.extend(c.maps), nil
 }
 
+// Return a slice of bytes representing a flow from the eBPF program
+// in the kernel. This can be distributed (eg. via multicast) to other
+// load balancers and used to preserve flows during failover. When no
+// flows are available in the queue the slice returned will have
+// length zero.
 func (c *Client) ReadFlow() []byte {
-	var entry [FLOW_S + STATE_S]byte
+	var entry [_FLOW_S + _STATE_S]byte
 
 	if xdp.BpfMapLookupAndDeleteElem(c.maps.flow_queue(), nil, uP(&entry)) != 0 {
 		return nil
@@ -815,14 +831,15 @@ func (c *Client) ReadFlow() []byte {
 	return entry[:]
 }
 
+// Make a flow returned from ReadFlow() known to the local eBPF program.
 func (c *Client) WriteFlow(fs []byte) {
 
-	if len(fs) != FLOW_S+STATE_S {
+	if len(fs) != _FLOW_S+_STATE_S {
 		return
 	}
 
 	flow := uP(&fs[0])
-	state := uP(&fs[FLOW_S])
+	state := uP(&fs[_FLOW_S])
 	time := (*uint32)(state)
 	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
 	xdp.BpfMapUpdateElem(c.maps.flow_share(), flow, state, xdp.BPF_ANY)

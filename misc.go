@@ -50,9 +50,9 @@ func (s *Stats) add(a Stats) {
 	s.Current += a.Current
 }
 
-func (s Stats) String() string {
-	return fmt.Sprintf("p:%d o:%d f:%d", s.Packets, s.Octets, s.Flows)
-}
+//func (s Stats) String() string {
+//	return fmt.Sprintf("p:%d o:%d f:%d", s.Packets, s.Octets, s.Flows)
+//}
 
 // func update_backend(curr, prev *be_state) bool {
 func (curr *be_state) update_backend(prev *be_state) bool {
@@ -99,10 +99,10 @@ func (curr *be_state) update_backend(prev *be_state) bool {
 	curr.bpf_backend.hash, _ = maglev8192(mapper)
 
 	var rip ip4
-	var mac MAC
+	var mac mac
 	var vid [2]byte
 
-	if !curr.leastconns.IsNil() {
+	if !curr.leastconns.isnil() {
 		if n, ok := mapper[curr.leastconns]; ok {
 			flag[1] = curr.weight
 			rip = real[n].rip
@@ -186,7 +186,7 @@ func defaultInterface(addr ip4) *net.Interface {
 			continue
 		}
 
-		var mac MAC
+		var mac mac
 		copy(mac[:], i.HardwareAddr[:])
 
 		addr, err := i.Addrs()
@@ -248,7 +248,7 @@ func vlanInterface(prefix net.IPNet) (ret iface, _ bool) {
 			continue
 		}
 
-		var mac MAC
+		var mac mac
 		copy(mac[:], i.HardwareAddr[:])
 
 		addr, err := i.Addrs()
@@ -279,7 +279,7 @@ type natkeyval struct {
 type iface struct {
 	idx uint32
 	ip4 ip4
-	mac MAC
+	mac mac
 	nic string
 }
 

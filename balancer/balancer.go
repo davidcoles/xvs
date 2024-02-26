@@ -115,26 +115,6 @@ func main() {
 		client.CreateDestination(svc, dst)
 	}
 
-	/*
-		var dst []xvs.Destination
-		for _, r := range rip {
-			dst = append(dst, xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1})
-		}
-
-		svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
-		err = client.CreateService(svc)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		err = client.SetService(svc, dst)
-
-		if err != nil {
-			log.Fatal(err)
-		}
-	*/
-
 	sleep(60)
 
 	ss, _ := client.Services()

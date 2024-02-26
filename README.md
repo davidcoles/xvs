@@ -24,6 +24,8 @@ Layer 3 DSR and IPv6 support is planned.
 
 https://pkg.go.dev/github.com/davidcoles/xvs
 
+The API is based on the [Cloudflare IPVS library](https://github.com/cloudflare/ipvs) ([https://pkg.go.dev/github.com/cloudflare/ipvs#pkg-examples](Go reference)).
+
 ## Sample application
 
 A simple application in the `balancer/` directory will balance traffic
@@ -38,8 +40,7 @@ Compile/run with:
 Replace `ens192` with your ethernet interface name, `10.1.2.3` with
 the address of the machine you are running the program on,
 `192.168.101.1` with the VIP you want to use and `10.1.2.10-12` with
-any number of real server addresses. For this simple example
-everything needs to be on the same VLAN/subnet.
+any number of real server addresses.
 
 On a seperate client machine on the same subnet you should add a static route for the VIP, eg.:
 
