@@ -10,7 +10,7 @@ FLOW_SHARE_SIZE ?= 1000000  # 1M
 FLOW_QUEUE_SIZE ?= 10000
 
 example: bpfblob
-	cd balancer && $(MAKE)
+	cd cmd && $(MAKE)
 
 default: bpfblob
 
