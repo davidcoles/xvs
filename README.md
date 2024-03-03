@@ -28,14 +28,14 @@ The API is based on the [Cloudflare IPVS library](https://github.com/cloudflare/
 
 ## Sample application
 
-A simple application in the `balancer/` directory will balance traffic
+A simple application in the `cmd/` directory will balance traffic
 to a VIP (TCP port 80 by default, can be changed with flags) to a
 number of backend servers on the same IP subnet.
 
 Compile/run with:
  
 * `make example`
-* `balancer/balancer ens192 10.1.2.3 192.168.101.1 10.1.2.10 10.1.2.11 10.1.2.12`
+* `cmd/balancer ens192 10.1.2.3 192.168.101.1 10.1.2.10 10.1.2.11 10.1.2.12`
 
 Replace `ens192` with your ethernet interface name, `10.1.2.3` with
 the address of the machine you are running the program on,
