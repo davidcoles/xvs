@@ -48,11 +48,11 @@ libbpf/src/libbpf.a: libbpf
 
 clean:
 	#rm -f bpf/bpf.o bpf/bpf.o.gz
-	cd balancer && $(MAKE) clean
+	cd cmd && $(MAKE) clean
 
 distclean: clean
 	rm -rf libbpf
-	cd balancer && $(MAKE) distclean
+	cd cmd && $(MAKE) distclean
 
 debian-dependencies:
 	apt-get install build-essential libelf-dev clang libc6-dev llvm
