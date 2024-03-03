@@ -1,7 +1,6 @@
 package xvs
 
 type Log interface {
-	Println(...any)
 	EMERG(string, ...interface{})
 	ALERT(string, ...interface{})
 	CRIT(string, ...interface{})
@@ -14,7 +13,6 @@ type Log interface {
 
 type nul struct{}
 
-func (n *nul) Println(...any)         {}
 func (n *nul) EMERG(string, ...any)   {}
 func (n *nul) ALERT(string, ...any)   {}
 func (n *nul) CRIT(string, ...any)    {}

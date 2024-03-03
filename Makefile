@@ -47,7 +47,7 @@ libbpf/src/libbpf.a: libbpf
 	cd libbpf/src && $(MAKE)
 
 clean:
-	rm -f bpf/bpf.o bpf/bpf.o.gz
+	#rm -f bpf/bpf.o bpf/bpf.o.gz
 	cd balancer && $(MAKE) clean
 
 distclean: clean

@@ -14,17 +14,17 @@ by setting the CGO_CFLAGS and CGO_LDFLAGS environment variables to the
 location of the library (see the Makefile for an example of how to do
 this).
 
-The code implements an IPv4 Layer-2 Direct Server Return load
+The code implements an IPv4 layer 2 Direct Server Return load
 balancer. Backend servers need to be on the same VLAN as the load
 balancer. Multiple VLANs/interfaces are supported.
 
-Layer 3 DSR and IPv6 support is planned.
+SUpport for layer 3 DSR and IPv6 is planned.
 
 ## Documentation
 
 https://pkg.go.dev/github.com/davidcoles/xvs
 
-The API is based on the [Cloudflare IPVS library](https://github.com/cloudflare/ipvs) ([https://pkg.go.dev/github.com/cloudflare/ipvs#pkg-examples](Go reference)).
+The API is based on the [Cloudflare IPVS library](https://github.com/cloudflare/ipvs) [(Go reference)](https://pkg.go.dev/github.com/cloudflare/ipvs).
 
 ## Sample application
 
