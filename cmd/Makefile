@@ -14,8 +14,10 @@ BPFVER ?= v1.3.0
 export CGO_CFLAGS  = -I$(LIBBPF)
 export CGO_LDFLAGS = -L$(LIBBPF)
 
-build: libbpf/src/libbpf.a
-	go build -race
+default: balancer
+
+balancer: libbpf/src/libbpf.a
+	go build -o balancer -race
 
 libbpf:
 	git clone -b $(BPFVER) https://github.com/libbpf/libbpf

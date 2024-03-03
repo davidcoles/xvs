@@ -64,6 +64,7 @@ tests:
 # to be run before pushing back to origin
 release-checks:
 	output="$$(git status --untracked-files=no --porcelain)"; echo "$$output"; test -z "$$output"
+	rm -f bpf/bpf.o bpf/bpf.o.gz
 	$(MAKE) distclean
 	$(MAKE) tests
 	$(MAKE) example
