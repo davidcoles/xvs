@@ -859,7 +859,7 @@ func (m *maps) background() {
 	var era uint8
 	m.Era(era)
 
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 
 	for _ = range ticker.C {
 		era++
