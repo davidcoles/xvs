@@ -8,11 +8,11 @@
 # after inialsing the moudule, you can simply:
 # CGO_CFLAGS=-I/path/to/libbpf CGO_LDFLAGS=-L/path/to/libbpf go build
 
-LIBBPF := $(PWD)/libbpf/src
+LIBBPF := $(PWD)/libbpf
 BPFVER ?= v1.3.0
 
 export CGO_CFLAGS  = -I$(LIBBPF)
-export CGO_LDFLAGS = -L$(LIBBPF)
+export CGO_LDFLAGS = -L$(LIBBPF)/bpf
 
 default: balancer
 
@@ -22,8 +22,11 @@ balancer: libbpf/src/libbpf.a
 libbpf:
 	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
 
-libbpf/src/libbpf.a: libbpf
-	cd libbpf/src && $(MAKE)
+libbpf/bpf: libbpf
+	cd libbpf && ln -s src bpf
+
+libbpf/bpf/libbpf.a: libbpf/bpf
+	cd libbpf/bpf && $(MAKE)
 
 clean:
 	rm -f balancer
