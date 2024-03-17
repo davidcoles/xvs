@@ -16,7 +16,7 @@ export CGO_LDFLAGS = -L$(LIBBPF)/bpf
 
 default: balancer
 
-balancer: libbpf/src/libbpf.a
+balancer: libbpf/bpf/libbpf.a
 	go build -o balancer -race
 
 libbpf:
