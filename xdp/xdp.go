@@ -20,8 +20,8 @@ package xdp
 
 /*
 #cgo LDFLAGS: -l:libbpf.a -lelf -lz
-#include <bpf.h>
-#include <libbpf.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <sys/resource.h>
 #include "xdp.h"
 */

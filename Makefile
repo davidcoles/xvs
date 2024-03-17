@@ -1,8 +1,5 @@
-LIBBPF := $(PWD)/libbpf/src
+LIBBPF := $(PWD)/libbpf
 BPFVER ?= v1.3.0
-
-export CGO_CFLAGS  = -I$(LIBBPF)
-export CGO_LDFLAGS = -L$(LIBBPF)
 
 FLOW_STATE_TYPE ?= BPF_MAP_TYPE_LRU_PERCPU_HASH
 FLOW_STATE_SIZE ?= 1000000  # 1M
@@ -41,11 +38,13 @@ bpf/bpf.o.gz: bpf/bpf.o
 libbpf:
 	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
 
-libbpf/src/libbpf.a: libbpf
-	cd libbpf/src && $(MAKE)
+libbpf/bpf: libbpf
+	cd libbpf && ln -s src bpf
+
+libbpf/bpf/libbpf.a: libbpf/bpf
+	cd libbpf/bpf && $(MAKE)
 
 clean:
-	#rm -f bpf/bpf.o bpf/bpf.o.gz
 	cd cmd && $(MAKE) clean
 
 distclean: clean

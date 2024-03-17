@@ -1,5 +1,5 @@
-#include <bpf.h>
-#include <libbpf.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 
 #include <linux/if_link.h> /* depend on kernel-headers installed */
 #include <net/if.h>
