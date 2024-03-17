@@ -1,5 +1,4 @@
-LIBBPF := $(PWD)/libbpf
-BPFVER ?= v1.3.0
+LIBBPF := $(PWD)/cmd/libbpf
 
 FLOW_STATE_TYPE ?= BPF_MAP_TYPE_LRU_PERCPU_HASH
 FLOW_STATE_SIZE ?= 1000000  # 1M
@@ -17,7 +16,7 @@ bpfblob:
 bpf/bpf.o.gz: bpf/bpf.o
 	gzip -9 bpf/bpf.o
 
-%.o: %.c libbpf/bpf
+%.o: %.c cmd/libbpf/bpf
 	clang -S \
 	    -target bpf \
 	    -D FLOW_STATE_TYPE=$(FLOW_STATE_TYPE) \
@@ -35,20 +34,13 @@ bpf/bpf.o.gz: bpf/bpf.o
 	llc -march=bpf -filetype=obj -o $@ $*.ll
 	rm $*.ll
 
-libbpf:
-	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
-
-libbpf/bpf: libbpf
-	cd libbpf && ln -s src bpf
-
-libbpf/bpf/libbpf.a: libbpf/bpf
-	cd libbpf/bpf && $(MAKE)
+cmd/libbpf/bpf:
+	cd cmd && $(MAKE) libbpf/bpf
 
 clean:
 	cd cmd && $(MAKE) clean
 
 distclean: clean
-	rm -rf libbpf
 	cd cmd && $(MAKE) distclean
 
 debian-dependencies:
