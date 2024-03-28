@@ -8,8 +8,6 @@ FLOW_QUEUE_SIZE ?= 10000
 example: bpfblob
 	cd cmd && $(MAKE)
 
-default: bpfblob
-
 bpfblob:
 	test -f bpf/bpf.o.gz || $(MAKE) bpf/bpf.o.gz
 
@@ -40,11 +38,11 @@ cmd/libbpf/bpf:
 clean:
 	cd cmd && $(MAKE) clean
 
-distclean: clean
+distclean:
 	cd cmd && $(MAKE) distclean
 
-debian-dependencies:
-	apt-get install build-essential libelf-dev clang libc6-dev llvm
+debian-dependencies: # libc6-dev-i386 provides bits/libc-header-start.h
+	apt-get install build-essential libelf-dev clang libc6-dev llvm libc6-dev-i386
 
 cloc:
 	cloc *.go */*.go */*.h */*.c
