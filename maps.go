@@ -895,5 +895,5 @@ func (i ip4) isnil() bool { var nul ip4; return i == nul }
 func (m mac) isnil() bool { var nul mac; return m == nul }
 
 func nltoh(n [4]byte) uint32 {
-	return uint32(n[0])<<24 | uint32(n[1])<<16 | uint32(n[2])<<8 | uint32(n[0])
+	return uint32(n[0])<<24 | uint32(n[1])<<16 | uint32(n[2])<<8 | uint32(n[3])
 }
