@@ -1,26 +1,27 @@
-LIBBPF := $(PWD)/cmd/libbpf
+BPFVER ?= v1.3.0
+LIBBPF := $(PWD)/libbpf
 
-FLOW_STATE_TYPE ?= BPF_MAP_TYPE_LRU_PERCPU_HASH
-FLOW_STATE_SIZE ?= 1000000  # 1M
-FLOW_SHARE_SIZE ?= 1000000  # 1M
-FLOW_QUEUE_SIZE ?= 10000
+default: balancer
 
-example: bpfblob
-	cd cmd && $(MAKE)
+balancer: libbpf/src/libbpf.a blob
+	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -o $@ balancer.go
 
-bpfblob:
-	test -f bpf/bpf.o.gz || $(MAKE) bpf/bpf.o.gz
+blob: bpf/bpf.o.gz
 
-bpf/bpf.o.gz: bpf/bpf.o
-	gzip -9 bpf/bpf.o
+clean:
+	rm -f cmd/balancer
 
-%.o: %.c cmd/libbpf/bpf
+distclean: clean
+	rm -rf libbpf bpf/bpf.o.gz
+
+bpf/bpf.o.gz: bpf/bpf.c bpf/*.h
+	$(MAKE) bpf/bpf.o
+	rm -f bpf/bpf.o.gz
+	gzip bpf/bpf.o
+
+%.o: %.c libbpf/bpf
 	clang -S \
 	    -target bpf \
-	    -D FLOW_STATE_TYPE=$(FLOW_STATE_TYPE) \
-	    -D FLOW_STATE_SIZE=$(FLOW_STATE_SIZE) \
-	    -D FLOW_SHARE_SIZE=$(FLOW_SHARE_SIZE) \
-	    -D FLOW_QUEUE_SIZE=$(FLOW_QUEUE_SIZE) \
 	    -D __BPF_TRACING__ \
 	    -I$(LIBBPF) \
 	    -Wall \
@@ -32,31 +33,14 @@ bpf/bpf.o.gz: bpf/bpf.o
 	llc -march=bpf -filetype=obj -o $@ $*.ll
 	rm $*.ll
 
-cmd/libbpf/bpf:
-	cd cmd && $(MAKE) libbpf/bpf
+libbpf:
+	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
 
-clean:
-	cd cmd && $(MAKE) clean
+libbpf/bpf: libbpf
+	cd libbpf && ln -s src bpf
 
-distclean:
-	cd cmd && $(MAKE) distclean
-
-debian-dependencies: # libc6-dev-i386 provides bits/libc-header-start.h
-	apt-get install build-essential libelf-dev clang libc6-dev llvm libc6-dev-i386
+libbpf/src/libbpf.a: libbpf
+	cd libbpf/src && $(MAKE)
 
 cloc:
-	cloc *.go */*.go */*.h */*.c
-
-tests:
-	cd maglev/ && go test -v
-
-# to be run before pushing back to origin
-release-checks:
-	output="$$(git status --untracked-files=no --porcelain)"; echo "$$output"; test -z "$$output"
-	rm -f bpf/bpf.o bpf/bpf.o.gz
-	$(MAKE) distclean
-	$(MAKE) tests
-	$(MAKE) example
-	$(MAKE) distclean
-	git reset --hard
-	git status
+	cloc *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h

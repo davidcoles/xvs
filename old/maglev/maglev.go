@@ -1,5 +1,5 @@
 /*
- * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
+ * VC5 load balancer. Copyright (C) 2021-present David Coles
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -45,6 +45,7 @@ func Maglev(prime uint64, nodes [][]byte) (table []uint64) {
 	table = make([]uint64, prime)
 
 	for n, node := range nodes {
+		//h := md5.Sum(node)
 		h := sha256.Sum256(node)
 		hi := (uint64(h[0]) << 24) | (uint64(h[1]) << 16) | (uint64(h[2]) << 8) | (uint64(h[3]))
 		lo := (uint64(h[4]) << 24) | (uint64(h[5]) << 16) | (uint64(h[6]) << 8) | (uint64(h[7]))

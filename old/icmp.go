@@ -1,5 +1,5 @@
 /*
- * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
+ * VC5 load balancer. Copyright (C) 2021-present David Coles
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,7 +27,7 @@ type icmp struct {
 	submit chan string
 }
 
-func (i *icmp) start() error {
+func (i *icmp) Start() error {
 
 	conn, err := net.ListenPacket("ip4:icmp", "")
 	if err != nil {
@@ -35,47 +35,53 @@ func (i *icmp) start() error {
 	}
 
 	i.submit = make(chan string, 1000)
-
-	payload := func() []byte {
-		var wb [8]byte
-		var csum uint32
-		var cs uint16
-
-		wb[0], wb[1] = 8, 0 // Echo Request
-
-		for n := 0; n < 8; n += 2 {
-			csum += uint32(uint16(wb[n])<<8 | uint16(wb[n+1]))
-		}
-
-		cs = uint16(csum>>16) + uint16(csum&0xffff)
-		cs = ^cs
-
-		wb[2], wb[3] = byte(cs>>8), byte(cs&0xff)
-
-		return wb[:]
-	}
-
-	go func(conn net.PacketConn, submit chan string) {
-		defer conn.Close()
-
-		for t := range submit {
-			conn.SetWriteDeadline(time.Now().Add(time.Second))
-			go func(target string) {
-				conn.WriteTo(payload(), &net.IPAddr{IP: net.ParseIP(target)})
-			}(t)
-		}
-	}(conn, i.submit)
+	go i.probe(conn)
 
 	return nil
 }
 
-func (i *icmp) ping(target string) {
+func (s *icmp) Ping(target string) {
 	select {
-	case i.submit <- target:
+	case s.submit <- target:
 	default:
 	}
 }
 
-func (s *icmp) stop() {
+func (s *icmp) Stop() {
 	close(s.submit)
+}
+
+func (s *icmp) echoRequest() []byte {
+
+	var csum uint32
+	wb := make([]byte, 8)
+
+	wb[0] = 8
+	wb[1] = 0
+
+	for n := 0; n < 8; n += 2 {
+		csum += uint32(uint16(wb[n])<<8 | uint16(wb[n+1]))
+	}
+
+	var cs uint16
+
+	cs = uint16(csum>>16) + uint16(csum&0xffff)
+	cs = ^cs
+
+	wb[2] = byte(cs >> 8)
+	wb[3] = byte(cs & 0xff)
+
+	return wb
+}
+
+func (s *icmp) probe(conn net.PacketConn) {
+
+	defer conn.Close()
+
+	for t := range s.submit {
+		conn.SetWriteDeadline(time.Now().Add(time.Second))
+		go func(target string) {
+			conn.WriteTo(s.echoRequest(), &net.IPAddr{IP: net.ParseIP(target)})
+		}(t)
+	}
 }

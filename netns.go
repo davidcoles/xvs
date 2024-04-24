@@ -1,5 +1,5 @@
 /*
- * VC5 load balancer. Copyright (C) 2021-present David Coles
+ * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,89 +19,90 @@
 package xvs
 
 import (
+	"fmt"
 	"net"
 	"os/exec"
+	"time"
+
+	"github.com/davidcoles/xvs/xdp"
 )
 
-const _NAMESPACE = "vc5"
+type ip4 [4]byte
+type mac [6]byte
 
-var _IP ip4 = ip4{10, 255, 255, 254}
+func (i *ip4) String() string { return b4s(*i) }
+func (m *mac) String() string { return b6s(*m) }
 
 type netns struct {
-	IdA      int
-	IfA, IfB string
-	IpA, IpB ip4
-	HwA, HwB mac
-	//Index    int
-	NS string
-
-	//xPhysif uint32
-	//xPhyshw MAC
-	//xPhysip ip4
-	phys iface
+	a, b nic
+	ns   string
 }
 
-func (n *netns) Init(ip ip4, out *net.Interface) error {
+func (n *netns) namespace() string { return n.ns }
+func (n *netns) addr() [4]byte     { return n.b.ip4 }
+func (n *netns) mac() [6]byte      { return n.b.mac }
+func (n *netns) xthis() [6]byte    { return n.a.mac }
+func (n *netns) id() uint32        { return uint32(n.a.idx) }
+func (n *netns) nat(i uint16) ip4  { return ip4{n.a.ip4[0], n.a.ip4[1], byte(i >> 8), byte(i & 0xff)} }
 
-	//n.xPhysip = ip
-	//n.xPhysif = uint32(out.Index)
-	//copy(n.xPhyshw[:], out.HardwareAddr[:])
+func nat(x *xdp.XDP, fwd string, pass string) (*netns, error) {
 
-	if out != nil {
-		n.phys.ip4 = ip
-		n.phys.idx = uint32(out.Index)
-		copy(n.phys.mac[:], out.HardwareAddr[:])
+	namespace := "vc5"
+
+	var n netns
+	n.ns = namespace
+	n.a.nic = namespace
+	n.b.nic = namespace + "ns"
+
+	var ip ip4 = ip4{10, 255, 255, 254}
+	n.a.ip4 = [4]byte{ip[0], ip[1], 255, 253}
+	n.b.ip4 = [4]byte{ip[0], ip[1], 255, 254}
+
+	if err := create_pair(n.a.nic, n.b.nic); err != nil {
+		return nil, err
 	}
 
-	n.NS = _NAMESPACE
-	n.IfA = _NAMESPACE
-	n.IfB = _NAMESPACE + "ns"
+	time.Sleep(time.Second * 1) // TODO race condition with assigned MACs
 
-	n.IpA = [4]byte{_IP[0], _IP[1], 255, 253}
-	n.IpB = [4]byte{_IP[0], _IP[1], 255, 254}
-
-	clean(n.IfA, n.NS)
-
-	err := setup1(n.IfA, n.IfB)
-	if err != nil {
-		return err
+	if iface, err := net.InterfaceByName(n.a.nic); err != nil {
+		return nil, err
+	} else {
+		copy(n.a.mac[:], iface.HardwareAddr[:])
+		n.a.idx = iface.Index
 	}
 
-	iface, err := net.InterfaceByName(n.IfA)
-	if err != nil {
-		return err
+	if iface, err := net.InterfaceByName(n.b.nic); err != nil {
+		return nil, err
+	} else {
+		copy(n.b.mac[:], iface.HardwareAddr[:])
+		n.b.idx = iface.Index
 	}
-	copy(n.HwA[:], iface.HardwareAddr[:])
 
-	//n.Index = iface.Index
-	n.IdA = iface.Index
-
-	iface, err = net.InterfaceByName(n.IfB)
-	if err != nil {
-		return err
+	if err := x.LoadBpfSection(fwd, false, uint32(n.a.idx)); err != nil {
+		return nil, err
 	}
-	copy(n.HwB[:], iface.HardwareAddr[:])
 
-	return nil
+	// this seems to be needed to make native mode hardware work
+	if err := x.LoadBpfSection(pass, true, uint32(n.b.idx)); err != nil {
+		return nil, err
+	}
+
+	if err := config_pair(n.ns, n.a, n.b); err != nil {
+		return nil, err
+	}
+
+	return &n, nil
 }
 
-func (n *netns) Open() error {
-	return setup2(n.NS, n.IfA, n.IfB, n.IpA, n.IpB)
-}
-
-func (n *netns) Close() { clean(n.IfA, n.NS) }
-
-/**********************************************************************/
-
-func clean(if1, ns string) {
+func (n *netns) clean() {
 	script := `
-    ip link del ` + if1 + ` >/dev/null 2>&1 || true
-    ip netns del ` + ns + ` >/dev/null 2>&1 || true
+    ip link del ` + n.a.nic + ` >/dev/null 2>&1 || true
+    ip netns del ` + n.ns + ` >/dev/null 2>&1 || true
 `
 	exec.Command("/bin/sh", "-e", "-c", script).Output()
 }
 
-func setup1(if1, if2 string) error {
+func create_pair(if1, if2 string) error {
 	script := `
 ip link del ` + if1 + ` >/dev/null 2>&1 || true
 ip link add ` + if1 + ` type veth peer name ` + if2 + `
@@ -110,23 +111,28 @@ ip link add ` + if1 + ` type veth peer name ` + if2 + `
 	return err
 }
 
-func setup2(ns, if1, if2 string, i1, i2 ip4) error {
-	ip1 := i1.String()
-	ip2 := i2.String()
-	cb := i1
+// can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32
+func config_pair(ns string, a, b nic) error {
+	ip1 := a.ip4.String()
+	ip2 := b.ip4.String()
+	cb := a.ip4
 	cb[2] = 0
 	cb[3] = 0
 	cbs := cb.String()
 
 	script := `
 ip netns del ` + ns + ` >/dev/null 2>&1 || true
-ip l set ` + if1 + ` up
-ip a add ` + ip1 + `/30 dev ` + if1 + `
+ip l set ` + a.nic + ` up
+ip a add ` + ip1 + `/30 dev ` + a.nic + `
 ip netns add ` + ns + `
-ip link set ` + if2 + ` netns ` + ns + `
-ip netns exec vc5 /bin/sh -c "ip l set ` + if2 + ` up && ip a add ` + ip2 + `/30 dev ` + if2 + ` && ip r replace default via ` + ip1 + ` && ip netns exec ` + ns + ` ethtool -K ` + if2 + ` tx off"
+ip link set ` + b.nic + ` netns ` + ns + `
+ip netns exec vc5 /bin/sh -c "ip l set ` + b.nic + ` up && ip a add ` + ip2 + `/30 dev ` + b.nic + ` && ip r replace default via ` + ip1 +
+		` && ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off"
 ip r replace ` + cbs + `/16 via ` + ip2 + `
 `
-	_, err := exec.Command("/bin/sh", "-e", "-c", script).Output()
-	return err
+	if _, err := exec.Command("/bin/sh", "-e", "-c", script).Output(); err != nil {
+		return fmt.Errorf("Error seting up netns: %s", err.Error())
+	}
+
+	return nil
 }

@@ -1,5 +1,5 @@
 /*
- * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
+ * VC5 load balancer. Copyright (C) 2021-present David Coles
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@ package xvs
 
 import (
 	"errors"
+	//"fmt"
 	"sync"
 )
 
@@ -27,7 +28,7 @@ var mutex sync.RWMutex
 
 type natmap map[[2]b4]uint16
 
-func (f natmap) add(v, r b4) uint16 {
+func (f natmap) Add(v, r b4) uint16 {
 	mutex.Lock()
 	defer mutex.Unlock()
 	k := [2]b4{v, r}
@@ -36,14 +37,21 @@ func (f natmap) add(v, r b4) uint16 {
 	return n
 }
 
-func (f natmap) get(v, r b4) uint16 {
+func (f natmap) Get(v, r b4) uint16 {
 	mutex.RLock()
 	defer mutex.RUnlock()
 	k := [2]b4{v, r}
 	return f[k]
 }
 
-func (f natmap) all() map[[2]b4]uint16 {
+func (f natmap) Del(v, r b4) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	k := [2]b4{v, r}
+	delete(f, k)
+}
+
+func (f natmap) All() map[[2]b4]uint16 {
 	mutex.RLock()
 	defer mutex.RUnlock()
 	m := map[[2]b4]uint16{}
@@ -53,7 +61,7 @@ func (f natmap) all() map[[2]b4]uint16 {
 	return m
 }
 
-func (f natmap) index() (b bool, e error) {
+func (f natmap) Index() (b bool, e error) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	m := map[uint16]bool{}
@@ -79,7 +87,8 @@ func (f natmap) index() (b bool, e error) {
 
 	return b, e
 }
-func (f natmap) rips() map[b4]bool {
+
+func (f natmap) RIPs() map[b4]bool {
 	mutex.RLock()
 	defer mutex.RUnlock()
 	rips := map[b4]bool{}
@@ -90,13 +99,14 @@ func (f natmap) rips() map[b4]bool {
 	return rips
 }
 
-func (f natmap) clean(m map[[2]b4]bool) (c bool) {
+func (f natmap) Clean(m map[[2]b4]bool) (c bool) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	for k, _ := range f {
 		if _, exists := m[k]; !exists {
 			c = true
 			delete(f, k)
+			//fmt.Println("REMOVING", k)
 		}
 	}
 	return

@@ -1,5 +1,5 @@
 /*
- * VC5 load balancer. Copyright (C) 2021-present David Coles
+ * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,13 +22,13 @@ package xdp
 #cgo LDFLAGS: -l:libbpf.a -lelf -lz
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include <sys/resource.h>
 #include "xdp.h"
 */
 import "C"
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"unsafe"
@@ -40,65 +40,12 @@ const (
 	BPF_EXIST   = C.BPF_EXIST
 )
 
-const RLIMIT_MEMLOCK = C.RLIMIT_MEMLOCK
-
 type XDP struct {
 	p unsafe.Pointer
+	m map[string]Map
 }
 
-func boolint(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-func (x *XDP) CheckMap(i int, ks, vs int) bool {
-
-	r := C.check_map_fd_info(C.int(i), C.int(ks), C.int(vs))
-
-	if r != 0 {
-		return false
-	}
-
-	return true
-}
-
-func (x *XDP) FindMap(m string, l ...int) int {
-	r := C.bpf_object__find_map_by_name((*C.struct_bpf_object)(x.p), C.CString(m))
-	if r == nil {
-		return -1
-	}
-	return int(C.bpf_map__fd(r))
-}
-
-func BpfMapUpdateElem(i int, k, v unsafe.Pointer, flags uint64) int {
-	return int(C.bpf_map_update_elem(C.int(i), k, v, C.ulonglong(flags)))
-}
-
-func BpfMapLookupAndDeleteElem(i int, k, v unsafe.Pointer) int {
-	return int(C.bpf_map_lookup_and_delete_elem(C.int(i), k, v))
-}
-
-func BpfMapDeleteElem(i int, k unsafe.Pointer) int {
-	return int(C.bpf_map_delete_elem(C.int(i), k))
-}
-
-func BpfMapLookupElem(i int, k, v unsafe.Pointer) int {
-	return int(C.bpf_map_lookup_elem(C.int(i), k, v))
-}
-
-func BpfNumPossibleCpus() int {
-	return int(C.libbpf_num_possible_cpus())
-}
-
-func KtimeGet() uint64 {
-	return uint64(C.ktime_get())
-}
-
-/**********************************************************************/
-
-func LoadBpfProgram(bindata []byte) (*XDP, error) {
+func LoadBpfFile(bindata []byte) (*XDP, error) {
 	tmpfile, err := ioutil.TempFile("/tmp", "balancer")
 	if err != nil {
 		return nil, err
@@ -113,22 +60,82 @@ func LoadBpfProgram(bindata []byte) (*XDP, error) {
 		return nil, err
 	}
 
-	var xdp XDP
+	var x XDP
 
-	xdp.p = C.load_bpf_file(C.CString(tmpfile.Name()))
+	x.m = map[string]Map{}
 
-	if xdp.p == nil {
+	x.p = unsafe.Pointer(C.load_bpf_prog(C.CString(tmpfile.Name())))
+
+	if x.p == nil {
 		return nil, errors.New("Unable to load eBPF")
 	}
 
-	return &xdp, nil
+	return &x, nil
 }
 
-func (xdp *XDP) LoadBpfSection(section string, native bool, eth string) error {
-	C.xdp_link_detach(C.CString(eth))
-	if C.load_bpf_section(xdp.p, C.CString(eth), C.CString(section), C.int(boolint(native))) != 0 {
-		return errors.New("load_bpf_section() failed for " + eth)
+func (x *XDP) LoadBpfSection(section string, native bool, iface uint32) error {
+	var n int
+
+	if native {
+		n = 1
+	}
+
+	//C.xdp_link_detach(C.int(iface))
+	if err := C.load_bpf_section(x.p, C.int(iface), C.CString(section), C.int(n)); err != 0 {
+		return fmt.Errorf("load_bpf_section() failed: %d", err)
 	}
 
 	return nil
+}
+
+func BpfNumPossibleCpus() int {
+	return int(C.libbpf_num_possible_cpus())
+}
+
+func (x *XDP) FindMap(m string, k, v int) (Map, error) {
+	r := C.bpf_object__find_map_by_name((*C.struct_bpf_object)(x.p), C.CString(m))
+	if r == nil {
+		return -1, fmt.Errorf("Couldn't find map %s", m)
+	}
+
+	i := int(C.bpf_map__fd(r))
+
+	if C.check_map_fd_info(C.int(i), C.int(k), C.int(v)) != 0 {
+		return -1, fmt.Errorf("Key/value size mismatch for map %s", m)
+	}
+
+	z := Map(i)
+	x.m[m] = z
+
+	return z, nil
+}
+
+func (x *XDP) Map(m string) Map {
+	return x.m[m]
+}
+
+type Map int
+
+func (m Map) LookupElem(k, v unsafe.Pointer) int {
+	return int(C.bpf_map_lookup_elem(C.int(m), k, v))
+}
+
+func (m Map) UpdateElem(k, v unsafe.Pointer, flags uint64) int {
+	return int(C.bpf_map_update_elem(C.int(m), k, v, C.ulonglong(flags)))
+}
+
+func (m Map) GetNextKey(k, n unsafe.Pointer) int {
+	return int(C.bpf_map_get_next_key(C.int(m), k, n))
+}
+
+func (m Map) DeleteElem(k unsafe.Pointer) int {
+	return int(C.bpf_map_delete_elem(C.int(m), k))
+}
+
+func (m Map) LookupAndDeleteElem(k, v unsafe.Pointer) int {
+	return int(C.bpf_map_lookup_and_delete_elem(C.int(m), k, v))
+}
+
+func KtimeGet() uint64 {
+	return uint64(C.ktime_get())
 }

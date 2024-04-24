@@ -16,7 +16,20 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-void *load_bpf_prog(char *);
-int load_bpf_section(void *, int, char *, int);
-int check_map_fd_info(int, int, int);
-__u64 ktime_get();
+enum {
+      F_STICKY     = 0x01,
+};
+
+enum {
+      VETH_ID = 4095,
+};
+
+enum {
+      F_NO_SHARE_FLOWS     = 0x01,
+      F_NO_TRACK_FLOWS     = 0x02,	    
+      F_NO_ESTIMATE_CONNS  = 0x04,
+      F_NO_STORE_STATS     = 0x08,
+      //F_BLOCKLIST   = 0x10,
+      //F_MULTINIC    = 0x20,
+      //F_DISABLED    = 0x40,
+};
