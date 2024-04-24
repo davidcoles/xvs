@@ -22,11 +22,10 @@ SUpport for layer 3 DSR and IPv6 is planned.
 
 ## NOTICE
 
-The eBPF code doesn't seem to work properly on Ubuntu 22.04
-(5.15.0-101-generic kernel). I've got a working replacement undergoing
-testing currently, but it is missing a couple of features like the
-flow queue for sharing flows between servers. Should be ready for release soon.
-
+I've reworked the library, prompted by issues getting the eBPF code to
+run under the verifier on Ubuntu 22.04. The counters for /20 prefixes
+all return zero currently, but I think that the code is a lot better
+than previously.
 
 ## Documentation
 
