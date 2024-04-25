@@ -886,17 +886,17 @@ func (c *Client) Services() (services []ServiceExtended, e error) {
 	return
 }
 
-func (c *Client) SetService_(s Service, dst ...Destination) error {
+func (c *Client) SetService(s Service, dst ...Destination) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.setService(s, dst)
 }
 
-func (c *Client) SetService(s Service, dst []Destination) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.setService(s, dst)
-}
+//func (c *Client) SetService(s Service, dst []Destination) error {
+//	c.mutex.Lock()
+//	defer c.mutex.Unlock()
+//	return c.setService(s, dst)
+//}
 
 func (c *Client) CreateService(s Service) error {
 	c.mutex.Lock()
