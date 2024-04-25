@@ -39,7 +39,7 @@ libbpf:
 libbpf/bpf: libbpf
 	cd libbpf && ln -s src bpf
 
-libbpf/src/libbpf.a: libbpf/bpf
+libbpf/bpf/libbpf.a: libbpf/bpf
 	cd libbpf/bpf && $(MAKE)
 
 cloc:
