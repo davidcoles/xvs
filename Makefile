@@ -3,7 +3,7 @@ LIBBPF := $(PWD)/libbpf
 
 default: balancer
 
-balancer: libbpf/src/libbpf.a blob
+balancer: libbpf/bpf/libbpf.a blob
 	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -o $@ balancer.go
 
 blob: bpf/bpf.o.gz
@@ -39,8 +39,8 @@ libbpf:
 libbpf/bpf: libbpf
 	cd libbpf && ln -s src bpf
 
-libbpf/src/libbpf.a: libbpf
-	cd libbpf/src && $(MAKE)
+libbpf/src/libbpf.a: libbpf/bpf
+	cd libbpf/bpf && $(MAKE)
 
 cloc:
 	cloc *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
