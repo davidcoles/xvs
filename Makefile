@@ -1,5 +1,6 @@
-BPFVER ?= v1.3.0
-LIBBPF := $(PWD)/libbpf
+BPFVER  ?= v1.3.0
+LIBBPF  := $(PWD)/libbpf
+INCLUDE ?= 
 
 FLOW_STATE_SIZE ?= 1000000
 FLOW_QUEUE_SIZE ?= 10000
@@ -28,7 +29,7 @@ bpf/bpf.o.gz: bpf/bpf.c bpf/*.h
 	    -D FLOW_STATE_SIZE=$(FLOW_STATE_SIZE) \
 	    -D FLOW_QUEUE_SIZE=$(FLOW_QUEUE_SIZE) \
 	    -D __BPF_TRACING__ \
-	    -I$(LIBBPF) \
+	    -I$(LIBBPF) $(INCLUDE) \
 	    -Wall \
 	    -Werror \
 	    -Wno-unused-value \
