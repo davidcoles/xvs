@@ -34,7 +34,6 @@
 
 #define VERSION 1
 #define SECOND_NS 1000000000l
-#define FLOW_QUEUE_SIZE 10000
 
 #define SHARE_FLOWS(f)    (((f)&F_NO_SHARE_FLOWS)?0:1)
 #define TRACK_FLOWS(f)    (((f)&F_NO_TRACK_FLOWS)?0:1)
@@ -100,14 +99,14 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
     __type(key, struct flow);
     __type(value, struct state);
-    __uint(max_entries, 1000000l);
+    __uint(max_entries, FLOW_STATE_SIZE);
 } flow_state SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, struct flow);
     __type(value, struct state);
-    __uint(max_entries, 1000000l);
+    __uint(max_entries, FLOW_STATE_SIZE);
 } flow_share SEC(".maps");
 
 struct flow_queue_entry {

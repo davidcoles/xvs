@@ -1,6 +1,9 @@
 BPFVER ?= v1.3.0
 LIBBPF := $(PWD)/libbpf
 
+FLOW_STATE_SIZE ?= 1000000
+FLOW_QUEUE_SIZE ?= 10000
+
 default: balancer
 
 balancer: libbpf/bpf/libbpf.a blob
@@ -22,6 +25,8 @@ bpf/bpf.o.gz: bpf/bpf.c bpf/*.h
 %.o: %.c libbpf/bpf
 	clang -S \
 	    -target bpf \
+	    -D FLOW_STATE_SIZE=$(FLOW_STATE_SIZE) \
+	    -D FLOW_QUEUE_SIZE=$(FLOW_QUEUE_SIZE) \
 	    -D __BPF_TRACING__ \
 	    -I$(LIBBPF) \
 	    -Wall \
@@ -44,3 +49,5 @@ libbpf/bpf/libbpf.a: libbpf/bpf
 
 cloc:
 	cloc *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
+
+# apt install clang linux-libc-dev libc6-dev-i386
