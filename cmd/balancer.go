@@ -131,7 +131,7 @@ func main_() {
 		}
 	}()
 
-	time.Sleep(12 * time.Second)
+	time.Sleep(120 * time.Second)
 
 	services, _ := client.Services()
 
