@@ -96,6 +96,8 @@ streams at 2Gbps/3.8Mpps ingress traffic and 46.5Gbps egress. The
 server was more than 90% idle. Unfortunately I did not have the
 resources available to create more clients/servers. I realised that I
 carried this out when the server's profile was set to performance
-per-watt. Using the performance mode the CPU usage is barely 2%.
+per-watt. Using the performance mode the CPU usage is barely 2% and
+latencey is less than 250 nanoseconds.
 
+On a Raspberry Pi (B+) ... don't get your hopes up!
 
