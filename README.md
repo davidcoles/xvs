@@ -28,7 +28,13 @@ all return zero currently, but I think that the code is a lot better
 than previously.
 
 Now works on Raspberry Pi - although devices with constrained memory
-might have have issues loading in the default size flow state tables.
+might have have issues loading in the default size flow state tables,
+so you have have to rebuild the eBPF object file (see the
+`raspberrypi` target in the Makefile for dependencies).
+
+My wi-fi load balancer:
+
+`cmd/balancer wlan0 192.168.0.16 192.168.101.1 192.168.0.10 192.168.0.11`
 
 ## Documentation
 
@@ -88,4 +94,8 @@ physical cores, with hyperthreading enabled for 64 logical cores) and
 an Intel 10G 4P X710-T4L-t ethernet card, I was able to run 700K
 streams at 2Gbps/3.8Mpps ingress traffic and 46.5Gbps egress. The
 server was more than 90% idle. Unfortunately I did not have the
-resources available to create more clients/servers.
+resources available to create more clients/servers. I realised that I
+carried this out when the server's profile was set to performance
+per-watt. Using the performance mode the CPU usage is barely 2%.
+
+
