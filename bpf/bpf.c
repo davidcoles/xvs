@@ -39,6 +39,8 @@
 #define TRACK_FLOWS(f)    (((f)&F_NO_TRACK_FLOWS)?0:1)
 #define ESTIMATE_CONNS(f) (((f)&F_NO_ESTIMATE_CONNS)?0:1)
 #define STORE_STATS(f)    (((f)&F_NO_STORE_STATS)?0:1)
+#define TRACK_PREFIXES(f) (((f)&F_NO_PREFIXES)?0:1)
+#define BLOCK_PREFIXES(f) (((f)&F_NO_PREFIXES)?0:1)
 
 struct setting {
     __u32 heartbeat;
@@ -225,6 +227,25 @@ struct {
     __uint(max_entries, 65536);
 } nat_in SEC(".maps");
 
+
+struct prefixes {
+    __u64 allowed;
+    __u64 blocked;
+};
+    
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct prefixes);
+    __uint(max_entries, 1048576); // counters for each /20 network (16 /20s per /16)
+} prefix_counters SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 16384);
+} prefix_drop SEC(".maps");
 
 static __always_inline
 void be_tcp_concurrent(struct iphdr *ip, struct tcphdr *tcp, struct state *state, __u8 era)
@@ -439,6 +460,23 @@ struct destination find_backend(struct iphdr *ip, struct l4ports l4)
     return w;
 }
 
+static __always_inline int is_blocked(struct iphdr *ip) {
+    __u32 saddr = bpf_ntohl(ip->saddr);
+
+    if((saddr & 0xff000000) == 0x0a000000) return 0; // 10.0.0.0/8
+    if((saddr & 0xfff00000) == 0xac100000) return 0; // 172.16.0.0/12
+    if((saddr & 0xffff0000) == 0xc0800000) return 0; // 192.168.0.0/16
+    if((saddr & 0xe0000000) == 0xe0000000) return 0; // 224.0.0.0/4
+
+    __u32 s14 = saddr >> 18;
+    __u64 *drop = bpf_map_lookup_elem(&prefix_drop, &s14);
+
+    if (drop && *drop & pow64((saddr >> 12) & 0x3f)) // mask off lowest 6 bits and pass to pow()
+        return 1;
+
+    return 0;
+}
+
 static __always_inline
 int complete(struct global *global, __u64 start, int action)
 {
@@ -564,6 +602,23 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	if ((incoming = bpf_map_lookup_elem(&nat_in, &in)))
 	    goto do_nat;
     }
+
+    struct prefixes *prefix = NULL;
+
+    if (TRACK_PREFIXES(flags)) {
+	__u32 slash20 = bpf_ntohl(ip->saddr) >> 12; // obtain /20
+	prefix = bpf_map_lookup_elem(&prefix_counters, &slash20);
+    }
+    
+    if (BLOCK_PREFIXES(flags) && is_blocked(ip)) {
+	if (prefix) prefix->blocked++;
+	if (global) global->blocked++;
+	return complete(global, start, XDP_DROP);
+    }	
+
+    //complete(global, start, 0); global = NULL; // measure time to this point
+    
+    if (prefix) prefix->allowed++;	
     
     // look for traffic to VIP - balance
 

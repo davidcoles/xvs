@@ -654,6 +654,8 @@ const (
 	_settings        = "settings"
 	_flow_queue      = "flow_queue"
 	_flow_share      = "flow_share"
+	_prefix_counters = "prefix_counters"
+	_prefix_drop     = "prefix_drop"
 )
 
 func (c *Client) find_maps() error {
@@ -668,24 +670,24 @@ func (c *Client) find_maps() error {
 	redirect_s := int(unsafe.Sizeof(bpf_redirect{}))
 	setting_s := int(unsafe.Sizeof(bpf_setting{}))
 
-	type mapinfo struct {
+	maps := []struct {
 		name string
 		klen int
 		vlen int
-	}
-
-	maps := []mapinfo{
-		mapinfo{_redirect_map, int_s, int_s},
-		mapinfo{_redirect_mac, int_s, redirect_s},
-		mapinfo{_nat_out, int_s, nat_s},
-		mapinfo{_nat_in, nat_s, int_s},
-		mapinfo{_vrpp_counter, vrpp_s, counter_s},
-		mapinfo{_vrpp_concurrent, vrpp_s, int64_s},
-		mapinfo{_service_backend, service_s, backend_s},
-		mapinfo{_globals, int_s, global_s},
-		mapinfo{_settings, int_s, setting_s},
-		mapinfo{_flow_queue, 0, bpf.FLOW_S + bpf.STATE_S},
-		mapinfo{_flow_share, bpf.FLOW_S, bpf.STATE_S},
+	}{
+		{_redirect_map, int_s, int_s},
+		{_redirect_mac, int_s, redirect_s},
+		{_nat_out, int_s, nat_s},
+		{_nat_in, nat_s, int_s},
+		{_vrpp_counter, vrpp_s, counter_s},
+		{_vrpp_concurrent, vrpp_s, int64_s},
+		{_service_backend, service_s, backend_s},
+		{_globals, int_s, global_s},
+		{_settings, int_s, setting_s},
+		{_flow_queue, 0, bpf.FLOW_S + bpf.STATE_S},
+		{_flow_share, bpf.FLOW_S, bpf.STATE_S},
+		{_prefix_counters, int_s, 2 * int64_s}, // FIXME - create a struct
+		{_prefix_drop, int_s, int64_s},
 	}
 
 	for _, m := range maps {
@@ -709,6 +711,8 @@ func (c *Client) globals() xdp.Map         { return c.xdp.Map(_globals) }
 func (c *Client) settings() xdp.Map        { return c.xdp.Map(_settings) }
 func (c *Client) flow_queue() xdp.Map      { return c.xdp.Map(_flow_queue) }
 func (c *Client) flow_share() xdp.Map      { return c.xdp.Map(_flow_share) }
+func (c *Client) prefix_counters() xdp.Map { return c.xdp.Map(_prefix_counters) }
+func (c *Client) prefix_drop() xdp.Map     { return c.xdp.Map(_prefix_drop) }
 
 func (c *Client) lookup_vrpp_counter(v *bpf_vrpp, bc *bpf_counter) int {
 
@@ -1110,6 +1114,29 @@ func (c *Client) Info() (i Info) {
 const PREFIXES = 1048576
 
 func (c *Client) Prefixes() [PREFIXES]uint64 {
+
+	var prefixes [PREFIXES]uint64
+
+	for i, _ := range prefixes {
+
+		j := uint32(i)
+		p := make([][2]uint64, xdp.BpfNumPossibleCpus())
+
+		c.prefix_counters().LookupElem(uP(&j), uP(&(p[0])))
+
+		var x uint64
+
+		for _, v := range p {
+			x += v[0]
+		}
+
+		prefixes[i] = x
+	}
+
+	return prefixes
+}
+
+func (c *Client) xPrefixes() [PREFIXES]uint64 {
 	return [PREFIXES]uint64{}
 }
 func (c *Client) ReadFlow() []byte {
@@ -1134,4 +1161,17 @@ func (c *Client) WriteFlow(fs []byte) {
 	time := (*uint32)(state)
 	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
 	c.flow_share().UpdateElem(flow, state, xdp.BPF_ANY)
+}
+
+func (c *Client) Block(b [PREFIXES]bool) {
+	for i := uint32(0); i < PREFIXES/64; i++ {
+		var val uint64
+		for j := 0; j < 64; j++ {
+			if b[(int(i)*64)+j] {
+				val |= bpf.Pow64(j)
+			}
+		}
+
+		c.prefix_drop().UpdateElem(uP(&i), uP(&val), xdp.BPF_ANY)
+	}
 }

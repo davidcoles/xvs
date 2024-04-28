@@ -29,6 +29,7 @@ enum {
       F_NO_TRACK_FLOWS     = 0x02,	    
       F_NO_ESTIMATE_CONNS  = 0x04,
       F_NO_STORE_STATS     = 0x08,
+      F_NO_PREFIXES        = 0x10,
       //F_BLOCKLIST   = 0x10,
       //F_MULTINIC    = 0x20,
       //F_DISABLED    = 0x40,

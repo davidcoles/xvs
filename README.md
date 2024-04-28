@@ -27,6 +27,9 @@ run under the verifier on Ubuntu 22.04. The counters for /20 prefixes
 all return zero currently, but I think that the code is a lot better
 than previously.
 
+Now works on Raspberry Pi - although devices with constrained memory
+might have have issues loading in the default size flow state tables.
+
 ## Documentation
 
 https://pkg.go.dev/github.com/davidcoles/xvs
