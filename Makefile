@@ -59,4 +59,6 @@ raspberrypi:
 	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go # put Go in the path
 	apt install -y clang libc6-dev-armel-cross llvm # needed to rebuild the eBPF object
 
-
+bookworm-amd64:
+	apt install -y golang-1.19 libelf-dev clang llvm libc6-dev-i386
+	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go
