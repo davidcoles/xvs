@@ -167,6 +167,10 @@ func (c *Client) Start() error {
 		return err
 	}
 
+	for _, n := range nics {
+		c.xdp.LinkDetach(uint32(n.idx))
+	}
+
 	if c.xdp, err = xdp.LoadBpfFile(bpf_o); err != nil {
 		return err
 	}
@@ -194,16 +198,12 @@ func (c *Client) Start() error {
 		return fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
 	}
 
-	fmt.Printf("Creating maps for %d cores ", num_cpu)
 	for cpu := uint32(0); cpu < num_cpu; cpu++ {
-		if r := c.flow_states().CreateLruHash(cpu, "flow_state_inners", bpf.FLOW_S, bpf.STATE_S, uint32(max_entries)); r != 0 {
-			return fmt.Errorf("Unable to create flow state map for CPU %d %d %d %d %d %d", cpu, r, uint32(max_entries), bpf.FLOW_S, bpf.STATE_S, c.flow_states())
-		} else {
-			//fmt.Println(cpu, r)
-			fmt.Printf(".")
+		name := fmt.Sprintf("flow_state_inner_%d", cpu)
+		if r := c.flow_states().CreateLruHash(cpu, name, bpf.FLOW_S, bpf.STATE_S, uint32(max_entries)); r != 0 {
+			return fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
 		}
 	}
-	fmt.Println("done")
 
 	if c.NAT {
 		if c.netns, err = nat(c.xdp, "xdp_fwd_func", "xdp_pass_func"); err != nil {

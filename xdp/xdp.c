@@ -68,7 +68,7 @@ int load_bpf_section(void *o, int ifindex, char *name, int native) {
     int prog_fd = -1;
     int err;
 
-    xdp_link_detach(ifindex);
+    //xdp_link_detach(ifindex);
 
     __u32 xdp_flags = XDP_FLAGS_SKB_MODE;
     
