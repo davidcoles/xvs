@@ -2,6 +2,15 @@ BPFVER  ?= v1.3.0
 LIBBPF  := $(PWD)/libbpf
 INCLUDE ?= 
 
+# MAX_CPU_SUPPORT defines the size of a map which is an array of 32bit
+# pointers to LRU hash maps - one for each CPU core. The size should
+# be set to something that is larger than the number of cores that are
+# expected in any machine that this might run on. Setting it to
+# something absuredly high is not a problem because the storage used
+# is very small (in the order of 4 bytes x value). Memory usage will,
+# of course, scale with the number of cores you actually have.
+
+MAX_CPU_SUPPORT ?= 256
 FLOW_STATE_SIZE ?= 1000000
 FLOW_QUEUE_SIZE ?= 10000
 
@@ -28,6 +37,7 @@ bpf/bpf.o.gz: bpf/bpf.c bpf/*.h
 	    -target bpf \
 	    -D FLOW_STATE_SIZE=$(FLOW_STATE_SIZE) \
 	    -D FLOW_QUEUE_SIZE=$(FLOW_QUEUE_SIZE) \
+	    -D MAX_CPU_SUPPORT=$(MAX_CPU_SUPPORT) \
 	    -D __BPF_TRACING__ \
 	    -I$(LIBBPF) $(INCLUDE) \
 	    -Wall \
@@ -55,10 +65,13 @@ cloc:
 # to rebuild the eBPF object with lower memory use:
 #   make bpf/bpf.o.gz FLOW_STATE_SIZE=100000 INCLUDE=-I/usr/arm-linux-gnueabi/include
 raspberrypi:
-	apt install -y golang-1.19 libelf-dev           # needed to build the example binary
-	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go # put Go in the path
-	apt install -y clang libc6-dev-armel-cross llvm # needed to rebuild the eBPF object
+	apt install -y golang-1.19 libelf-dev clang llvm libc6-dev-armel-cross
+	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go || true
 
 bookworm-amd64:
 	apt install -y golang-1.19 libelf-dev clang llvm libc6-dev-i386
-	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go
+	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go || true
+
+jammy-amd64:
+	apt install -y golang-1.21 libelf-dev clang llvm libc6-dev-i386
+	ln -s /usr/lib/go-1.21/bin/go /usr/local/bin/go

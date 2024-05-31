@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -173,6 +174,36 @@ func (c *Client) Start() error {
 	if err = c.find_maps(); err != nil {
 		return err
 	}
+
+	// flow_share map has the same size as the inner map, so use this as a reference
+	max_entries := c.flow_share().MaxEntries()
+
+	if max_entries < 0 {
+		return fmt.Errorf("Error looking up size of the flow state map")
+	}
+
+	max_cpu := c.flow_states().MaxEntries()
+
+	if max_cpu < 0 {
+		return fmt.Errorf("Error looking up size of the CPU flow state map")
+	}
+
+	num_cpu := uint32(runtime.NumCPU())
+
+	if num_cpu > uint32(max_cpu) {
+		return fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
+	}
+
+	fmt.Printf("Creating maps for %d cores ", num_cpu)
+	for cpu := uint32(0); cpu < num_cpu; cpu++ {
+		if r := c.flow_states().CreateLruHash(cpu, "flow_state_inners", bpf.FLOW_S, bpf.STATE_S, uint32(max_entries)); r != 0 {
+			return fmt.Errorf("Unable to create flow state map for CPU %d %d %d %d %d %d", cpu, r, uint32(max_entries), bpf.FLOW_S, bpf.STATE_S, c.flow_states())
+		} else {
+			//fmt.Println(cpu, r)
+			fmt.Printf(".")
+		}
+	}
+	fmt.Println("done")
 
 	if c.NAT {
 		if c.netns, err = nat(c.xdp, "xdp_fwd_func", "xdp_pass_func"); err != nil {
@@ -656,6 +687,7 @@ const (
 	_flow_share      = "flow_share"
 	_prefix_counters = "prefix_counters"
 	_prefix_drop     = "prefix_drop"
+	_flow_states     = "flow_states"
 )
 
 func (c *Client) find_maps() error {
@@ -688,6 +720,7 @@ func (c *Client) find_maps() error {
 		{_flow_share, bpf.FLOW_S, bpf.STATE_S},
 		{_prefix_counters, int_s, 2 * int64_s}, // FIXME - create a struct
 		{_prefix_drop, int_s, int64_s},
+		{_flow_states, int_s, int_s},
 	}
 
 	for _, m := range maps {
@@ -713,6 +746,7 @@ func (c *Client) flow_queue() xdp.Map      { return c.xdp.Map(_flow_queue) }
 func (c *Client) flow_share() xdp.Map      { return c.xdp.Map(_flow_share) }
 func (c *Client) prefix_counters() xdp.Map { return c.xdp.Map(_prefix_counters) }
 func (c *Client) prefix_drop() xdp.Map     { return c.xdp.Map(_prefix_drop) }
+func (c *Client) flow_states() xdp.Map     { return c.xdp.Map(_flow_states) }
 
 func (c *Client) lookup_vrpp_counter(v *bpf_vrpp, bc *bpf_counter) int {
 

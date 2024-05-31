@@ -42,6 +42,7 @@
 #define TRACK_PREFIXES(f) (((f)&F_NO_PREFIXES)?0:1)
 #define BLOCK_PREFIXES(f) (((f)&F_NO_PREFIXES)?0:1)
 
+
 struct setting {
     __u32 heartbeat;
     __u8 era;
@@ -84,7 +85,7 @@ struct flow {
     __be32 daddr;
     __be16 sport;
     __be16 dport;
-};
+} flow_unused; // we need to declare an instance so that the array of maps code works
 
 struct state {
     __u32 time;
@@ -95,14 +96,14 @@ struct state {
     __u8 era;
     __u8 _pad;
     __u8 version;
-};
+} state_unused; // we need to declare an instance so that the array of maps code works
 
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
-    __type(key, struct flow);
-    __type(value, struct state);
-    __uint(max_entries, FLOW_STATE_SIZE);
-} flow_state SEC(".maps");
+//struct {
+//    __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
+//    __type(key, struct flow);
+//    __type(value, struct state);
+//    __uint(max_entries, FLOW_STATE_SIZE);
+//} xflow_state SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -247,6 +248,22 @@ struct {
     __uint(max_entries, 16384);
 } prefix_drop SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, MAX_CPU_SUPPORT);
+    __array(
+	    values,
+	    struct {
+		__uint(type, BPF_MAP_TYPE_LRU_HASH);
+		__type(key, struct flow);
+		__type(value, struct state);
+		__uint(max_entries, FLOW_STATE_SIZE);
+	    });    
+} flow_states SEC(".maps");
+
+
 static __always_inline
 void be_tcp_concurrent(struct iphdr *ip, struct tcphdr *tcp, struct state *state, __u8 era)
 {
@@ -291,28 +308,35 @@ void be_tcp_concurrent(struct iphdr *ip, struct tcphdr *tcp, struct state *state
 
 
 static __always_inline
-void store_tcp_flow(struct iphdr *ip, struct l4ports l4, struct destination dest, struct global *global)
+void store_tcp_flow(void *flow_state, struct iphdr *ip, struct l4ports l4, struct destination dest, struct global *global)
 {
+    if (!flow_state)
+	return;
+    
     char *m = dest.mac;
     __u64 time = bpf_ktime_get_ns() / SECOND_NS;
     struct flow flow = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = l4.source, .dport = l4.dest };
     struct state state = { .rip = dest.rip, .vid = dest.vlanid, .time = time, .mac = { m[0], m[1], m[2], m[3], m[4], m[5] } };
-    bpf_map_update_elem(&flow_state, &flow, &state, BPF_ANY);
+    //bpf_map_update_elem(&flow_state, &flow, &state, BPF_ANY);
+    bpf_map_update_elem(flow_state, &flow, &state, BPF_ANY);
     if (global)
 	global->new_flows++;
 }
 
-
 static __always_inline
-struct destination find_tcp_flow(struct iphdr *ip, struct tcphdr *tcp, __u32 start_s, __u8 era, struct global *global, int share)
+struct destination find_tcp_flow(void *flow_state, struct iphdr *ip, struct tcphdr *tcp, __u32 start_s, __u8 era, struct global *global, int share)
 {
     struct destination d = { .vlanid = 0, .result = DEST_NOT_FOUND };
+
+    if (!flow_state)
+	return d;
     
     if (tcp->syn)
 	return d;
 	
     struct flow flow = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
-    struct state *state = bpf_map_lookup_elem(&flow_state, &flow);
+    //struct state *state = bpf_map_lookup_elem(&flow_state, &flow);
+    struct state *state = bpf_map_lookup_elem(flow_state, &flow);
 
     if (state && (state->time + 120) > start_s) {
 	
@@ -359,7 +383,7 @@ struct destination find_tcp_flow(struct iphdr *ip, struct tcphdr *tcp, __u32 sta
 	maccpy(d.mac, state->mac);	
 
 	struct l4ports l4 = { .source = tcp->source, .dest =  tcp->dest };
-	store_tcp_flow(ip, l4, d, NULL);
+	store_tcp_flow(flow_state, ip, l4, d, NULL);
     }
 
     return d;
@@ -629,6 +653,13 @@ int xdp_fwd_func(struct xdp_md *ctx)
     struct destination dest = { .result = DEST_NOT_FOUND };
     struct l4ports l4;
 
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flow_state = NULL;
+
+    // look up the flow_state hash that we should use for this cpu core from the flow_states array_of_maps (if tracking enabled)
+    if (TRACK_FLOWS(flags))
+	flow_state = bpf_map_lookup_elem(&flow_states, &cpu_id);
+    
     switch (ip->protocol) {
 	
     case IPPROTO_TCP:	
@@ -642,8 +673,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	l4.source = tcp->source;
 	l4.dest = tcp->dest;
 
-	if (TRACK_FLOWS(flags))
-	    dest = find_tcp_flow(ip, tcp, start_s, setting->era, global, SHARE_FLOWS(flags));
+	//if (TRACK_FLOWS(flags))
+	dest = find_tcp_flow(flow_state, ip, tcp, start_s, setting->era, global, SHARE_FLOWS(flags));
 
 	if (dest.result == DEST_FOUND) {
 	    if(ESTIMATE_CONNS(flags))
@@ -657,8 +688,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    case DEST_NOT_AVAILABLE:
 		return complete(global, start, XDP_DROP);
 	    case DEST_FOUND:
-		if (TRACK_FLOWS(flags))
-		    store_tcp_flow(ip, l4, dest, global);
+		//if (TRACK_FLOWS(flags))
+		store_tcp_flow(flow_state, ip, l4, dest, global);
 		break;
 	    default:
 		return complete(global, start, XDP_DROP);

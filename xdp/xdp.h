@@ -20,3 +20,5 @@ void *load_bpf_prog(char *);
 int load_bpf_section(void *, int, char *, int);
 int check_map_fd_info(int, int, int);
 __u64 ktime_get();
+int create_lru_hash(int, int, const char *, int, int, int);
+int max_entries(int);
