@@ -29,7 +29,10 @@ clean:
 	rm -f cmd/balancer
 
 distclean: clean
-	rm -rf libbpf bpf/bpf.o.gz
+	rm -rf libbpf
+
+pristine: clean
+	rm -f bpf/bpf.o.gz
 
 bpf/bpf.o.gz: bpf/bpf.c bpf/*.h
 	$(MAKE) bpf/bpf.o

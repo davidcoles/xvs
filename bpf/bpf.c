@@ -96,7 +96,7 @@ struct state {
     __u8 era;
     __u8 _pad;
     __u8 version;
-};
+} state_unused; // we need to declare an instance so that the array of maps code works (not necessary with workaround below)
 
 //struct {
 //    __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
@@ -258,7 +258,7 @@ struct {
 	    struct {
 		__uint(type, BPF_MAP_TYPE_LRU_HASH);
 		__type(key, struct flow);
-		// strangely, this doesn't work for all systems, but the following workaround does:
+		// strangely, this doesn't work for all systems, but the following __u8 array workaround does:
 		//__type(value, struct state);
 		__type(value, __u8[sizeof(struct state)]);
 		__uint(max_entries, FLOW_STATE_SIZE);
