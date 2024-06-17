@@ -103,7 +103,24 @@ struct state {
 //    __type(key, struct flow);
 //    __type(value, struct state);
 //    __uint(max_entries, FLOW_STATE_SIZE);
-//} xflow_state SEC(".maps");
+//} flow_state SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, MAX_CPU_SUPPORT);
+    __array(
+	    values,
+	    struct {
+		__uint(type, BPF_MAP_TYPE_LRU_HASH);
+		__type(key, struct flow);
+		// strangely, this doesn't work for all systems, but the following __u8 array workaround does:
+		//__type(value, struct state);
+		__type(value, __u8[sizeof(struct state)]);
+		__uint(max_entries, FLOW_STATE_SIZE);
+	    });
+} flow_states SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -189,7 +206,7 @@ struct {
 
 struct redirect {
     __be32 addr;
-    __u32 index; // info only - not use valuse is in redirect_map
+    __u32 index; // info only, not used -  value is in redirect_map
     char dest[6];
     char source[6];
 };
@@ -247,24 +264,6 @@ struct {
     __type(value, __u64);
     __uint(max_entries, 16384);
 } prefix_drop SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-    __type(key, __u32);
-    __type(value, __u32);
-    __uint(max_entries, MAX_CPU_SUPPORT);
-    __array(
-	    values,
-	    struct {
-		__uint(type, BPF_MAP_TYPE_LRU_HASH);
-		__type(key, struct flow);
-		// strangely, this doesn't work for all systems, but the following __u8 array workaround does:
-		//__type(value, struct state);
-		__type(value, __u8[sizeof(struct state)]);
-		__uint(max_entries, FLOW_STATE_SIZE);
-	    });    
-} flow_states SEC(".maps");
-
 
 static __always_inline
 void be_tcp_concurrent(struct iphdr *ip, struct tcphdr *tcp, struct state *state, __u8 era)
