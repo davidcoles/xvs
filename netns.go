@@ -107,8 +107,10 @@ func create_pair(if1, if2 string) error {
 ip link del ` + if1 + ` >/dev/null 2>&1 || true
 ip link add ` + if1 + ` type veth peer name ` + if2 + `
 `
-	_, err := exec.Command("/bin/sh", "-e", "-c", script).Output()
-	return err
+	if _, err := exec.Command("/bin/sh", "-e", "-c", script).Output(); err != nil {
+		return fmt.Errorf("Error creating netns pair: %s", err.Error())
+	}
+	return nil
 }
 
 // can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32

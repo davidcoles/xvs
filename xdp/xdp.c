@@ -68,7 +68,7 @@ int load_bpf_section(void *o, int ifindex, char *name, int native) {
     int prog_fd = -1;
     int err;
 
-    xdp_link_detach(ifindex);
+    //xdp_link_detach(ifindex);
 
     __u32 xdp_flags = XDP_FLAGS_SKB_MODE;
     
@@ -94,6 +94,21 @@ int load_bpf_section(void *o, int ifindex, char *name, int native) {
     }
 
     return 0;
+}
+
+int max_entries(int map_fd) {
+    struct bpf_map_info info = { 0 };
+    __u32 info_len = sizeof(info);
+    int err;
+    
+    if (map_fd < 0)
+        return -1;
+
+    err = bpf_obj_get_info_by_fd(map_fd, &info, &info_len);
+    if (err != 0)
+        return -1;
+
+    return info.max_entries;
 }
 
 int check_map_fd_info(int map_fd, int ks, int vs) {
@@ -134,4 +149,15 @@ __u64 ktime_get() {
         return 0;
 
     return (__u64) tp.tv_sec;
+}
+
+int create_lru_hash(int outer_fd, int index, const char *name, int key_size, int val_size, int max_entries) {
+    int fd;
+
+    fd = bpf_map_create(BPF_MAP_TYPE_LRU_HASH, name, key_size, val_size, max_entries, NULL);
+
+    if (fd < 0)
+	return fd;
+    
+    return bpf_map_update_elem(outer_fd, &index, &fd, BPF_ANY);
 }

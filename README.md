@@ -3,36 +3,37 @@
 An XDP/eBPF load balancer and Go API for Linux.
 
 This code is originally from the
-[VC5](https://github.com/davidcoles/vc5) load balancer, and has been
+[vc5](https://github.com/davidcoles/vc5) load balancer, and has been
 split out to be developed seperately.
 
-The eBPF object file is committed to this repository which means that
-it can be used as a standard Go module without having to build the
-binary as a seperate step. [libbpf](https://github.com/libbpf/libbpf)
-is still required but this will be linked in the standard CGO manner
-by setting the CGO_CFLAGS and CGO_LDFLAGS environment variables to the
-location of the library (see the Makefile for an example of how to do
-this).
+This code implements an IPv4 layer 2 Direct Server Return load
+balancer with an eBPF data plane that is loaded into the kernel and a
+supporting Go library to configure the balancer through the XDP
+API. Backend servers need share a VLAN with the load balancer.
+Multiple VLANs/interfaces are supported.
 
-The code implements an IPv4 layer 2 Direct Server Return load
-balancer. Backend servers need to be on the same VLAN as the load
-balancer. Multiple VLANs/interfaces are supported.
+The ELF object file is committed to this repository (main branch) and
+is accessed via Go's embed feature, which means that it can be used as a
+standard Go module without having to build the binary as a seperate
+step. [libbpf](https://github.com/libbpf/libbpf) is still required for
+linking programs using the library (CGO_CFLAGS and CGO_LDFLAGS
+environment variables may need to be used to specify the location of the
+library - see the Makefile for an example of how to do this).
 
-SUpport for layer 3 DSR and IPv6 is planned.
+Support for layer 3 DSR and IPv6 is planned.
 
-## NOTICE
+# Portability
 
-I've reworked the library, prompted by issues getting the eBPF code to
-run under the verifier on Ubuntu 22.04. The counters for /20 prefixes
-all return zero currently, but I think that the code is a lot better
-than previously.
+eBPF code is JITted to the native instruction set at runtime, so this
+should run on any Linux architecture. Currently AMD64 and ARM
+(Raspberry Pi) are confirmed to work.
 
-Now works on Raspberry Pi - although devices with constrained memory
-might have have issues loading in the default size flow state tables,
-so you have have to rebuild the eBPF object file (see the
-`raspberrypi` target in the Makefile for dependencies).
+Devices with constrained memory might have issues loading in the
+default size flow state tables, so you may have to rebuild the eBPF
+object file overriding the defaults (see the `raspberrypi` target in
+the Makefile).
 
-My wi-fi load balancer:
+Pi wi-fi load balancer:
 
 `cmd/balancer wlan0 192.168.0.16 192.168.101.1 192.168.0.10 192.168.0.11`
 
@@ -40,7 +41,9 @@ My wi-fi load balancer:
 
 https://pkg.go.dev/github.com/davidcoles/xvs
 
-The API is based on the [Cloudflare IPVS library](https://github.com/cloudflare/ipvs) [(Go reference)](https://pkg.go.dev/github.com/cloudflare/ipvs).
+The API is loosely modelled on the [Cloudflare IPVS
+library](https://github.com/cloudflare/ipvs) [(Go
+reference)](https://pkg.go.dev/github.com/cloudflare/ipvs).
 
 ## Sample application
 
@@ -68,12 +71,11 @@ You should then be able to contact the service:
 
 No healthchecking is done, so you'll have to make sure that a
 webserver is running on the real servers and that the VIP has been
-configured on the loopback address on them (`ip a add 192.168.101.1 dev lo`).
-
+configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
 
 A more complete example with health check and BGP route health
 injection is currently available at
-[VC5](https://github.com/davidcoles/vc5).
+[vc5](https://github.com/davidcoles/vc5).
 
 
 ## Performance
@@ -101,3 +103,17 @@ latencey is less than 250 nanoseconds.
 
 On a Raspberry Pi (B+) ... don't get your hopes up!
 
+## Recalcitrant cards
+
+I'm currently investigating issues with the Intel X710 card. We have
+had issues getting the NIC to bring up links (particularly after
+switch reboot), though this may be due to SFP+ module/optics. I've
+been able to force a renegotiation with ethtool -r, but this then has
+the effect of breaking XDP. This seems to be fixable by reattaching
+the BPF section, so I have added a function to carry this out. The
+generic driver did not show this problem.
+
+This has been extremely disappointing as the Intel X520 card (as well
+as an older Intel 1Gbps card that I can't remember the model of)
+worked perfectly, and pulling/reinserting cables on a bond behaved
+exactly as I would have hoped.

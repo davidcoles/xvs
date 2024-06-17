@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -81,10 +82,7 @@ type Client struct {
 	Address    netip.Addr
 	VLANs      map[uint16]net.IPNet
 	Debug      Debug
-
-	Redirect bool // obsolete
-	Share    bool // obsolete
-	Logger   any  // obsolete
+	InitDelay  uint8
 
 	icmp   *icmp
 	xdp    *xdp.XDP
@@ -98,6 +96,7 @@ type Client struct {
 	tags    map[netip.Addr]int16
 	hwaddr  map[ip4]mac // IPv4 only
 	vlans   map[uint16]nic
+	nics    map[string]nic
 
 	phys    nic
 	veth    bpf_redirect
@@ -119,6 +118,7 @@ func (c *Client) Start() error {
 	c.natmap = natmap{}
 	c.service = map[key]*service{}
 	c.tags = map[netip.Addr]int16{}
+	c.nics = map[string]nic{}
 	c.hwaddr = arp()
 	c.vlans = vlanInterfaces(c.VLANs)
 	c.icmp = &icmp{}
@@ -132,7 +132,7 @@ func (c *Client) Start() error {
 
 	addr := c.Address.As4()
 
-	nics := map[string]nic{}
+	//nics := map[string]nic{}
 
 	if len(c.Interfaces) < 1 {
 		return fmt.Errorf("At least one network interface must be supplied")
@@ -147,7 +147,7 @@ func (c *Client) Start() error {
 
 		n := nic{idx: iface.Index, nic: i}
 		copy(n.mac[:], iface.HardwareAddr[:])
-		nics[i] = n
+		c.nics[i] = n
 	}
 
 	iface := defaultInterface(net.IP(addr[:]))
@@ -166,6 +166,13 @@ func (c *Client) Start() error {
 		return err
 	}
 
+	delay := time.Duration(c.InitDelay) * time.Second
+
+	for _, n := range c.nics {
+		c.xdp.LinkDetach(uint32(n.idx))
+		time.Sleep(delay)
+	}
+
 	if c.xdp, err = xdp.LoadBpfFile(bpf_o); err != nil {
 		return err
 	}
@@ -174,16 +181,43 @@ func (c *Client) Start() error {
 		return err
 	}
 
+	// flow_share map has the same size as the inner map, so use this as a reference
+	max_entries := c.flow_share().MaxEntries()
+
+	if max_entries < 0 {
+		return fmt.Errorf("Error looking up size of the flow state map")
+	}
+
+	max_cpu := c.flow_states().MaxEntries()
+
+	if max_cpu < 0 {
+		return fmt.Errorf("Error looking up size of the CPU flow state map")
+	}
+
+	num_cpu := uint32(runtime.NumCPU())
+
+	if num_cpu > uint32(max_cpu) {
+		return fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
+	}
+
+	for cpu := uint32(0); cpu < num_cpu; cpu++ {
+		name := fmt.Sprintf("flow_state_inner_%d", cpu)
+		if r := c.flow_states().CreateLruHash(cpu, name, bpf.FLOW_S, bpf.STATE_S, uint32(max_entries)); r != 0 {
+			return fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
+		}
+	}
+
 	if c.NAT {
 		if c.netns, err = nat(c.xdp, "xdp_fwd_func", "xdp_pass_func"); err != nil {
 			return err
 		}
 	}
 
-	for _, n := range nics {
+	for _, n := range c.nics {
 		if err = c.xdp.LoadBpfSection("xdp_fwd_func", c.Native, uint32(n.idx)); err != nil {
 			return err
 		}
+		time.Sleep(delay)
 	}
 
 	if c.netns != nil {
@@ -202,6 +236,26 @@ func (c *Client) Start() error {
 	go c.concurrent()
 
 	return nil
+}
+
+// Rerun bpf_xdp_attach with the XDP forwarding eBPF code. This can be
+// used to correct an issue with some network cards/drivers which seem
+// to forget about the XDP hook (eg.: Intel X710) after being poked
+// with ethtool (ethtool -r was problematic for me). In a bonded
+// ethernet setup I have had sucess with removing a member from the
+// bond, running ethtool -r, reattaching eBPF and then re-introducting
+// to the bond, with short pauses between each step.
+func (c *Client) ReattachBPF(nic string) error {
+
+	n, ok := c.nics[nic]
+
+	if !ok {
+		return fmt.Errorf("Interface %s was not previously initialised", nic)
+	}
+
+	c.xdp.LinkDetach(uint32(n.idx))
+
+	return c.xdp.LoadBpfSection("xdp_fwd_func", c.Native, uint32(n.idx))
 }
 
 func (c *Client) write_bpf_redirects() {
@@ -656,6 +710,7 @@ const (
 	_flow_share      = "flow_share"
 	_prefix_counters = "prefix_counters"
 	_prefix_drop     = "prefix_drop"
+	_flow_states     = "flow_states"
 )
 
 func (c *Client) find_maps() error {
@@ -688,6 +743,7 @@ func (c *Client) find_maps() error {
 		{_flow_share, bpf.FLOW_S, bpf.STATE_S},
 		{_prefix_counters, int_s, 2 * int64_s}, // FIXME - create a struct
 		{_prefix_drop, int_s, int64_s},
+		{_flow_states, int_s, int_s},
 	}
 
 	for _, m := range maps {
@@ -713,6 +769,7 @@ func (c *Client) flow_queue() xdp.Map      { return c.xdp.Map(_flow_queue) }
 func (c *Client) flow_share() xdp.Map      { return c.xdp.Map(_flow_share) }
 func (c *Client) prefix_counters() xdp.Map { return c.xdp.Map(_prefix_counters) }
 func (c *Client) prefix_drop() xdp.Map     { return c.xdp.Map(_prefix_drop) }
+func (c *Client) flow_states() xdp.Map     { return c.xdp.Map(_flow_states) }
 
 func (c *Client) lookup_vrpp_counter(v *bpf_vrpp, bc *bpf_counter) int {
 
@@ -829,13 +886,14 @@ func (c *Client) write_settings() int {
 	var zero uint32
 
 	/*
-		all := make([]bpf_setting, xdp.BpfNumPossibleCpus())
+	        // no longer a percpu map
+			all := make([]bpf_setting, xdp.BpfNumPossibleCpus())
 
-		for n, _ := range all {
-			all[n] = c.setting
-		}
+			for n, _ := range all {
+				all[n] = c.setting
+			}
 
-		return c.settings().UpdateElem(uP(&zero), uP(&(all[0])), xdp.BPF_ANY)
+			return c.settings().UpdateElem(uP(&zero), uP(&(all[0])), xdp.BPF_ANY)
 	*/
 	s := c.setting
 	return c.settings().UpdateElem(uP(&zero), uP(&s), xdp.BPF_ANY)
@@ -854,6 +912,7 @@ func (c *Client) UpdateVLANs(vlans map[uint16]net.IPNet) {
 	}
 }
 
+// Retrieve the name of the network namespace that xvs is using
 func (c *Client) Namespace() string {
 	if c.netns == nil {
 		return ""
@@ -861,6 +920,8 @@ func (c *Client) Namespace() string {
 	return c.netns.namespace()
 }
 
+// Retrieve the IP address of the interface in the network namespace
+// that xvs is using
 func (c *Client) NamespaceAddress() string {
 	if c.netns == nil {
 		return ""
@@ -869,6 +930,10 @@ func (c *Client) NamespaceAddress() string {
 	return fmt.Sprintf("%d.%d.%d.%d", a[0], a[1], a[2], a[3])
 }
 
+// Return the NAT address of a virtual and real IP address pair -
+// traffic to this address will be translated to target the services
+// on the real server. This address can be used to query the services
+// for health checking purposes.
 func (c *Client) NATAddress(vip, rip netip.Addr) (r netip.Addr, _ bool) {
 	if !vip.Is4() || !rip.Is4() {
 		return r, false
@@ -1136,33 +1201,6 @@ func (c *Client) Prefixes() [PREFIXES]uint64 {
 	return prefixes
 }
 
-func (c *Client) xPrefixes() [PREFIXES]uint64 {
-	return [PREFIXES]uint64{}
-}
-func (c *Client) ReadFlow() []byte {
-	var entry [bpf.FLOW_S + bpf.STATE_S]byte
-
-	if c.flow_queue().LookupAndDeleteElem(nil, uP(&entry)) != 0 {
-		return nil
-	}
-
-	return entry[:]
-}
-
-// Make a flow returned from ReadFlow() known to the local eBPF program.
-func (c *Client) WriteFlow(fs []byte) {
-
-	if len(fs) != bpf.FLOW_S+bpf.STATE_S {
-		return
-	}
-
-	flow := uP(&fs[0])
-	state := uP(&fs[bpf.FLOW_S])
-	time := (*uint32)(state)
-	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
-	c.flow_share().UpdateElem(flow, state, xdp.BPF_ANY)
-}
-
 func (c *Client) Block(b [PREFIXES]bool) {
 	for i := uint32(0); i < PREFIXES/64; i++ {
 		var val uint64
@@ -1174,4 +1212,34 @@ func (c *Client) Block(b [PREFIXES]bool) {
 
 		c.prefix_drop().UpdateElem(uP(&i), uP(&val), xdp.BPF_ANY)
 	}
+}
+
+// Retrive a flow state descriptor from the kernel via a
+// queue. Retrieved descriptors can be shared with other load
+// balancers in a cluster to facilitate failover. If no more flows are
+// currently available then the length of the byte slice returned will
+// be zero.
+func (c *Client) ReadFlow() []byte {
+	var entry [bpf.FLOW_S + bpf.STATE_S]byte
+
+	if c.flow_queue().LookupAndDeleteElem(nil, uP(&entry)) != 0 {
+		return nil
+	}
+
+	return entry[:]
+}
+
+// Make a flow returned from ReadFlow() known to the local eBPF
+// program to facilitate cluster failover.
+func (c *Client) WriteFlow(fs []byte) {
+
+	if len(fs) != bpf.FLOW_S+bpf.STATE_S {
+		return
+	}
+
+	flow := uP(&fs[0])
+	state := uP(&fs[bpf.FLOW_S])
+	time := (*uint32)(state)
+	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
+	c.flow_share().UpdateElem(flow, state, xdp.BPF_ANY)
 }
