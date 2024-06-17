@@ -3,7 +3,7 @@
 An XDP/eBPF load balancer and Go API for Linux.
 
 This code is originally from the
-[VC5](https://github.com/davidcoles/vc5) load balancer, and has been
+[vc5](https://github.com/davidcoles/vc5) load balancer, and has been
 split out to be developed seperately.
 
 This code implements an IPv4 layer 2 Direct Server Return load
@@ -75,7 +75,7 @@ configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
 
 A more complete example with health check and BGP route health
 injection is currently available at
-[VC5](https://github.com/davidcoles/vc5).
+[vc5](https://github.com/davidcoles/vc5).
 
 
 ## Performance
@@ -103,3 +103,17 @@ latencey is less than 250 nanoseconds.
 
 On a Raspberry Pi (B+) ... don't get your hopes up!
 
+## Recalcitrant cards
+
+I'm currently investigating issues with the Intel X710 card. We have
+had issues getting the NIC to bring up links (particularly after
+switch reboot), though this may be due to SFP+ module/optics. I've
+been able to force a renegotiation with ethtool -r, but this then has
+the effect of breaking XDP. This seems to be fixable by reattaching
+the BPF section, so I have added a function to carry this out. The
+generic driver did not show this problem.
+
+This has been extremely disappointing as the Intel X520 card (as well
+as an older Intel 1Gbps card that I can't remember the model of)
+worked perfectly, and pulling/reinserting cables on a bond behaved
+exactly as I would have hoped.
