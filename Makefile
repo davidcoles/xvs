@@ -66,7 +66,8 @@ libbpf/bpf/libbpf.a: libbpf/bpf
 	cd libbpf/bpf && $(MAKE)
 
 cloc:
-	cloc *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
+	ls -1 */*_test.go > tests.txt
+	cloc --exclude-list-file=tests.txt *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
 
 tests:
 	(cd bpf/ && go test -v)

@@ -83,6 +83,7 @@ type Client struct {
 	VLANs      map[uint16]net.IPNet
 	Debug      Debug
 	InitDelay  uint8
+	MaxFlows   uint32
 
 	icmp   *icmp
 	xdp    *xdp.XDP
@@ -186,6 +187,10 @@ func (c *Client) Start() error {
 
 	if max_entries < 0 {
 		return fmt.Errorf("Error looking up size of the flow state map")
+	}
+
+	if c.MaxFlows > 0 {
+		max_entries = int(c.MaxFlows)
 	}
 
 	max_cpu := c.flow_states().MaxEntries()
