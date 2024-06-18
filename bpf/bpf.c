@@ -28,9 +28,9 @@
 #include <linux/udp.h>
 #include <linux/icmp.h>
 
-#include "consts.h"
 #include "vlan.h"
 #include "helpers.h"
+#include "imports.h"
 
 #define VERSION 1
 #define SECOND_NS 1000000000l
@@ -496,7 +496,7 @@ static __always_inline int is_blocked(struct iphdr *ip) {
     __u32 s14 = saddr >> 18;
     __u64 *drop = bpf_map_lookup_elem(&prefix_drop, &s14);
 
-    if (drop && *drop & pow64((saddr >> 12) & 0x3f)) // mask off lowest 6 bits and pass to pow()
+    if (drop && *drop & pow64((saddr >> 12) & 0x3f)) // mask off lowest 6 bits and pass to pow64()
         return 1;
 
     return 0;

@@ -68,6 +68,10 @@ libbpf/bpf/libbpf.a: libbpf/bpf
 cloc:
 	cloc *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
 
+tests:
+	(cd bpf/ && go test -v)
+	(cd maglev/ && go test -v)
+
 # For Raspberry Pi (I'm using "Raspberry Pi OS Lite (32 bit): Debian Bookworm"),
 # to rebuild the eBPF object with lower memory use:	
 #   make bpf/bpf.o.gz FLOW_STATE_SIZE=1000 INCLUDE=-I/usr/arm-linux-gnueabi/include

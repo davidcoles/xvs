@@ -34,3 +34,13 @@ enum {
       //F_MULTINIC    = 0x20,
       //F_DISABLED    = 0x40,
 };
+
+// https://github.com/davidcoles/xvs/issues/2
+static __always_inline
+__u64 pow64(__u8 n)
+{
+    if (n < 0 || n > 63)
+	return 0;
+    
+    return ((__u64) 1) << n;
+}

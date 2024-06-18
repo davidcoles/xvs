@@ -174,6 +174,7 @@ void ip_reply(struct iphdr *ip) {
 }
 
 
+/*
 // perl -e 'foreach(0..63) { printf "case %2d: return x & %016x;\n", $_, 2**$_ }'
 static __always_inline
 __u64 pow64(__u8 n)
@@ -246,3 +247,4 @@ __u64 pow64(__u8 n)
     }
     return 0;
 }
+*/

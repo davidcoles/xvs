@@ -886,14 +886,14 @@ func (c *Client) write_settings() int {
 	var zero uint32
 
 	/*
-	        // no longer a percpu map
-			all := make([]bpf_setting, xdp.BpfNumPossibleCpus())
+		        // no longer a percpu map
+				all := make([]bpf_setting, xdp.BpfNumPossibleCpus())
 
-			for n, _ := range all {
-				all[n] = c.setting
-			}
+				for n, _ := range all {
+					all[n] = c.setting
+				}
 
-			return c.settings().UpdateElem(uP(&zero), uP(&(all[0])), xdp.BPF_ANY)
+				return c.settings().UpdateElem(uP(&zero), uP(&(all[0])), xdp.BPF_ANY)
 	*/
 	s := c.setting
 	return c.settings().UpdateElem(uP(&zero), uP(&s), xdp.BPF_ANY)
@@ -1206,7 +1206,7 @@ func (c *Client) Block(b [PREFIXES]bool) {
 		var val uint64
 		for j := 0; j < 64; j++ {
 			if b[(int(i)*64)+j] {
-				val |= bpf.Pow64(j)
+				val |= bpf.Pow64(uint8(j))
 			}
 		}
 
