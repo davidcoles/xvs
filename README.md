@@ -31,11 +31,10 @@ should run on any Linux architecture. Currently AMD64 and ARM
 (Raspberry Pi) are confirmed to work.
 
 Devices with constrained memory might have issues loading in the
-default size flow state tables, so you may have to rebuild the eBPF
-object file overriding the defaults (see the `raspberrypi` target in
-the Makefile).
+default size flow state tables. This can now be overriden with the
+MaxFlows parameter on newer kernels.
 
-Pi Wi-Fi load balancer:
+Raspberry Pi Wi-Fi load balancer:
 
 `cmd/balancer wlan0 192.168.0.16 192.168.101.1 192.168.0.10 192.168.0.11`
 
@@ -96,7 +95,7 @@ is able to handle per second.
 On a single (non-virtualised) Intel Xeon Gold 6314U CPU (2.30GHz 32
 physical cores, with hyperthreading enabled for 64 logical cores) and
 an Intel 10G 4P X710-T4L-t ethernet card, I was able to run 700K
-streams at 2Gbps/3.8Mpps ingress traffic and 46.5Gbps egress. The
+streams with 2Gbps/3.8Mpps ingress traffic and 46.5Gbps egress. The
 server was more than 90% idle. Unfortunately I did not have the
 resources available to create more clients/servers. I realised that I
 carried this out when the server's profile was set to performance
@@ -115,7 +114,6 @@ the effect of breaking XDP. This seems to be fixable by reattaching
 the BPF section, so I have added a function to carry this out. The
 generic driver did not show this problem.
 
-This has been extremely disappointing as the Intel X520 card (as well
-as an older Intel 1Gbps card that I can't remember the model of)
-worked perfectly, and pulling/reinserting cables on a bond behaved
-exactly as I would have hoped.
+This has been extremely disappointing as the Intel X520 card worked
+perfectly, and pulling/reinserting cables on a bond behaved exactly as
+I would have hoped.
