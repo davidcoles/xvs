@@ -36,8 +36,9 @@ func main() {
 
 func main_() {
 
-	flows := flag.Uint("f", 0, "Flows")
+	flows := flag.Uint("f", 0, "Set size of flow state table")
 	port := flag.Int("p", 80, "Port to run service on")
+	dbg := flag.Bool("d", false, "Use debug interface")
 	udp := flag.Bool("u", false, "Use UDP instead of TCP")
 	nat := flag.Bool("n", false, "NAT (creates a network namespace and interfaces)")
 	flag.Var(&extra, "i", "extra interfaces")
@@ -56,6 +57,12 @@ func main_() {
 		log.Fatal("Port not in range 1-65535")
 	}
 
+	var debug *Debug
+
+	if *dbg {
+		debug = &Debug{}
+	}
+
 	link := args[0]
 	addr := netip.MustParseAddr(args[1])
 	vip := netip.MustParseAddr(args[2])
@@ -72,7 +79,7 @@ func main_() {
 	client := &xvs.Client{
 		Interfaces: links,
 		Address:    addr,
-		Debug:      &Debug{},
+		Debug:      debug,
 		VLANs:      parsevlans(vlans),
 		NAT:        *nat,
 		MaxFlows:   uint32(*flows),
