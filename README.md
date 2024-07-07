@@ -1,26 +1,28 @@
 # XDP Virtual Server
 
-An XDP/eBPF load balancer and Go API for Linux.
+An [XDP](https://en.wikipedia.org/wiki/Express_Data_Path)/[eBPF](https://en.wikipedia.org/wiki/EBPF)
+load balancer and Go API for Linux.
 
 This code is originally from the
 [vc5](https://github.com/davidcoles/vc5) load balancer, and has been
 split out to be developed seperately.
 
-This code implements an IPv4 layer 2 Direct Server Return load
-balancer with an eBPF data plane that is loaded into the kernel and a
+This code implements a layer 4 Direct Server Return (DSR) load
+balancer with an eBPF data plane that is loaded into the kernel, and a
 supporting Go library to configure the balancer through the XDP
-API. Backend servers need share a VLAN with the load balancer.
-Multiple VLANs/interfaces are supported.
+API. Currently connections are steered at layer 2, so backend servers
+need to share a VLAN with the load balancer. Multiple VLANs/interfaces
+are supported. Only IPv4 is supported for now, but support for layer 3
+DSR and IPv6 is planned.
 
-The ELF object file is committed to this repository (main branch) and
-is accessed via Go's embed feature, which means that it can be used as a
-standard Go module without having to build the binary as a seperate
-step. [libbpf](https://github.com/libbpf/libbpf) is still required for
-linking programs using the library (CGO_CFLAGS and CGO_LDFLAGS
-environment variables may need to be used to specify the location of the
-library - see the Makefile for an example of how to do this).
-
-Support for layer 3 DSR and IPv6 is planned.
+A compiled BPF ELF object file is committed to this repository (main
+branch) and is accessed via Go's embed feature, which means that it
+can be used as a standard Go module without having to build the binary
+as a seperate step. [libbpf](https://github.com/libbpf/libbpf) is
+still required for linking programs using the library (CGO_CFLAGS and
+CGO_LDFLAGS environment variables may need to be used to specify the
+location of the library - see the Makefile for an example of how to do
+this).
 
 # Portability
 
@@ -33,7 +35,7 @@ default size flow state tables, so you may have to rebuild the eBPF
 object file overriding the defaults (see the `raspberrypi` target in
 the Makefile).
 
-Pi wi-fi load balancer:
+Pi Wi-Fi load balancer:
 
 `cmd/balancer wlan0 192.168.0.16 192.168.101.1 192.168.0.10 192.168.0.11`
 

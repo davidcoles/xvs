@@ -342,8 +342,8 @@ func (s *service) delDestination(d *Destination, c *Client) {
 /**********************************************************************/
 
 type Destination struct {
-	Address netip.Addr // Destinationserver IP address
-	Weight  uint8      // Not full implemented; 0 - don't use, non-zero enables the destination
+	Address netip.Addr // Destination server IP address
+	Weight  uint8      // Not fully implemented; 0 - don't use the destination, non-zero enables the destination
 	current uint64
 }
 

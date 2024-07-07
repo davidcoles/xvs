@@ -36,6 +36,7 @@ func main() {
 
 func main_() {
 
+	flows := flag.Uint("f", 0, "Flows")
 	port := flag.Int("p", 80, "Port to run service on")
 	udp := flag.Bool("u", false, "Use UDP instead of TCP")
 	nat := flag.Bool("n", false, "NAT (creates a network namespace and interfaces)")
@@ -74,6 +75,7 @@ func main_() {
 		Debug:      &Debug{},
 		VLANs:      parsevlans(vlans),
 		NAT:        *nat,
+		MaxFlows:   uint32(*flows),
 	}
 
 	err = client.Start()

@@ -52,13 +52,13 @@ func b4s(i b4) string { return fmt.Sprintf(_b4s, i[0], i[1], i[2], i[3]) }
 func b6s(i b6) string { return fmt.Sprintf(_b6s, i[0], i[1], i[2], i[3], i[4], i[5]) }
 
 type Info struct {
-	Packets   uint64
-	Octets    uint64
-	Flows     uint64
-	Latency   uint64
-	Dropped   uint64
-	Blocked   uint64
-	NotQueued uint64
+	Packets   uint64 // Total number of packets received by XDP hooks
+	Octets    uint64 // Total number of bytes received by XDP hooks
+	Flows     uint64 // Total number of new flow entries created in hash tables
+	Latency   uint64 // Average measurable latency for XDP hook
+	Dropped   uint64 // Number of non-conforming packets dropped
+	Blocked   uint64 // Number of packets dropped by prefix
+	NotQueued uint64 // Failed attempts to queue flow state updates to userspace
 }
 
 type Stats struct {
@@ -76,14 +76,14 @@ func (s *Stats) add(a Stats) {
 }
 
 type Client struct {
-	NAT        bool
-	Native     bool
-	Interfaces []string
-	Address    netip.Addr
-	VLANs      map[uint16]net.IPNet
-	Debug      Debug
-	InitDelay  uint8
-	MaxFlows   uint32
+	NAT        bool                 // Create interfaces and a network namespace to probe backend servers
+	Native     bool                 // Attach XDP functions with the XDP_FLAGS_DRV_MODE flag
+	Interfaces []string             // List of interfaces to attach XDP function
+	Address    netip.Addr           // Address of primary interface in single-VLAN mode
+	VLANs      map[uint16]net.IPNet // VLAN ID to subnet mapping
+	Debug      Debug                // Debug interface
+	InitDelay  uint8                // Pause for InitDelay seconds between each XDP attach/detach
+	MaxFlows   uint32               // Override size of the flow tracking hash table if non-zero
 
 	icmp   *icmp
 	xdp    *xdp.XDP
@@ -852,13 +852,7 @@ func (c *Client) lookup_vrpp_concurrent(v *bpf_vrpp, a *int64) int {
 
 func (c *Client) update_service_backend(key *bpf_service, b *bpf_backend, flag uint64) int {
 	/*
-		//fmt.Println(key, b.real[0])
-		fmt.Println(key, b.real[1])
-		fmt.Println(key, b.real[2])
-		fmt.Println(key, b.real[3])
-		fmt.Println(key, b.real[4])
-		fmt.Println(key, b.real[5])
-
+		// no longer a percpu map
 		all := make([]bpf_backend, xdp.BpfNumPossibleCpus())
 
 		for n, _ := range all {
@@ -891,15 +885,16 @@ func (c *Client) write_settings() int {
 	var zero uint32
 
 	/*
-		        // no longer a percpu map
-				all := make([]bpf_setting, xdp.BpfNumPossibleCpus())
+		// no longer a percpu map
+		all := make([]bpf_setting, xdp.BpfNumPossibleCpus())
 
-				for n, _ := range all {
-					all[n] = c.setting
-				}
+		for n, _ := range all {
+			all[n] = c.setting
+		}
 
-				return c.settings().UpdateElem(uP(&zero), uP(&(all[0])), xdp.BPF_ANY)
+		return c.settings().UpdateElem(uP(&zero), uP(&(all[0])), xdp.BPF_ANY)
 	*/
+
 	s := c.setting
 	return c.settings().UpdateElem(uP(&zero), uP(&s), xdp.BPF_ANY)
 }
