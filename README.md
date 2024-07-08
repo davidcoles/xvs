@@ -40,7 +40,8 @@ Raspberry Pi Wi-Fi load balancer:
 
 ## Documentation
 
-https://pkg.go.dev/github.com/davidcoles/xvs
+Some notes about design are in the [doc/](doc/) directory, and the [Go
+API is described here](https://pkg.go.dev/github.com/davidcoles/xvs).
 
 The API is loosely modelled on the [Cloudflare IPVS
 library](https://github.com/cloudflare/ipvs) [(Go
