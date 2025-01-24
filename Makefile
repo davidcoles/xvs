@@ -1,4 +1,4 @@
-BPFVER  ?= v1.3.0
+BPFVER  ?= v1.5.0
 LIBBPF  := $(PWD)/libbpf
 INCLUDE ?= 
 
