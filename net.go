@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"sync"
 )
 
 func htons(p uint16) [2]byte {
@@ -161,6 +162,9 @@ func vlanInterface(prefix net.IPNet) (ret nic, _ bool) {
 	return
 }
 
+var snoop sync.Mutex
+var ipnic map[ip4]*net.Interface
+
 func arp() map[ip4]mac {
 
 	ip2mac := make(map[ip4]mac)
@@ -229,6 +233,10 @@ func arp() map[ip4]mac {
 			ip2nic[ip4] = iface
 		}
 	}
+
+	snoop.Lock()
+	ipnic = ip2nic
+	snoop.Unlock()
 
 	return ip2mac
 }

@@ -42,10 +42,19 @@ const (
 
 type XDP struct {
 	p unsafe.Pointer
+	s C.int
 	m map[string]Map
 }
 
 func LoadBpfFile(bindata []byte) (*XDP, error) {
+
+	// get a socket for sending raw packets
+	s := C.raw_socket()
+
+	if s == -1 {
+		return nil, errors.New("Unable to create raw socket")
+	}
+
 	tmpfile, err := ioutil.TempFile("/tmp", "balancer")
 	if err != nil {
 		return nil, err
@@ -62,6 +71,7 @@ func LoadBpfFile(bindata []byte) (*XDP, error) {
 
 	var x XDP
 
+	x.s = s
 	x.m = map[string]Map{}
 
 	x.p = unsafe.Pointer(C.load_bpf_prog(C.CString(tmpfile.Name())))
@@ -151,4 +161,18 @@ func (m Map) CreateLruHash(index uint32, name string, key, val, max uint32) int 
 
 func (m Map) MaxEntries() int {
 	return int(C.max_entries(C.int(m)))
+}
+
+func (x *XDP) SendRawPacket(iface int, h_dest, h_source [6]byte, packet []byte) bool {
+	// ethernet frame: dst[6], source[6], transport_protocol[2] #define ETH_P_IP 0x0800
+	var pkt [14 + 2048]byte
+
+	pkt[12] = 0x08
+	pkt[13] = 0x00
+
+	copy(pkt[0:], h_dest[:])
+	copy(pkt[6:], h_source[:])
+	copy(pkt[14:], packet[:])
+
+	return C.send_raw_packet(x.s, C.int(iface), (*C.char)(unsafe.Pointer(&pkt)), C.int(len(packet)+14)) == 0
 }

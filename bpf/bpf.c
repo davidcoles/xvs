@@ -43,6 +43,10 @@
 #define BLOCK_PREFIXES(f) (((f)&F_NO_PREFIXES)?0:1)
 
 
+const __u32 ZERO = 0;
+const __u32 VETH = VETH_ID;
+
+
 struct setting {
     __u32 heartbeat;
     __u8 era;
@@ -141,7 +145,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_QUEUE);
-    __type(value, 1600);
+    __type(value, __u8[SNOOP_BUFFER_SIZE]);
     __uint(max_entries, FLOW_QUEUE_SIZE);
 } snoop_queue SEC(".maps");
 
@@ -264,6 +268,19 @@ struct {
     __type(value, __u64);
     __uint(max_entries, 16384);
 } prefix_drop SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, unsigned int);
+    __type(value, __u8[SNOOP_BUFFER_SIZE]);
+    __uint(max_entries, 1);
+} snoop_array SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u8[SNOOP_BUFFER_SIZE]);
+    __uint(max_entries, 1000);
+} icmp_queue SEC(".maps");
 
 static __always_inline
 void be_tcp_concurrent(struct iphdr *ip, struct tcphdr *tcp, struct state *state, __u8 era)
@@ -512,8 +529,33 @@ int complete(struct global *global, __u64 start, int action)
     return action;
 }
 
-const __u32 ZERO = 0;
-const __u32 VETH = VETH_ID;
+
+static __always_inline
+void *is_ipv4(void *data, void *data_end)
+{
+    struct iphdr *iph = data;
+    __u32 nh_off = sizeof(struct iphdr);
+
+    if (data + nh_off > data_end)
+    	return NULL;
+    
+    if (iph->ihl < 5)
+	return NULL;
+    
+    if (iph->ihl == 5)
+	return data + nh_off;
+
+    return NULL; // remove to allow IPv4 options - needs testing first and probably not advisable
+    
+    nh_off = (iph->ihl) * 4;
+    
+    if (data + nh_off > data_end)
+	return NULL;
+    
+    return data + nh_off;
+}
+
+
 
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
@@ -747,11 +789,106 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	
 	if (!c)
 	    break;
+
+	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
+	    // find protocol + dest ip+port from the ICMP message
+	    // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
+	    // userspace sends to all backends for that service
+
+	    struct iphdr *inner_ip = data + nh_off;
+	    
+	    void *next_header;
+	    
+	    if (!(next_header = is_ipv4(inner_ip, data_end)))
+		return XDP_DROP;
+	    
+	    if ((inner_ip->frag_off & bpf_htons(0x3fff)) != 0)
+		return XDP_DROP;
+
+	    __u8 protocol = 0;
+	    switch(inner_ip->protocol) {
+	    case IPPROTO_UDP:
+		protocol = 1;
+	    case IPPROTO_TCP:
+		break;
+	    default:
+		return XDP_DROP;
+	    }
+
+            if (next_header + sizeof(struct udphdr) > data_end)
+		return XDP_DROP;
+
+	    // TCP and UDP headers the same for ports - which is all we need
+            struct udphdr *inner_udp = next_header;
+	    
+	    // send [destip / destport / 0000|protocol|length ]+[original IP+ICMP packet]
+	    // 11 bits (2043 bytes > MTU of 1500) orig (IP) packet length
+	    // 1 bit  protocol 0 - TCP, 1 - UDP
+	    // 4 bits left - 16 reason codes?
+
+	    // 0 - ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED
+	    __u8 reason = (0 << 12) | (protocol << 11);
+	    
+	    __u8 *icmp_msg = bpf_map_lookup_elem(&snoop_array, &ZERO);
+	    if (!icmp_msg)
+		return XDP_ABORTED;
+	    
+	    __u16 n = 0;
+	    for (n = 0; n < (SNOOP_BUFFER_SIZE - 8); n++) { // 8 bytes of header
+		if (ip + n >= data_end)
+		    break;
+		((__u8 *) icmp_msg)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
+	    }
+
+	    
+	    ((__be32 *) icmp_msg)[0] = ip->daddr;             // bytes 0-3
+	    ((__u16 *)  icmp_msg)[2] = inner_udp->dest;       // bytes 4&5
+	    ((__u16 *)  icmp_msg)[3] = reason | (n & 0x07ff); // bytes 6&7 (0x07ff == 2047 == 0b11111111111 == lower 11 bits)
+	    
+	    bpf_map_push_elem(&snoop_queue, icmp_msg, 0);
+	    
+	    return XDP_DROP;
+	}
 	
 	// TODO: https://blog.cloudflare.com/path-mtu-discovery-in-practice/
 	if (icmp->type != ICMP_ECHO || icmp->code != 0)
 	    return XDP_DROP;
 
+	
+	/********************************************************************************/
+	{
+	    if (ip->ttl <= 1)
+		return XDP_DROP;
+
+	    ip_decrease_ttl(ip);
+
+	    __u8 protocol = 0;
+	    __u16 reason = (15 << 12) | ((protocol &0x01) << 11);
+	    
+            __u8 *icmp_msg = bpf_map_lookup_elem(&snoop_array, &ZERO);
+            if (!icmp_msg)
+                return XDP_ABORTED;
+	    
+            __u16 n = 0;
+            for (n = 0; n < (SNOOP_BUFFER_SIZE - 8); n++) { // 8 bytes of header
+                if (((void *) ip) + n >= data_end)
+                    break;
+                ((__u8 *) icmp_msg)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
+            }
+	    
+            ((__be32 *) icmp_msg)[0] = ip->daddr;                  // bytes 0-3
+            //((__u16 *)  icmp_msg)[2] = bpf_ntohs(inner_udp->dest); // bytes 4&5
+	    ((__u16 *)  icmp_msg)[2] = bpf_ntohs(80); // bytes 4&5
+
+            ((__u16 *)  icmp_msg)[3] = bpf_htons(reason | (n & 0x07ff));      // bytes 6&7 (0x07ff == 2047 == 0b11111111111 == lower 11 bits)
+	    //((__u16 *)  icmp_msg)[3] = bpf_htons(2047);
+
+	    
+            bpf_map_push_elem(&snoop_queue, icmp_msg, 0);
+	    return XDP_DROP;
+	}
+	/********************************************************************************/
+	
 	__u16 old_csum = icmp->checksum;
 	icmp->checksum = 0;	
 	struct icmphdr old = *icmp;

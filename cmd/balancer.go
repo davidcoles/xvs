@@ -83,6 +83,7 @@ func main_() {
 		VLANs:      parsevlans(vlans),
 		NAT:        *nat,
 		MaxFlows:   uint32(*flows),
+		Frags:      true,
 	}
 
 	err = client.Start()

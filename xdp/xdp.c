@@ -25,6 +25,7 @@
 #include <time.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "xdp.h"
 
@@ -161,3 +162,46 @@ int create_lru_hash(int outer_fd, int index, const char *name, int key_size, int
     
     return bpf_map_update_elem(outer_fd, &index, &fd, BPF_ANY);
 }
+
+#include <linux/if_packet.h> // SOCK_RAW
+#include <linux/if_ether.h> // SOCK_RAW
+#include <linux/in.h> // SOCK_RAW
+//#include <net/ethernet.h> // SOCK_RAW
+
+int raw_socket() {
+    return socket(AF_PACKET, SOCK_RAW, IPPROTO_RAW);
+}
+
+int send_raw_packet(int sockfd, int ifindex, char *packet, int len) {
+    // https://stackoverflow.com/questions/21411851/how-to-send-data-over-a-raw-ethernet-socket-using-sendto-without-using-sockaddr
+    // setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, "eth0", 4); // doesn't seem to be needed
+    
+    /* packet(7)
+       When you send packets, it is enough to specify sll_family,
+       sll_addr, sll_halen, sll_ifindex, and sll_protocol.  The other
+       fields should be 0.  sll_hatype and sll_pkttype are set on
+       received packets for your information.
+    */
+
+    struct ethhdr *eth = (struct ethhdr *) packet;
+    struct sockaddr_ll socket_address = { .sll_family = AF_PACKET,
+					  .sll_protocol = eth->h_proto,
+					  .sll_ifindex = ifindex,
+					  .sll_halen = ETH_ALEN };
+    
+    memcpy(socket_address.sll_addr, eth->h_dest, ETH_ALEN);
+    
+    return sendto(sockfd, packet, len, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll));
+}
+
+/*
+struct sockaddr_ll {
+        unsigned short  sll_family;
+        __be16          sll_protocol;
+        int             sll_ifindex; //
+        unsigned short  sll_hatype;  
+        unsigned char   sll_pkttype;
+        unsigned char   sll_halen;   //
+        unsigned char   sll_addr[8]; //
+};
+*/

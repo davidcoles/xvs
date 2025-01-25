@@ -84,6 +84,7 @@ type Client struct {
 	Debug      Debug                // Debug interface
 	InitDelay  uint8                // Pause for InitDelay seconds between each XDP attach/detach
 	MaxFlows   uint32               // Override size of the flow tracking hash table if non-zero
+	Frags      bool                 // Experimental: Send ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED to all backends when true
 
 	icmp   *icmp
 	xdp    *xdp.XDP
@@ -239,6 +240,10 @@ func (c *Client) Start() error {
 	go c.pings()
 	go c.background()
 	go c.concurrent()
+
+	if c.Frags {
+		go c.icmpStuff()
+	}
 
 	return nil
 }
@@ -716,6 +721,7 @@ const (
 	_prefix_counters = "prefix_counters"
 	_prefix_drop     = "prefix_drop"
 	_flow_states     = "flow_states"
+	_snoop_queue     = "snoop_queue"
 )
 
 func (c *Client) find_maps() error {
@@ -745,6 +751,7 @@ func (c *Client) find_maps() error {
 		{_globals, int_s, global_s},
 		{_settings, int_s, setting_s},
 		{_flow_queue, 0, bpf.FLOW_S + bpf.STATE_S},
+		{_snoop_queue, 0, bpf.SNOOP_BUFFER_SIZE},
 		{_flow_share, bpf.FLOW_S, bpf.STATE_S},
 		{_prefix_counters, int_s, 2 * int64_s}, // FIXME - create a struct
 		{_prefix_drop, int_s, int64_s},
@@ -771,6 +778,7 @@ func (c *Client) nat_in() xdp.Map          { return c.xdp.Map(_nat_in) }
 func (c *Client) globals() xdp.Map         { return c.xdp.Map(_globals) }
 func (c *Client) settings() xdp.Map        { return c.xdp.Map(_settings) }
 func (c *Client) flow_queue() xdp.Map      { return c.xdp.Map(_flow_queue) }
+func (c *Client) snoop_queue() xdp.Map     { return c.xdp.Map(_snoop_queue) }
 func (c *Client) flow_share() xdp.Map      { return c.xdp.Map(_flow_share) }
 func (c *Client) prefix_counters() xdp.Map { return c.xdp.Map(_prefix_counters) }
 func (c *Client) prefix_drop() xdp.Map     { return c.xdp.Map(_prefix_drop) }
@@ -1242,4 +1250,86 @@ func (c *Client) WriteFlow(fs []byte) {
 	time := (*uint32)(state)
 	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
 	c.flow_share().UpdateElem(flow, state, xdp.BPF_ANY)
+}
+
+func (c *Client) readSnoop() []byte {
+	var r [bpf.SNOOP_BUFFER_SIZE]byte
+
+	if c.snoop_queue().LookupAndDeleteElem(nil, uP(&r)) != 0 {
+		return nil
+	}
+
+	return r[:]
+}
+
+func (c *Client) icmpStuff() {
+	for {
+	try:
+		r := c.readSnoop()
+		if r != nil {
+
+			var ip [4]byte
+			copy(ip[:], r[:])
+			port := uint16(r[4])<<8 | uint16(r[5])
+			size := (uint16(r[6])<<8 | uint16(r[7])) & 0x7ff // restricted to 2047 bytes
+			reason := uint8(r[6]) >> 4
+			protocol := uint8(r[6]&0x08) >> 3
+
+			orig := r[8 : 8+size]
+			fmt.Println("snoop:", reason, protocol, ip, port, size, orig, len(orig))
+
+			addr := netip.AddrFrom4(ip)
+
+			s := Service{Address: addr, Port: port, Protocol: TCP}
+
+			if protocol != 0 {
+				s.Protocol = UDP
+			}
+
+			ds, _ := c.Destinations(s)
+
+			nic := map[ip4]*net.Interface{}
+			mac := map[ip4][6]byte{}
+
+			snoop.Lock()
+
+			for _, d := range ds {
+
+				if !d.Destination.Address.Is4() {
+					continue
+				}
+
+				ip := d.Destination.Address.As4()
+
+				if i, ok := ipnic[ip]; ok && i != nil {
+					nic[ip] = i
+				}
+				mac[ip] = d.MAC
+			}
+
+			snoop.Unlock()
+
+			var nul [6]byte
+			for k, v := range nic {
+				var from [6]byte
+
+				i := v.Index
+
+				if len(v.HardwareAddr) == 6 {
+					copy(from[:], v.HardwareAddr[:])
+				}
+
+				to := mac[k]
+
+				if from != nul && to != nul {
+					c.xdp.SendRawPacket(i, to, from, orig)
+				}
+			}
+
+			goto try
+		}
+
+		time.Sleep(100 * time.Millisecond) // 10x per second
+	}
+
 }
