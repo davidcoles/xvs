@@ -722,6 +722,7 @@ const (
 	_prefix_drop     = "prefix_drop"
 	_flow_states     = "flow_states"
 	_snoop_queue     = "snoop_queue"
+	_icmp_queue      = "icmp_queue"
 )
 
 func (c *Client) find_maps() error {
@@ -752,6 +753,7 @@ func (c *Client) find_maps() error {
 		{_settings, int_s, setting_s},
 		{_flow_queue, 0, bpf.FLOW_S + bpf.STATE_S},
 		{_snoop_queue, 0, bpf.SNOOP_BUFFER_SIZE},
+		{_icmp_queue, 0, bpf.SNOOP_BUFFER_SIZE},
 		{_flow_share, bpf.FLOW_S, bpf.STATE_S},
 		{_prefix_counters, int_s, 2 * int64_s}, // FIXME - create a struct
 		{_prefix_drop, int_s, int64_s},
@@ -779,6 +781,7 @@ func (c *Client) globals() xdp.Map         { return c.xdp.Map(_globals) }
 func (c *Client) settings() xdp.Map        { return c.xdp.Map(_settings) }
 func (c *Client) flow_queue() xdp.Map      { return c.xdp.Map(_flow_queue) }
 func (c *Client) snoop_queue() xdp.Map     { return c.xdp.Map(_snoop_queue) }
+func (c *Client) icmp_queue() xdp.Map      { return c.xdp.Map(_icmp_queue) }
 func (c *Client) flow_share() xdp.Map      { return c.xdp.Map(_flow_share) }
 func (c *Client) prefix_counters() xdp.Map { return c.xdp.Map(_prefix_counters) }
 func (c *Client) prefix_drop() xdp.Map     { return c.xdp.Map(_prefix_drop) }
@@ -1262,21 +1265,41 @@ func (c *Client) readSnoop() []byte {
 	return r[:]
 }
 
+func (c *Client) readICMP() []byte {
+	var r [bpf.SNOOP_BUFFER_SIZE]byte
+
+	if c.icmp_queue().LookupAndDeleteElem(nil, uP(&r)) != 0 {
+		return nil
+	}
+
+	return r[:]
+}
+
 func (c *Client) icmpStuff() {
+
+	tries := c.icmp_queue().MaxEntries() / 10        // process 1/10th of the icmp queue
+	ticker := time.NewTicker(100 * time.Millisecond) // ... every 1/10th of a second
+
 	for {
-	try:
-		r := c.readSnoop()
-		if r != nil {
+		<-ticker.C
+
+		for try := 0; try < tries; try++ {
+
+			r := c.readICMP()
+
+			if r == nil {
+				break
+			}
 
 			var ip [4]byte
 			copy(ip[:], r[:])
 			port := uint16(r[4])<<8 | uint16(r[5])
 			size := (uint16(r[6])<<8 | uint16(r[7])) & 0x7ff // restricted to 2047 bytes
-			reason := uint8(r[6]) >> 4
+			//reason := uint8(r[6]) >> 4
 			protocol := uint8(r[6]&0x08) >> 3
 
 			orig := r[8 : 8+size]
-			fmt.Println("snoop:", reason, protocol, ip, port, size, orig, len(orig))
+			//fmt.Println("snoop:", reason, protocol, ip, port, size, orig, len(orig))
 
 			addr := netip.AddrFrom4(ip)
 
@@ -1325,11 +1348,6 @@ func (c *Client) icmpStuff() {
 					c.xdp.SendRawPacket(i, to, from, orig)
 				}
 			}
-
-			goto try
 		}
-
-		time.Sleep(100 * time.Millisecond) // 10x per second
 	}
-
 }
