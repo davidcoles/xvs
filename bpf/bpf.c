@@ -555,6 +555,66 @@ void *is_ipv4(void *data, void *data_end)
     return data + nh_off;
 }
 
+//static __always_inline
+int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *data_end)
+{
+    // find protocol + dest ip+port from the ICMP message
+    // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
+    // userspace sends to all backends for that service
+    
+    struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct iphdr);
+    
+    void *next_header;
+    
+    if (!(next_header = is_ipv4(inner_ip, data_end)))
+	return XDP_DROP;
+    
+    if ((inner_ip->frag_off & bpf_htons(0x3fff)) != 0)
+	return XDP_DROP;
+    
+    __u8 protocol = 0;
+    switch(inner_ip->protocol) {
+    case IPPROTO_UDP:
+	protocol = 1;
+    case IPPROTO_TCP:
+	break;
+    default:
+	return XDP_DROP;
+    }
+    
+    if (next_header + sizeof(struct udphdr) > data_end)
+	return XDP_DROP;
+    
+    // TCP and UDP headers the same for ports - which is all we need
+    struct udphdr *inner_udp = next_header;
+    
+    // send [destip / destport / 0000|protocol|length ]+[original IP+ICMP packet]
+    // 11 bits (2043 bytes > MTU of 1500) orig (IP) packet length
+    // 1 bit  protocol 0 - TCP, 1 - UDP
+    // 4 bits left - 16 reason codes?
+    
+    // 0 - ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED
+    __u8 reason = (0 << 12) | (protocol << 11);
+    
+    __u8 *icmp_msg = bpf_map_lookup_elem(&snoop_array, &ZERO);
+    if (!icmp_msg)
+	return XDP_ABORTED;
+    
+    __u16 n = 0;
+    for (n = 0; n < (SNOOP_BUFFER_SIZE - 8); n++) { // 8 bytes of header
+	if (((void *) ip) + n >= data_end)
+	    break;
+	((__u8 *) icmp_msg)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
+    }
+    
+    ((__be32 *) icmp_msg)[0] = ip->daddr;             // bytes 0-3
+    ((__u16 *)  icmp_msg)[2] = inner_udp->dest;       // bytes 4&5
+    ((__u16 *)  icmp_msg)[3] = reason | (n & 0x07ff); // bytes 6&7 (0x07ff == 2047 == 0b11111111111 == lower 11 bits)
+	    
+    bpf_map_push_elem(&snoop_queue, icmp_msg, 0);
+    
+    return XDP_DROP;
+}
 
 
 SEC("xdp")
@@ -791,6 +851,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    break;
 
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
+	    icmp_dest_unreach_frag_needed(ip, icmp, data_end);
+	    return XDP_DROP;
+	    
 	    // find protocol + dest ip+port from the ICMP message
 	    // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
 	    // userspace sends to all backends for that service
