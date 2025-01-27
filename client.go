@@ -242,7 +242,7 @@ func (c *Client) Start() error {
 	go c.concurrent()
 
 	if c.Frags {
-		go c.icmpStuff()
+		go c.watchICMPQueue()
 	}
 
 	return nil
@@ -1265,7 +1265,7 @@ func (c *Client) readSnoop() []byte {
 	return r[:]
 }
 
-func (c *Client) readICMP() []byte {
+func (c *Client) readICMPQueue() []byte {
 	var r [bpf.SNOOP_BUFFER_SIZE]byte
 
 	if c.icmp_queue().LookupAndDeleteElem(nil, uP(&r)) != 0 {
@@ -1275,7 +1275,9 @@ func (c *Client) readICMP() []byte {
 	return r[:]
 }
 
-func (c *Client) icmpStuff() {
+func (c *Client) watchICMPQueue() {
+
+	proto := func(b bool) Protocol { return map[bool]Protocol{false: TCP, true: UDP}[b] }
 
 	tries := c.icmp_queue().MaxEntries() / 10        // process 1/10th of the icmp queue
 	ticker := time.NewTicker(100 * time.Millisecond) // ... every 1/10th of a second
@@ -1285,7 +1287,7 @@ func (c *Client) icmpStuff() {
 
 		for try := 0; try < tries; try++ {
 
-			r := c.readICMP()
+			r := c.readICMPQueue()
 
 			if r == nil {
 				break
@@ -1295,59 +1297,22 @@ func (c *Client) icmpStuff() {
 			copy(ip[:], r[:])
 			port := uint16(r[4])<<8 | uint16(r[5])
 			size := (uint16(r[6])<<8 | uint16(r[7])) & 0x7ff // restricted to 2047 bytes
-			//reason := uint8(r[6]) >> 4
-			protocol := uint8(r[6]&0x08) >> 3
+			//reason := uint8(r[6]) >> 4 // not used yet
+			protocol := proto((uint8(r[6]&0x08) >> 3) > 0)
+			icmp := r[8 : 8+size]
 
-			orig := r[8 : 8+size]
-			//fmt.Println("snoop:", reason, protocol, ip, port, size, orig, len(orig))
-
-			addr := netip.AddrFrom4(ip)
-
-			s := Service{Address: addr, Port: port, Protocol: TCP}
-
-			if protocol != 0 {
-				s.Protocol = UDP
-			}
-
-			ds, _ := c.Destinations(s)
-
-			nic := map[ip4]*net.Interface{}
-			mac := map[ip4][6]byte{}
-
-			snoop.Lock()
-
-			for _, d := range ds {
-
-				if !d.Destination.Address.Is4() {
-					continue
-				}
-
-				ip := d.Destination.Address.As4()
-
-				if i, ok := ipnic[ip]; ok && i != nil {
-					nic[ip] = i
-				}
-				mac[ip] = d.MAC
-			}
-
-			snoop.Unlock()
-
-			var nul [6]byte
-			for k, v := range nic {
-				var from [6]byte
-
-				i := v.Index
-
-				if len(v.HardwareAddr) == 6 {
-					copy(from[:], v.HardwareAddr[:])
-				}
-
-				to := mac[k]
-
-				if from != nul && to != nul {
-					c.xdp.SendRawPacket(i, to, from, orig)
-				}
-			}
+			c.repeatIP(Service{Address: netip.AddrFrom4(ip), Port: port, Protocol: protocol}, icmp)
 		}
+	}
+}
+
+// repeat raw IP packet to all backend (healthy or not) for a service
+func (c *Client) repeatIP(service Service, packet []byte) {
+	c.mutex.Lock()
+	s, ok := c.service[service.key()]
+	c.mutex.Unlock()
+
+	if ok {
+		s.repeatIP(c.xdp, packet)
 	}
 }

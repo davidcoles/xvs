@@ -20,8 +20,10 @@ package xvs
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/davidcoles/xvs/bpf"
@@ -70,6 +72,9 @@ type service struct {
 
 	backend map[ip4]*Destination
 	state   *be_state
+
+	icmp sync.Mutex
+	macs map[ip4]MAC
 }
 
 func (s *Service) service() *service {
@@ -248,7 +253,8 @@ func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
 	vip := ip4(s.Address.As4())
 	bpf_reals := map[ip4]bpf_real{}
 
-	//fmt.Println("SYNC", vip, port, protocol)
+	fmt.Println("SYNC", vip, port, protocol)
+	macs := map[ip4]MAC{}
 
 	//var lc ip4
 
@@ -264,7 +270,19 @@ func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
 		} else {
 			//fmt.Println("UNAVAILABLE", ip, mac, real.Weight, vid)
 		}
+
+		// ICMP
+
+		if ip != nilip && mac != nilmac {
+			macs[ip] = mac
+		}
 	}
+
+	s.icmp.Lock()
+	s.macs = macs
+	s.icmp.Unlock()
+
+	fmt.Println(vip, port, protocol, macs)
 
 	key := &bpf_service{vip: vip, port: htons(port), protocol: protocol}
 	val := &be_state{fallback: false, sticky: s.Sticky, bpf_reals: bpf_reals}
@@ -279,6 +297,43 @@ func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
 			c.Debug.Backend(netip.AddrFrom4(vip), port, protocol, backends[:], time.Now().Sub(now))
 		}
 		s.state = val
+	}
+}
+
+// repeat raw IP packet to all backend (healthy or not) for a service
+func (s *service) repeatIP(xdp *xdp.XDP, packet []byte) {
+	macs := map[ip4]MAC{}
+	s.icmp.Lock()
+	macs = s.macs // s.macs will be reassigned to a new object when updated, so safe to use
+	s.icmp.Unlock()
+
+	nic := map[ip4]*net.Interface{}
+
+	// each time arp() is run it build an ip->interface mapping for each IP
+	snoop.Lock()
+	for ip, _ := range macs {
+		if i, ok := ipnic[ip]; ok && i != nil {
+			nic[ip] = i
+		}
+	}
+	snoop.Unlock()
+
+	fmt.Println(macs, nic)
+
+	var nul [6]byte
+	for ip, iface := range nic {
+		var h_dest MAC
+		var h_source MAC
+
+		h_dest = macs[ip]
+
+		if len(iface.HardwareAddr) == 6 {
+			copy(h_source[:], iface.HardwareAddr[:])
+		}
+
+		if h_source != nul {
+			xdp.SendRawPacket(iface.Index, h_dest, h_source, packet)
+		}
 	}
 }
 

@@ -163,7 +163,7 @@ func vlanInterface(prefix net.IPNet) (ret nic, _ bool) {
 }
 
 var snoop sync.Mutex
-var ipnic map[ip4]*net.Interface
+var ipnic map[ip4]*net.Interface // used by service.repeatIP()
 
 func arp() map[ip4]mac {
 
