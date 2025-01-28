@@ -59,6 +59,7 @@ type Info struct {
 	Dropped   uint64 // Number of non-conforming packets dropped
 	Blocked   uint64 // Number of packets dropped by prefix
 	NotQueued uint64 // Failed attempts to queue flow state updates to userspace
+	TooBig    uint64 // ICMP destination unreachable/fragmentation needed
 }
 
 type Stats struct {
@@ -84,6 +85,7 @@ type Client struct {
 	Debug      Debug                // Debug interface
 	InitDelay  uint8                // Pause for InitDelay seconds between each XDP attach/detach
 	MaxFlows   uint32               // Override size of the flow tracking hash table if non-zero
+	Frags      bool                 // Experimental: Send ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED to all backends when true
 
 	icmp   *icmp
 	xdp    *xdp.XDP
@@ -95,7 +97,8 @@ type Client struct {
 
 	service map[key]*service
 	tags    map[netip.Addr]int16
-	hwaddr  map[ip4]mac // IPv4 only
+	hwaddr  map[ip4]mac
+	raw     map[ip4]raw
 	vlans   map[uint16]nic
 	nics    map[string]nic
 
@@ -120,7 +123,7 @@ func (c *Client) Start() error {
 	c.service = map[key]*service{}
 	c.tags = map[netip.Addr]int16{}
 	c.nics = map[string]nic{}
-	c.hwaddr = arp()
+	c.hwaddr, c.raw = arp()
 	c.vlans = vlanInterfaces(c.VLANs)
 	c.icmp = &icmp{}
 
@@ -239,6 +242,10 @@ func (c *Client) Start() error {
 	go c.pings()
 	go c.background()
 	go c.concurrent()
+
+	if c.Frags {
+		go c.watchICMPQueue()
+	}
 
 	return nil
 }
@@ -399,7 +406,7 @@ func (c *Client) background() {
 		}
 
 		old := c.arp_entries()
-		c.hwaddr = arp() // reread arp table
+		c.hwaddr, c.raw = arp() // reread arp table
 		new := c.arp_entries()
 
 		if update_vlans || update_tuples || c.arp_diff(old, new) {
@@ -412,7 +419,7 @@ func (c *Client) background() {
 
 			// resync vlan/mac entries in services
 			for _, s := range c.service {
-				s.sync(c, c.hwaddr, c.tags)
+				s.sync(c, c.hwaddr, c.raw, c.tags)
 			}
 		}
 
@@ -716,6 +723,8 @@ const (
 	_prefix_counters = "prefix_counters"
 	_prefix_drop     = "prefix_drop"
 	_flow_states     = "flow_states"
+	_snoop_queue     = "snoop_queue"
+	_icmp_queue      = "icmp_queue"
 )
 
 func (c *Client) find_maps() error {
@@ -745,6 +754,8 @@ func (c *Client) find_maps() error {
 		{_globals, int_s, global_s},
 		{_settings, int_s, setting_s},
 		{_flow_queue, 0, bpf.FLOW_S + bpf.STATE_S},
+		{_snoop_queue, 0, bpf.SNOOP_BUFFER_SIZE},
+		{_icmp_queue, 0, bpf.SNOOP_BUFFER_SIZE},
 		{_flow_share, bpf.FLOW_S, bpf.STATE_S},
 		{_prefix_counters, int_s, 2 * int64_s}, // FIXME - create a struct
 		{_prefix_drop, int_s, int64_s},
@@ -771,6 +782,8 @@ func (c *Client) nat_in() xdp.Map          { return c.xdp.Map(_nat_in) }
 func (c *Client) globals() xdp.Map         { return c.xdp.Map(_globals) }
 func (c *Client) settings() xdp.Map        { return c.xdp.Map(_settings) }
 func (c *Client) flow_queue() xdp.Map      { return c.xdp.Map(_flow_queue) }
+func (c *Client) snoop_queue() xdp.Map     { return c.xdp.Map(_snoop_queue) }
+func (c *Client) icmp_queue() xdp.Map      { return c.xdp.Map(_icmp_queue) }
 func (c *Client) flow_share() xdp.Map      { return c.xdp.Map(_flow_share) }
 func (c *Client) prefix_counters() xdp.Map { return c.xdp.Map(_prefix_counters) }
 func (c *Client) prefix_drop() xdp.Map     { return c.xdp.Map(_prefix_drop) }
@@ -1024,7 +1037,7 @@ func (c *Client) setService(s Service, dst []Destination) error {
 		}
 	}
 
-	service.sync(c, c.hwaddr, c.tags)
+	service.sync(c, c.hwaddr, c.raw, c.tags)
 
 	return nil
 }
@@ -1173,6 +1186,7 @@ func (c *Client) Info() (i Info) {
 	i.Dropped = g.dropped
 	i.Blocked = g.blocked
 	i.NotQueued = g.qfailed
+	i.TooBig = g.toobig
 	return
 }
 
@@ -1242,4 +1256,65 @@ func (c *Client) WriteFlow(fs []byte) {
 	time := (*uint32)(state)
 	*time = uint32(xdp.KtimeGet()) // set first 4 bytes of state to the local kernel time
 	c.flow_share().UpdateElem(flow, state, xdp.BPF_ANY)
+}
+
+func (c *Client) readSnoop() []byte {
+	var r [bpf.SNOOP_BUFFER_SIZE]byte
+
+	if c.snoop_queue().LookupAndDeleteElem(nil, uP(&r)) != 0 {
+		return nil
+	}
+
+	return r[:]
+}
+
+func (c *Client) readICMPQueue() []byte {
+	var r [bpf.SNOOP_BUFFER_SIZE]byte
+
+	if c.icmp_queue().LookupAndDeleteElem(nil, uP(&r)) != 0 {
+		return nil
+	}
+
+	return r[:]
+}
+
+func (c *Client) watchICMPQueue() {
+
+	proto := func(i uint8) Protocol { return map[bool]Protocol{false: TCP, true: UDP}[i > 0] }
+	tries := c.icmp_queue().MaxEntries() / 10        // process 1/10th of the icmp queue
+	ticker := time.NewTicker(100 * time.Millisecond) // ... every 1/10th of a second
+
+	for {
+		<-ticker.C
+
+		for try := 0; try < tries; try++ {
+
+			r := c.readICMPQueue()
+
+			if r == nil {
+				break
+			}
+
+			var addr [4]byte
+			copy(addr[:], r[:])
+			port := uint16(r[4])<<8 | uint16(r[5])
+			protocol := proto((r[6] >> 3) & 0x01) // 0: TCP, 1: UDP
+			//reason := uint8(r[6]) >> 4 // not used yet
+			size := (uint16(r[6])<<8 | uint16(r[7])) & 0x7ff // restricted to 2047 bytes
+			packet := r[8 : 8+size]
+
+			c.repeatIP(Service{Address: netip.AddrFrom4(addr), Port: port, Protocol: protocol}, packet)
+		}
+	}
+}
+
+// repeat raw IP packet to all backends (healthy or not) for a service
+func (c *Client) repeatIP(service Service, packet []byte) {
+	c.mutex.Lock()
+	s, ok := c.service[service.key()]
+	c.mutex.Unlock()
+
+	if ok {
+		s.repeatIP(c.xdp, packet)
+	}
 }

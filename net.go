@@ -90,6 +90,14 @@ type nic struct {
 	nic string
 }
 
+// how to send raw packets
+type raw struct {
+	idx int // interface index
+	src mac // source MAC (local interface HW address)
+	dst mac // dest MAC (backend's HW address)
+	//nic string // interface name
+}
+
 func (n *nic) String() string {
 	return fmt.Sprintf("%s|%d|%s|%s", n.nic, n.idx, b4s(n.ip4), b6s(n.mac))
 }
@@ -161,10 +169,13 @@ func vlanInterface(prefix net.IPNet) (ret nic, _ bool) {
 	return
 }
 
-func arp() map[ip4]mac {
+func arp() (map[ip4]mac, map[ip4]raw) {
+
+	var nul mac
 
 	ip2mac := make(map[ip4]mac)
 	ip2nic := make(map[ip4]*net.Interface)
+	ip2raw := make(map[ip4]raw)
 
 	// flags: https://superuser.com/questions/822054/definition-of-arp-result-flags/822089#822089
 	// 0x0 incomplete
@@ -175,7 +186,7 @@ func arp() map[ip4]mac {
 
 	file, err := os.OpenFile("/proc/net/arp", os.O_RDONLY, os.ModePerm)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer file.Close()
 
@@ -227,8 +238,23 @@ func arp() map[ip4]mac {
 
 			ip2mac[ip4] = mac
 			ip2nic[ip4] = iface
+
+			if iface != nil && len(iface.HardwareAddr) == 6 {
+
+				var src MAC
+
+				copy(src[:], iface.HardwareAddr[:])
+
+				if mac != nul {
+					ip2raw[ip4] = raw{
+						idx: iface.Index,
+						src: src,
+						dst: mac,
+					}
+				}
+			}
 		}
 	}
 
-	return ip2mac
+	return ip2mac, ip2raw
 }

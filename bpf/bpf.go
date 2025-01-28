@@ -7,9 +7,10 @@ package bpf
 import "C"
 
 const (
-	VETH_ID = C.VETH_ID
-	FLOW_S  = 12
-	STATE_S = 20
+	SNOOP_BUFFER_SIZE = C.SNOOP_BUFFER_SIZE
+	VETH_ID           = C.VETH_ID
+	FLOW_S            = 12
+	STATE_S           = 20
 
 	F_STICKY            = C.F_STICKY
 	F_NO_SHARE_FLOWS    = C.F_NO_SHARE_FLOWS

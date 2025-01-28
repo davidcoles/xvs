@@ -24,6 +24,8 @@ enum {
       VETH_ID = 4095,
 };
 
+enum { SNOOP_BUFFER_SIZE = 8+2048 }; // 8 byte header (includes length of IP packet) and original IP packet
+
 enum {
       F_NO_SHARE_FLOWS     = 0x01,
       F_NO_TRACK_FLOWS     = 0x02,	    

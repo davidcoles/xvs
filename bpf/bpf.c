@@ -43,6 +43,10 @@
 #define BLOCK_PREFIXES(f) (((f)&F_NO_PREFIXES)?0:1)
 
 
+const __u32 ZERO = 0;
+const __u32 VETH = VETH_ID;
+
+
 struct setting {
     __u32 heartbeat;
     __u8 era;
@@ -71,6 +75,7 @@ struct global {
     __u64 dropped;
     __u64 qfailed;
     __u64 blocked;
+    __u64 toobig;
 };
 
 struct {
@@ -139,12 +144,6 @@ struct {
     __uint(max_entries, FLOW_QUEUE_SIZE);
 } flow_queue SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_QUEUE);
-    __type(value, 1600);
-    __uint(max_entries, FLOW_QUEUE_SIZE);
-} snoop_queue SEC(".maps");
-
 struct real {
     __be32 rip;
     __u16 vid;
@@ -187,7 +186,7 @@ struct counter {
     __u64 packets;
     __u64 octets;
     __u64 flows;
-    __u64 pad;
+    __u64 _pad;
 };
 
 struct {
@@ -264,6 +263,25 @@ struct {
     __type(value, __u64);
     __uint(max_entries, 16384);
 } prefix_drop SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, unsigned int);
+    __type(value, __u8[SNOOP_BUFFER_SIZE]);
+    __uint(max_entries, 1);
+} snoop_buffer SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u8[SNOOP_BUFFER_SIZE]);
+    __uint(max_entries, SNOOP_QUEUE_SIZE);
+} snoop_queue SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u8[SNOOP_BUFFER_SIZE]);
+    __uint(max_entries, ICMP_QUEUE_SIZE);
+} icmp_queue SEC(".maps");
 
 static __always_inline
 void be_tcp_concurrent(struct iphdr *ip, struct tcphdr *tcp, struct state *state, __u8 era)
@@ -512,8 +530,132 @@ int complete(struct global *global, __u64 start, int action)
     return action;
 }
 
-const __u32 ZERO = 0;
-const __u32 VETH = VETH_ID;
+
+static __always_inline
+void *is_ipv4(void *data, void *data_end)
+{
+    struct iphdr *iph = data;
+    __u32 nh_off = sizeof(struct iphdr);
+
+    if (data + nh_off > data_end)
+    	return NULL;
+    
+    if (iph->ihl < 5)
+	return NULL;
+    
+    if (iph->ihl == 5)
+	return data + nh_off;
+
+    return NULL; // remove to allow IPv4 options - needs testing first and probably not advisable
+    
+    nh_off = (iph->ihl) * 4;
+    
+    if (data + nh_off > data_end)
+	return NULL;
+    
+    return data + nh_off;
+}
+
+// experimental ...
+enum {
+      E_OK = 0,
+      E_TTL_EXCEEDED,
+      E_INVALID_IP_PACKET,
+      E_FRAGMENTED,
+      E_BAD_PROTOCOL,
+      E_ABORTED,
+      E_QUEUE_FAILED,
+};
+
+static __always_inline
+int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *data_end, __u16 mock)
+{
+    // https://blog.cloudflare.com/path-mtu-discovery-in-practice/
+
+    // find protocol + dest ip+port from the ICMP message
+    // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
+    // userspace sends to all backends for that service
+
+    const __u16 TCP = 0;
+    const __u16 UDP = 1;
+    
+    if (ip->ttl <= 1)
+	return E_TTL_EXCEEDED;
+    
+    ip_decrease_ttl(ip);
+
+    __be16 dport = 0;
+    __u16 protocol = TCP;
+    
+    if (mock != 0) {
+	dport = bpf_htons(mock);
+    } else {
+	// extract information about the flow to which this ICMP refers
+	struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct iphdr);
+	
+	void *next_header;
+	
+	if (!(next_header = is_ipv4(inner_ip, data_end)))
+	    return E_INVALID_IP_PACKET;
+	
+	if ((inner_ip->frag_off & bpf_htons(0x3fff)) != 0)
+	    return E_FRAGMENTED;
+	
+	if (ip->daddr != inner_ip->saddr)
+	    return E_INVALID_IP_PACKET;
+	
+	switch(inner_ip->protocol) {
+	case IPPROTO_UDP:
+	    protocol = UDP;
+	    break;
+	case IPPROTO_TCP:
+	    protocol = TCP;
+	    break;
+	default:
+	    return E_BAD_PROTOCOL;
+	}
+	
+	if (next_header + sizeof(struct udphdr) > data_end)
+	    return E_INVALID_IP_PACKET;
+	
+	// TCP and UDP headers the same for ports - which is all that we need
+	struct udphdr *inner_udp = next_header;
+
+	dport = inner_udp->dest;
+    }
+    
+    // send [destip / destport / 0000|protocol|length ]+[original IP+ICMP packet]
+    // 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
+    // 1 bit  protocol 0 - TCP, 1 - UDP
+    // 4 bits left - 16 reason codes? unlikely to need anything other than fragementation needed
+    
+    // 0 - ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED
+    __u16 reason = (0 << 12) | (protocol << 11); 
+    __u8 *buffer = bpf_map_lookup_elem(&snoop_buffer, &ZERO);
+    
+    if (!buffer)
+	return E_ABORTED;
+    
+    __u16 n = 0;
+    for (n = 0; n < (SNOOP_BUFFER_SIZE-8); n++) { // 8 bytes of header
+	if (((void *) ip) + n >= data_end)
+	    break;
+	((__u8 *) buffer)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
+    }
+    n &= 0x07ff; // mask to lowest 11 bit only (max value 2047)
+    
+    ((__be32 *) buffer)[0] = ip->daddr;             // bytes 0-3
+    ((__u16 *)  buffer)[2] = dport;                 // bytes 4&5
+    ((__u16 *)  buffer)[3] = bpf_htons(reason | n); // bytes 6&7
+	    
+    // send packet to userspace to be forwarded to backend(s)
+    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
+	return E_QUEUE_FAILED;
+    
+    return E_OK;
+}
+
+
 
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
@@ -607,7 +749,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     // we don't support IP options
     if (ip->ihl != 5)
 	return XDP_DROP;
-    
+
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
@@ -747,10 +889,30 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	
 	if (!c)
 	    break;
+
+	// An ICMP message generated by an intermediate router will
+	// not be delivered to the same core via RSS (or even load
+	// balancer when ECMP is in use) so we not be able to locate
+	// the correct (per-CPU) flow information. To ensure that the
+	// message goes to the right backend we pass it up to
+	// userspace where it is forwarded to every backend for that
+	// service; it will be ignored by all but the intended
+	// server (all balancers should see the same set of backends):
+
+	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
+	    // TODO: check return code if we want more detailed stats
+	    icmp_dest_unreach_frag_needed(ip, icmp, data_end, 0);
+	    if (global)
+		global->toobig++;
+	    return XDP_DROP;
+	}
 	
-	// TODO: https://blog.cloudflare.com/path-mtu-discovery-in-practice/
 	if (icmp->type != ICMP_ECHO || icmp->code != 0)
 	    return XDP_DROP;
+
+	// temporary mock for testing - pretend to be dest_unreach/frag_needed for port 80
+	//icmp_dest_unreach_frag_needed(ip, icmp, data_end, 80);
+	//return XDP_DROP;
 
 	__u16 old_csum = icmp->checksum;
 	icmp->checksum = 0;	
@@ -759,7 +921,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	icmp->type = ICMP_ECHOREPLY;
 	icmp->checksum = icmp_checksum_diff(~old_csum, icmp, &old);
 
-	ip_reply(ip);
+	ip_reply(ip); // reset TTL and swap source and destination
 
 	char mac[6];
 	maccpy(mac, eth->h_dest);
