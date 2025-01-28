@@ -584,11 +584,11 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     
     ip_decrease_ttl(ip);
 
-    __be16 dport = 0;
+    __be16 port = 0;
     __u16 protocol = TCP;
     
     if (mock != 0) {
-	dport = bpf_htons(mock);
+	port = bpf_htons(mock);
     } else {
 	// extract information about the flow to which this ICMP refers
 	struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct iphdr);
@@ -620,8 +620,8 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
 	
 	// TCP and UDP headers the same for ports - which is all that we need
 	struct udphdr *inner_udp = next_header;
-
-	dport = inner_udp->dest;
+	
+	port = inner_udp->source; // this will. of course, be the SOURCE port of the inner ip/l4
     }
     
     // send [destip / destport / 0000|protocol|length ]+[original IP+ICMP packet]
@@ -645,7 +645,7 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     n &= 0x07ff; // mask to lowest 11 bit only (max value 2047)
     
     ((__be32 *) buffer)[0] = ip->daddr;             // bytes 0-3
-    ((__u16 *)  buffer)[2] = dport;                 // bytes 4&5
+    ((__u16 *)  buffer)[2] = port;                  // bytes 4&5
     ((__u16 *)  buffer)[3] = bpf_htons(reason | n); // bytes 6&7
 	    
     // send packet to userspace to be forwarded to backend(s)
