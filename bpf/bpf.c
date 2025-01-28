@@ -75,6 +75,7 @@ struct global {
     __u64 dropped;
     __u64 qfailed;
     __u64 blocked;
+    __u64 toobig;
 };
 
 struct {
@@ -185,7 +186,7 @@ struct counter {
     __u64 packets;
     __u64 octets;
     __u64 flows;
-    __u64 pad;
+    __u64 _pad;
 };
 
 struct {
@@ -555,6 +556,7 @@ void *is_ipv4(void *data, void *data_end)
     return data + nh_off;
 }
 
+// experimental ...
 enum {
       E_OK = 0,
       E_TTL_EXCEEDED,
@@ -562,6 +564,7 @@ enum {
       E_FRAGMENTED,
       E_BAD_PROTOCOL,
       E_ABORTED,
+      E_QUEUE_FAILED,
 };
 
 static __always_inline
@@ -581,13 +584,12 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     
     ip_decrease_ttl(ip);
 
-    __be16 port = 0;
+    __be16 dport = 0;
     __u16 protocol = TCP;
     
     if (mock != 0) {
-	port = bpf_htons(mock);
+	dport = bpf_htons(mock);
     } else {
-
 	// extract information about the flow to which this ICMP refers
 	struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct iphdr);
 	
@@ -616,10 +618,10 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
 	if (next_header + sizeof(struct udphdr) > data_end)
 	    return E_INVALID_IP_PACKET;
 	
-	// TCP and UDP headers the same for ports - which is all we need
+	// TCP and UDP headers the same for ports - which is all that we need
 	struct udphdr *inner_udp = next_header;
 
-	port = inner_udp->dest;	
+	dport = inner_udp->dest;
     }
     
     // send [destip / destport / 0000|protocol|length ]+[original IP+ICMP packet]
@@ -635,7 +637,7 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
 	return E_ABORTED;
     
     __u16 n = 0;
-    for (n = 0; n < (SNOOP_BUFFER_SIZE - 8); n++) { // 8 bytes of header
+    for (n = 0; n < (SNOOP_BUFFER_SIZE-8); n++) { // 8 bytes of header
 	if (((void *) ip) + n >= data_end)
 	    break;
 	((__u8 *) buffer)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
@@ -643,11 +645,12 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     n &= 0x07ff; // mask to lowest 11 bit only (max value 2047)
     
     ((__be32 *) buffer)[0] = ip->daddr;             // bytes 0-3
-    ((__u16 *)  buffer)[2] = port;                  // bytes 4&5
+    ((__u16 *)  buffer)[2] = dport;                 // bytes 4&5
     ((__u16 *)  buffer)[3] = bpf_htons(reason | n); // bytes 6&7
 	    
     // send packet to userspace to be forwarded to backend(s)
-    bpf_map_push_elem(&icmp_queue, buffer, 0);
+    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
+	return E_QUEUE_FAILED;
     
     return E_OK;
 }
@@ -893,20 +896,23 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	// the correct (per-CPU) flow information. To ensure that the
 	// message goes to the right backend we pass it up to
 	// userspace where it is forwarded to every backend for that
-	// service, where it will be ignored by all but the intended
-	// server (all balancers see the same set of backends):
+	// service; it will be ignored by all but the intended
+	// server (all balancers should see the same set of backends):
 
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
+	    // TODO: check return code if we want more detailed stats
 	    icmp_dest_unreach_frag_needed(ip, icmp, data_end, 0);
+	    if (global)
+		global->toobig++;
 	    return XDP_DROP;
 	}
 	
 	if (icmp->type != ICMP_ECHO || icmp->code != 0)
 	    return XDP_DROP;
 
-	// temporary mock - pretend to be dest_unreach/frag_needed for port 80
-	icmp_dest_unreach_frag_needed(ip, icmp, data_end, 80);
-	return XDP_DROP;
+	// temporary mock for testing - pretend to be dest_unreach/frag_needed for port 80
+	//icmp_dest_unreach_frag_needed(ip, icmp, data_end, 80);
+	//return XDP_DROP;
 
 	__u16 old_csum = icmp->checksum;
 	icmp->checksum = 0;	

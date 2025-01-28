@@ -105,6 +105,7 @@ type bpf_global struct {
 	dropped        uint64
 	qfailed        uint64
 	blocked        uint64
+	toobig         uint64
 }
 
 func (g *bpf_global) add(a bpf_global) {
@@ -116,6 +117,7 @@ func (g *bpf_global) add(a bpf_global) {
 	g.qfailed += a.qfailed
 	g.dropped += a.dropped
 	g.blocked += a.blocked
+	g.toobig += a.toobig
 }
 
 func (g *bpf_global) latency() uint64 {

@@ -59,6 +59,7 @@ type Info struct {
 	Dropped   uint64 // Number of non-conforming packets dropped
 	Blocked   uint64 // Number of packets dropped by prefix
 	NotQueued uint64 // Failed attempts to queue flow state updates to userspace
+	TooBig    uint64 // ICMP destination unreachable/fragmentation needed
 }
 
 type Stats struct {
@@ -96,7 +97,8 @@ type Client struct {
 
 	service map[key]*service
 	tags    map[netip.Addr]int16
-	hwaddr  map[ip4]mac // IPv4 only
+	hwaddr  map[ip4]mac
+	raw     map[ip4]raw
 	vlans   map[uint16]nic
 	nics    map[string]nic
 
@@ -121,7 +123,7 @@ func (c *Client) Start() error {
 	c.service = map[key]*service{}
 	c.tags = map[netip.Addr]int16{}
 	c.nics = map[string]nic{}
-	c.hwaddr = arp()
+	c.hwaddr, c.raw = arp()
 	c.vlans = vlanInterfaces(c.VLANs)
 	c.icmp = &icmp{}
 
@@ -404,7 +406,7 @@ func (c *Client) background() {
 		}
 
 		old := c.arp_entries()
-		c.hwaddr = arp() // reread arp table
+		c.hwaddr, c.raw = arp() // reread arp table
 		new := c.arp_entries()
 
 		if update_vlans || update_tuples || c.arp_diff(old, new) {
@@ -417,7 +419,7 @@ func (c *Client) background() {
 
 			// resync vlan/mac entries in services
 			for _, s := range c.service {
-				s.sync(c, c.hwaddr, c.tags)
+				s.sync(c, c.hwaddr, c.raw, c.tags)
 			}
 		}
 
@@ -1035,7 +1037,7 @@ func (c *Client) setService(s Service, dst []Destination) error {
 		}
 	}
 
-	service.sync(c, c.hwaddr, c.tags)
+	service.sync(c, c.hwaddr, c.raw, c.tags)
 
 	return nil
 }
@@ -1184,6 +1186,7 @@ func (c *Client) Info() (i Info) {
 	i.Dropped = g.dropped
 	i.Blocked = g.blocked
 	i.NotQueued = g.qfailed
+	i.TooBig = g.toobig
 	return
 }
 
@@ -1277,8 +1280,7 @@ func (c *Client) readICMPQueue() []byte {
 
 func (c *Client) watchICMPQueue() {
 
-	proto := func(b bool) Protocol { return map[bool]Protocol{false: TCP, true: UDP}[b] }
-
+	proto := func(i uint8) Protocol { return map[bool]Protocol{false: TCP, true: UDP}[i > 0] }
 	tries := c.icmp_queue().MaxEntries() / 10        // process 1/10th of the icmp queue
 	ticker := time.NewTicker(100 * time.Millisecond) // ... every 1/10th of a second
 
@@ -1293,20 +1295,20 @@ func (c *Client) watchICMPQueue() {
 				break
 			}
 
-			var ip [4]byte
-			copy(ip[:], r[:])
+			var addr [4]byte
+			copy(addr[:], r[:])
 			port := uint16(r[4])<<8 | uint16(r[5])
-			size := (uint16(r[6])<<8 | uint16(r[7])) & 0x7ff // restricted to 2047 bytes
+			protocol := proto((r[6] >> 3) & 0x01) // 0: TCP, 1: UDP
 			//reason := uint8(r[6]) >> 4 // not used yet
-			protocol := proto((uint8(r[6]&0x08) >> 3) > 0)
-			icmp := r[8 : 8+size]
+			size := (uint16(r[6])<<8 | uint16(r[7])) & 0x7ff // restricted to 2047 bytes
+			packet := r[8 : 8+size]
 
-			c.repeatIP(Service{Address: netip.AddrFrom4(ip), Port: port, Protocol: protocol}, icmp)
+			c.repeatIP(Service{Address: netip.AddrFrom4(addr), Port: port, Protocol: protocol}, packet)
 		}
 	}
 }
 
-// repeat raw IP packet to all backend (healthy or not) for a service
+// repeat raw IP packet to all backends (healthy or not) for a service
 func (c *Client) repeatIP(service Service, packet []byte) {
 	c.mutex.Lock()
 	s, ok := c.service[service.key()]

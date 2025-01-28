@@ -20,7 +20,6 @@ package xvs
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"sort"
 	"sync"
@@ -62,8 +61,6 @@ type Service struct {
 	Sticky   bool       // Only use source and destination IP addresses when determining backend
 }
 
-//type service = _Service
-
 type service struct {
 	Address  netip.Addr // The Virtual IP address of the service
 	Port     uint16     // Layer 4 port number
@@ -74,7 +71,7 @@ type service struct {
 	state   *be_state
 
 	icmp sync.Mutex
-	macs map[ip4]MAC
+	_raw map[ip4]raw
 }
 
 func (s *Service) service() *service {
@@ -155,7 +152,7 @@ func (s *service) removeDestination(c *Client, d Destination) error {
 
 	delete(s.backend, addr) // remove dest from desrvice
 
-	s.sync(c, c.hwaddr, c.tags) // rebuild forwarding table
+	s.sync(c, c.hwaddr, c.raw, c.tags) // rebuild forwarding table
 
 	return nil
 }
@@ -238,7 +235,7 @@ func (s *service) destinations(c *Client) map[ip4]DestinationExtended {
 	return destinations
 }
 
-func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
+func (s *service) sync(c *Client, arp map[ip4]mac, _raw map[ip4]raw, tag map[netip.Addr]int16) {
 
 	port := s.Port
 	protocol := uint8(s.Protocol)
@@ -253,10 +250,8 @@ func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
 	vip := ip4(s.Address.As4())
 	bpf_reals := map[ip4]bpf_real{}
 
-	fmt.Println("SYNC", vip, port, protocol)
-	macs := map[ip4]MAC{}
-
-	//var lc ip4
+	//fmt.Println("SYNC", vip, port, protocol)
+	raws := map[ip4]raw{}
 
 	for ip, real := range s.backend {
 		mac := arp[ip]
@@ -266,23 +261,19 @@ func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
 
 		if ip != nilip && mac != nilmac && real.Weight > 0 && vid >= 0 && vid < 4095 {
 			bpf_reals[ip] = bpf_real{rip: ip, mac: mac, vid: uint16(vid)}
-			//lc = ip
 		} else {
 			//fmt.Println("UNAVAILABLE", ip, mac, real.Weight, vid)
 		}
 
 		// ICMP
-
-		if ip != nilip && mac != nilmac {
-			macs[ip] = mac
+		if r, ok := _raw[ip]; ip != nilip && ok {
+			raws[ip] = r
 		}
 	}
 
 	s.icmp.Lock()
-	s.macs = macs
+	s._raw = raws
 	s.icmp.Unlock()
-
-	fmt.Println(vip, port, protocol, macs)
 
 	key := &bpf_service{vip: vip, port: htons(port), protocol: protocol}
 	val := &be_state{fallback: false, sticky: s.Sticky, bpf_reals: bpf_reals}
@@ -300,39 +291,21 @@ func (s *service) sync(c *Client, arp map[ip4]mac, tag map[netip.Addr]int16) {
 	}
 }
 
-// repeat raw IP packet to all backend (healthy or not) for a service
-func (s *service) repeatIP(xdp *xdp.XDP, packet []byte) {
-	macs := map[ip4]MAC{}
+// OK to use the returned map in a read-only manner
+func (s *service) raw() map[ip4]raw {
 	s.icmp.Lock()
-	macs = s.macs // s.macs will be reassigned to a new object when updated, so safe to use
-	s.icmp.Unlock()
+	defer s.icmp.Unlock()
+	return s._raw
+}
 
-	nic := map[ip4]*net.Interface{}
+// repeat raw IP packet to all backends (healthy or not) for a service
+func (s *service) repeatIP(xdp *xdp.XDP, packet []byte) {
+	var nul MAC
 
-	// each time arp() is run it build an ip->interface mapping for each IP
-	snoop.Lock()
-	for ip, _ := range macs {
-		if i, ok := ipnic[ip]; ok && i != nil {
-			nic[ip] = i
-		}
-	}
-	snoop.Unlock()
-
-	fmt.Println(macs, nic)
-
-	var nul [6]byte
-	for ip, iface := range nic {
-		var h_dest MAC
-		var h_source MAC
-
-		h_dest = macs[ip]
-
-		if len(iface.HardwareAddr) == 6 {
-			copy(h_source[:], iface.HardwareAddr[:])
-		}
-
-		if h_source != nul {
-			xdp.SendRawPacket(iface.Index, h_dest, h_source, packet)
+	for _, r := range s.raw() {
+		// all of these should be non-zero valued anyway, but belt & braces ...
+		if r.idx != 0 && r.dst != nul && r.src != nul {
+			xdp.SendRawPacket(r.idx, r.dst, r.src, packet)
 		}
 	}
 }
