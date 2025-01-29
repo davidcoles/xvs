@@ -591,7 +591,7 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
 	port = bpf_htons(mock);
     } else {
 	// extract information about the flow to which this ICMP refers
-	struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct iphdr);
+	struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct icmphdr);
 	
 	void *next_header;
 	
