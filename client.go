@@ -85,7 +85,8 @@ type Client struct {
 	Debug      Debug                // Debug interface
 	InitDelay  uint8                // Pause for InitDelay seconds between each XDP attach/detach
 	MaxFlows   uint32               // Override size of the flow tracking hash table if non-zero
-	Frags      bool                 // Experimental: Send ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED to all backends when true
+	NoUnreach  bool                 // Don't handle ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED (ie.: don't send to all backends)
+	//Frags      bool               // Experimental: Send ICMP_DEST_UNREACH / ICMP_FRAG_NEEDED to all backends when true
 
 	icmp   *icmp
 	xdp    *xdp.XDP
@@ -243,7 +244,7 @@ func (c *Client) Start() error {
 	go c.background()
 	go c.concurrent()
 
-	if c.Frags {
+	if !c.NoUnreach {
 		go c.watchICMPQueue()
 	}
 
