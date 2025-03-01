@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -29,6 +30,27 @@ func mac(m [6]byte) string {
 }
 
 func main() {
+
+	fmt.Println(os.Args)
+	vip := netip.MustParseAddr(os.Args[1])
+	saddr := netip.MustParseAddr(os.Args[2])
+	daddr := netip.MustParseAddr(os.Args[3])
+	port := uint16(9999)
+	mac, _ := net.ParseMAC(os.Args[4])
+
+	var h_dest [6]byte
+
+	copy(h_dest[:], mac[:])
+
+	fmt.Println("Start")
+	fmt.Println(xvs.Layer3(2, vip.As4(), saddr.As4(), daddr.As4(), port, h_dest))
+
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+func main__() {
 	main_()
 	fmt.Println("exited")
 	time.Sleep(10 * time.Second)
@@ -83,7 +105,6 @@ func main_() {
 		VLANs:      parsevlans(vlans),
 		NAT:        *nat,
 		MaxFlows:   uint32(*flows),
-		Frags:      true,
 	}
 
 	err = client.Start()
