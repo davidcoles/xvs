@@ -73,7 +73,7 @@ func Layer3(nic uint32, h_dest [6]byte, vip addr4, port uint16, saddr addr4, des
 
 	for i, d := range dests {
 		service.flag[i+1] = 0
-		service.port[i+1] = 9999
+		service.port[i+1] = port
 		service.dest[i+1] = bpf_dest4{addr: d}
 	}
 

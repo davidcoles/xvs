@@ -16,6 +16,23 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+/*
+
+ bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
+
+/etc/networkd-dispatcher/routable.d/50-ifup-hooks:
+#!/bin/sh
+ip fou add port 9999 ipproto 4
+ip link set dev tunl0 up
+sysctl -w net.ipv4.conf.tunl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+/etc/modules:
+fou
+ipip
+
+*/
+
 #ifdef __BPF__ // Skip all of this with CGO
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -31,7 +48,6 @@
 
 #define VERSION 1
 #define SECOND_NS 1000000000l
-//#define FOU4_OVERHEAD ((int)(sizeof(struct iphdr) + sizeof(struct udphdr)))
 
 const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
 const __u32 ZERO = 0;
@@ -70,9 +86,12 @@ struct dest {
     };
 };
 
+const __u8 F_L2  = 0x00;
+const __u8 F_FOU = 0x01;
+
 struct service {
-    __u8 flag[256];
-    __be16 port[256];
+    __u8 flag[256]; // flag[0] - global flags for service; sticky, leastconns
+    __be16 port[256]; // port[0] - high byte leastons score, low byte destination index to use
     struct dest dest[256];
     __u8 hash[8192];
 };
@@ -143,19 +162,9 @@ int nulmac(unsigned char *mac)
     return (mac[0] == 0 && mac[1] == 0 && mac[2] == 0 && mac[3] == 0 && mac[4] == 0 && mac[5] == 0);
 }
 
-//static __always_inline
-__u16 ipv4_checksum_diff(__u16 seed, struct iphdr *new, struct iphdr *old)
-{
-    __u32 size = sizeof(struct iphdr);
-    __u32 csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
-    return csum_fold_helper(csum);
-}
-
 static __always_inline
 __u16 ipv4_checksum(struct iphdr *ip)
 {
-    //struct iphdr nil = {};
-    //return ipv4_checksum_diff(0, ip, &nil);
     __u32 size = sizeof(struct iphdr);
     __u32 csum = bpf_csum_diff((__be32 *) ip, 0, (__be32 *) ip, size, 0);
     return csum_fold_helper(csum);
@@ -169,6 +178,32 @@ __u16 icmp_checksum(struct icmphdr *icmp, __u16 size)
     return csum_fold_helper(csum);
 }
 
+static __always_inline
+__u16 sdbm(unsigned char *ptr, __u8 len)
+{
+    unsigned long hash = 0;
+    unsigned char c;
+    unsigned int n;
+
+    for(n = 0; n < len; n++) {
+        c = ptr[n];
+        hash = c + (hash << 6) + (hash << 16) - hash;
+    }
+
+    return hash & 0xffff;
+}
+
+static __always_inline
+__u16 l4_hash(__be32 saddr, __be32 daddr, __be16 source, __be16 dest)
+{
+    struct {
+	__be32 src;
+	__be32 dst;
+	__be16 sport;
+	__be16 dport;
+    } h = { .src = saddr, .dst = daddr, .sport = source, .dport = dest };
+    return sdbm((unsigned char *)&h, sizeof(h));
+}
 	
 static __always_inline
 int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 port)
@@ -226,21 +261,21 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     if (eth + 1 > data_end)
 	return -1;
     
-    __builtin_memcpy(eth, &eth_new, sizeof(*eth));
+    memcpy(eth, &eth_new, sizeof(*eth));
     
     ip = data + sizeof(struct ethhdr);
     
     if (ip + 1 > data_end)
         return -1;
     
-    __builtin_memcpy(ip, &ip_new, sizeof(*ip));
+    memcpy(ip, &ip_new, sizeof(*ip));
     
     struct udphdr *udp = (void *) ip + sizeof(*ip);
     
     if (udp + 1 > data_end)
 	return -1;
     
-    __builtin_memcpy(udp, &udp_new, sizeof(*udp));
+    memcpy(udp, &udp_new, sizeof(*udp));
     
     return 0;
 }
@@ -248,6 +283,9 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 static __always_inline
 int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
+    // FIXME - checksum doesn't work for much larger packets, no sure why - keep the size down for now
+    const int max = 128;
+
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     
@@ -263,11 +301,9 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     
     int iplen = data_end - (void *) ip;
 
-    // FIXME - checksum doesn't work for much larger packets, no sure why - keep the size down fo rnow
-    const int max = 64;
-
-    //if (iplen < max)
-    //  return -1;
+    /* if a packet was smaller than "max" bytes then it should not have been too big - drop */
+    if (iplen < max)
+      return -1;
     
     struct ethhdr eth_copy = *eth;
     struct iphdr ip_copy = *ip;
@@ -279,26 +315,15 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     
     int adjust = 0;
     
-    /* truncate the packet if > max bytes */
+    /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
     if (iplen > max) {
 	adjust = iplen - max;
 	
 	if(bpf_xdp_adjust_tail(ctx, 0 - adjust))
 	    return -1;
-
+	
 	iplen = max;
-    } else {
-	return 0;
-	
-	// only whilst we are dealing with small packets for testing
-	adjust = iplen - ((iplen>>2)<<2); // multiple of 4 bytes
-	if (adjust > 0 && bpf_xdp_adjust_tail(ctx, 0 - adjust))
-            return -1;
-	
-	iplen = ((iplen>>2)<<2);
     }
-    
-    
     
     /* extend header - extra ip and icmp needed*/
     adjust = sizeof(struct iphdr) + sizeof(struct icmphdr);
@@ -355,21 +380,15 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (!buffer)
 	return -1;
     
-    __u16 n = 0;
-    for (n = 0; n < sizeof(struct icmphdr) + max; n++) {
+    for (__u16 n = 0; n < sizeof(struct icmphdr) + max; n++) {
 	if (((void *) icmp) + n >= data_end)
             break;
 	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
     }
 
-    /* calulate checksum over the entire icmp packet + payload */
-    //icmp->checksum = icmp_checksum(icmp, sizeof(struct icmphdr) + iplen);
+    /* calulate checksum over the entire icmp packet + payload (copied to buffer) */
     icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);    
 
-    bpf_printk("FECK %u %u %04x\n", bpf_ntohl(ip->daddr), bpf_ntohl(ip->saddr), icmp->checksum);
-    
-
-    
     return 0;
 }
 
@@ -419,8 +438,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_DROP;
 
     struct tcphdr *tcp = next_header;
-    
-    __u16 hash = tcp->source & 0x1fff; // limit to 0-8191
+
+    __u16 hash = l4_hash(ip->saddr, ip->daddr, tcp->source, tcp->dest) & 0x1fff; // limit to 0-8191
+    //__u16 hash = tcp->source & 0x1fff; // limit to 0-8191
     __u8 index = service->hash[hash];
     __u16 port = service->port[index];
     __u8 flag = service->flag[index];
@@ -432,8 +452,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_DROP;
 
     int mtu = MTU;
-    mtu = 1000;
-    
+
     if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu) { // testing
 	
 	__u16 flags = bpf_ntohs(ip->frag_off) >> 13;
@@ -442,7 +461,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	
 	if (frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD) < 0)
 	    return XDP_DROP;
-
+	
 	bpf_printk("XDP_TX\n");	
 	
 	return XDP_TX;

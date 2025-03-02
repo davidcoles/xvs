@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -31,13 +30,16 @@ func mac(m [6]byte) string {
 
 func main() {
 
-	fmt.Println(os.Args)
-	mac, _ := net.ParseMAC(os.Args[1])
-	saddr := netip.MustParseAddr(os.Args[2])
-	vip := netip.MustParseAddr(os.Args[3])
-	//daddr := netip.MustParseAddr(os.Args[4])
+	port := flag.Uint("p", 9999, "Port to use for FOU")
 
-	port := uint16(9999)
+	flag.Parse()
+
+	args := flag.Args()
+
+	//fmt.Println(os.Args)
+	mac, _ := net.ParseMAC(args[0])
+	saddr := netip.MustParseAddr(args[1])
+	vip := netip.MustParseAddr(args[2])
 
 	var h_dest [6]byte
 
@@ -46,13 +48,19 @@ func main() {
 	type addr4 = [4]byte
 	var addrs []addr4
 
-	for _, d := range os.Args[4:] {
+	for _, d := range args[3:] {
 		addr := netip.MustParseAddr(d)
 		addrs = append(addrs, addr.As4())
 	}
 
-	fmt.Println("Start")
-	fmt.Println(xvs.Layer3(2, h_dest, vip.As4(), port, saddr.As4(), addrs...))
+	fmt.Println("Starting ...")
+	err := xvs.Layer3(2, h_dest, vip.As4(), uint16(*port), saddr.As4(), addrs...)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Started")
 
 	for {
 		time.Sleep(time.Second)
