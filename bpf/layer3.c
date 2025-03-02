@@ -84,6 +84,13 @@ struct {
     __uint(max_entries, 4096);
 } services SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, unsigned int);
+    __type(value, __u8[2048]);
+    __uint(max_entries, 1);
+} buffers SEC(".maps");
+
 static __always_inline
 __u16 csum_fold_helper(__u32 csum)
 {
@@ -136,31 +143,29 @@ int nulmac(unsigned char *mac)
     return (mac[0] == 0 && mac[1] == 0 && mac[2] == 0 && mac[3] == 0 && mac[4] == 0 && mac[5] == 0);
 }
 
-static __always_inline
+//static __always_inline
 __u16 ipv4_checksum_diff(__u16 seed, struct iphdr *new, struct iphdr *old)
 {
-    __u32 csum, size = sizeof(struct iphdr);
-    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
+    __u32 size = sizeof(struct iphdr);
+    __u32 csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
     return csum_fold_helper(csum);
 }
 
 static __always_inline
 __u16 ipv4_checksum(struct iphdr *ip)
 {
-    struct iphdr nil = {};
-    return ipv4_checksum_diff(0, ip, &nil);    
+    //struct iphdr nil = {};
+    //return ipv4_checksum_diff(0, ip, &nil);
+    __u32 size = sizeof(struct iphdr);
+    __u32 csum = bpf_csum_diff((__be32 *) ip, 0, (__be32 *) ip, size, 0);
+    return csum_fold_helper(csum);
 }
 
 
-char nil[1024] = {}; // empty buffer
-char foo[1024] = {}; // replace with a buffer
-
-//static __always_inline
+static __always_inline
 __u16 icmp_checksum(struct icmphdr *icmp, __u16 size)
 {
-    size &= 0x3ff; // 0-1023
-    __u16 seed = 0;
-    __u32 csum = bpf_csum_diff((__be32 *)nil, size, (__be32 *)foo, size, seed);
+    __u32 csum = bpf_csum_diff((__be32 *) icmp, 0, (__be32 *) icmp, size, 0);
     return csum_fold_helper(csum);
 }
 
@@ -240,7 +245,6 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     return 0;
 }
 
-/* FIXME - BROKEN */
 static __always_inline
 int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
@@ -253,44 +257,48 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 	return -1;
     
     struct iphdr *ip = (struct iphdr *)(eth + 1);
-
+    
     if (ip + 1 > data_end)
 	return -1;
     
     int iplen = data_end - (void *) ip;
-    
-    //if (iplen < 568)
+
+    // FIXME - checksum doesn't work for much larger packets, no sure why - keep the size down fo rnow
+    const int max = 64;
+
+    //if (iplen < max)
     //  return -1;
     
     struct ethhdr eth_copy = *eth;
     struct iphdr ip_copy = *ip;
 
-    ip_decrease_ttl(ip);
-    ip->daddr = ip->saddr;
-    ip->saddr = saddr;
-    ip->check = 0;
-    ip->check = ipv4_checksum(ip);
+    // DELIBERATE BREAKAGE
+    //ip->daddr = saddr; // prevent the ICMP from changing the path MTU whilst testing
+    //ip->check = 0;
+    //ip->check = ipv4_checksum(ip);
     
-    memcpy(eth->h_dest, eth_copy.h_source, 6);
-    memcpy(eth->h_source, eth_copy.h_dest, 6);
-
     int adjust = 0;
-
-    /* truncate the packet if > 568 bytes */
-    if (iplen > 568) {
-	adjust = iplen - 568;
+    
+    /* truncate the packet if > max bytes */
+    if (iplen > max) {
+	adjust = iplen - max;
 	
-	if (adjust > 0 && bpf_xdp_adjust_tail(ctx, 0 - adjust))
+	if(bpf_xdp_adjust_tail(ctx, 0 - adjust))
 	    return -1;
+
+	iplen = max;
     } else {
+	return 0;
+	
 	// only whilst we are dealing with small packets for testing
 	adjust = iplen - ((iplen>>2)<<2); // multiple of 4 bytes
 	if (adjust > 0 && bpf_xdp_adjust_tail(ctx, 0 - adjust))
             return -1;
-
+	
 	iplen = ((iplen>>2)<<2);
     }
-
+    
+    
     
     /* extend header - extra ip and icmp needed*/
     adjust = sizeof(struct iphdr) + sizeof(struct icmphdr);
@@ -341,15 +349,26 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 
     ((__u8 *) icmp)[5] = ((__u8)(iplen) >> 2); // struct icmphdr lacks a length field
 
+
+    __u8 *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
+
+    if (!buffer)
+	return -1;
+    
     __u16 n = 0;
-    for (n = 0; n < sizeof(struct icmphdr) + 568; n++) {
+    for (n = 0; n < sizeof(struct icmphdr) + max; n++) {
 	if (((void *) icmp) + n >= data_end)
             break;
-	((__u8 *) foo)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
+	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
     }
 
     /* calulate checksum over the entire icmp packet + payload */
-    icmp->checksum = icmp_checksum(icmp, sizeof(struct icmphdr) + iplen);
+    //icmp->checksum = icmp_checksum(icmp, sizeof(struct icmphdr) + iplen);
+    icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);    
+
+    bpf_printk("FECK %u %u %04x\n", bpf_ntohl(ip->daddr), bpf_ntohl(ip->saddr), icmp->checksum);
+    
+
     
     return 0;
 }
@@ -411,16 +430,20 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     if (index == 0 || daddr == 0 | flag != 0)
 	return XDP_DROP;
-    
-    if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > MTU) {
-	//if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > 50) { // testing
 
-	//__u16 flags = ip->frag_off >> 13;
-	//if (!(flags & 0x02)) // DF bit not set
-	//    return XDP_DROP;
+    int mtu = MTU;
+    mtu = 1000;
+    
+    if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu) { // testing
 	
-	if (frag_needed(ctx, info->saddr, MTU - FOU4_OVERHEAD) < 0)
+	__u16 flags = bpf_ntohs(ip->frag_off) >> 13;
+	if (!(flags & 0x02)) // DF bit not set
 	    return XDP_DROP;
+	
+	if (frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD) < 0)
+	    return XDP_DROP;
+
+	bpf_printk("XDP_TX\n");	
 	
 	return XDP_TX;
     }
