@@ -32,18 +32,27 @@ func mac(m [6]byte) string {
 func main() {
 
 	fmt.Println(os.Args)
-	vip := netip.MustParseAddr(os.Args[1])
+	mac, _ := net.ParseMAC(os.Args[1])
 	saddr := netip.MustParseAddr(os.Args[2])
-	daddr := netip.MustParseAddr(os.Args[3])
+	vip := netip.MustParseAddr(os.Args[3])
+	//daddr := netip.MustParseAddr(os.Args[4])
+
 	port := uint16(9999)
-	mac, _ := net.ParseMAC(os.Args[4])
 
 	var h_dest [6]byte
 
 	copy(h_dest[:], mac[:])
 
+	type addr4 = [4]byte
+	var addrs []addr4
+
+	for _, d := range os.Args[4:] {
+		addr := netip.MustParseAddr(d)
+		addrs = append(addrs, addr.As4())
+	}
+
 	fmt.Println("Start")
-	fmt.Println(xvs.Layer3(2, vip.As4(), saddr.As4(), daddr.As4(), port, h_dest))
+	fmt.Println(xvs.Layer3(2, h_dest, vip.As4(), port, saddr.As4(), addrs...))
 
 	for {
 		time.Sleep(time.Second)

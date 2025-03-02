@@ -24,19 +24,25 @@
 #include <netinet/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
+#include <netinet/tcp.h>
+#include <netinet/ip_icmp.h>
 
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
 
 #define VERSION 1
 #define SECOND_NS 1000000000l
+//#define FOU4_OVERHEAD ((int)(sizeof(struct iphdr) + sizeof(struct udphdr)))
+
+const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
+const __u32 ZERO = 0;
+const __u16 MTU = 1500;
 
 
 struct info {
     __be32 vip;
     __be32 saddr;
-    __be32 daddr;
-    __u16 port;
     char h_dest[6];
+    char pad[2];
 };
 
 struct {
@@ -45,6 +51,38 @@ struct {
     __type(value, struct info);
     __uint(max_entries, 1);
 } infos SEC(".maps");
+
+struct dest4 {
+    __be32 addr;
+    __u16 vid;
+    __u8 mac[6];
+    __u8 flag[4];
+};
+
+struct dest6 {
+    __u8 addr[16];
+};
+    
+struct dest {
+    union {
+        struct dest4 dest4;
+        struct dest6 dest6;
+    };
+};
+
+struct service {
+    __u8 flag[256];
+    __be16 port[256];
+    struct dest dest[256];
+    __u8 hash[8192];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, unsigned int);
+    __type(value, struct service);
+    __uint(max_entries, 4096);
+} services SEC(".maps");
 
 static __always_inline
 __u16 csum_fold_helper(__u32 csum)
@@ -110,10 +148,23 @@ static __always_inline
 __u16 ipv4_checksum(struct iphdr *ip)
 {
     struct iphdr nil = {};
-    return ipv4_checksum_diff(0, ip, &nil);
-    
+    return ipv4_checksum_diff(0, ip, &nil);    
 }
 
+
+char nil[1024] = {}; // empty buffer
+char foo[1024] = {}; // replace with a buffer
+
+//static __always_inline
+__u16 icmp_checksum(struct icmphdr *icmp, __u16 size)
+{
+    size &= 0x3ff; // 0-1023
+    __u16 seed = 0;
+    __u32 csum = bpf_csum_diff((__be32 *)nil, size, (__be32 *)foo, size, seed);
+    return csum_fold_helper(csum);
+}
+
+	
 static __always_inline
 int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 port)
 {
@@ -144,25 +195,22 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 
     int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
     
-    ip_new.check = 0;
-
     ip_new.version = 4;
     ip_new.ihl = 5;    
     ip_new.saddr = saddr;
     ip_new.daddr = daddr;
     ip_new.tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
     ip_new.protocol = IPPROTO_UDP;
+    ip_new.check = 0;
     ip_new.check = ipv4_checksum(&ip_new);    
     
-    int extra = sizeof(struct iphdr) + sizeof(struct udphdr);
-
     __be16 source =  bpf_htons(1234); // hash of orig ip src/dst, udp src/dst
     __be16 dest   =  bpf_htons(port);
     
 
     struct udphdr udp_new = { .source = source, .dest = dest, .len = bpf_htons(udp_len) };
     
-    if (bpf_xdp_adjust_head(ctx, 0 - extra))
+    if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
 	return -1;
     
     data     = (void *)(long)ctx->data;
@@ -192,7 +240,119 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     return 0;
 }
 
-const __u32 ZERO = 0;
+/* FIXME - BROKEN */
+static __always_inline
+int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+	return -1;
+    
+    struct iphdr *ip = (struct iphdr *)(eth + 1);
+
+    if (ip + 1 > data_end)
+	return -1;
+    
+    int iplen = data_end - (void *) ip;
+    
+    //if (iplen < 568)
+    //  return -1;
+    
+    struct ethhdr eth_copy = *eth;
+    struct iphdr ip_copy = *ip;
+
+    ip_decrease_ttl(ip);
+    ip->daddr = ip->saddr;
+    ip->saddr = saddr;
+    ip->check = 0;
+    ip->check = ipv4_checksum(ip);
+    
+    memcpy(eth->h_dest, eth_copy.h_source, 6);
+    memcpy(eth->h_source, eth_copy.h_dest, 6);
+
+    int adjust = 0;
+
+    /* truncate the packet if > 568 bytes */
+    if (iplen > 568) {
+	adjust = iplen - 568;
+	
+	if (adjust > 0 && bpf_xdp_adjust_tail(ctx, 0 - adjust))
+	    return -1;
+    } else {
+	// only whilst we are dealing with small packets for testing
+	adjust = iplen - ((iplen>>2)<<2); // multiple of 4 bytes
+	if (adjust > 0 && bpf_xdp_adjust_tail(ctx, 0 - adjust))
+            return -1;
+
+	iplen = ((iplen>>2)<<2);
+    }
+
+    
+    /* extend header - extra ip and icmp needed*/
+    adjust = sizeof(struct iphdr) + sizeof(struct icmphdr);
+    
+    if (bpf_xdp_adjust_head(ctx, 0 - adjust))
+	return -1;
+
+    data     = (void *)(long)ctx->data;
+    data_end = (void *)(long)ctx->data_end;
+    
+    eth = data;
+    
+    if (eth + 1 > data_end)
+	return -1;
+    
+    ip = (struct iphdr *)(eth + 1);
+
+    if (ip + 1 > data_end)
+	return -1;
+
+    struct icmphdr *icmp = (struct icmphdr *)(ip + 1);
+    
+    if (icmp + 1 > data_end)
+	return -1;
+    
+    *eth = eth_copy;
+    *ip = ip_copy;
+
+    memcpy(eth->h_dest, eth_copy.h_source, 6);
+    memcpy(eth->h_source, eth_copy.h_dest, 6);
+
+    ip->daddr = ip_copy.saddr;
+    ip->saddr = saddr;
+
+    ip->version = 4;
+    ip->ihl = 5;
+    ip->ttl = 64;
+    ip->tot_len = bpf_htons(sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen);
+    ip->protocol = IPPROTO_ICMP;
+    ip->check = 0;
+    ip->check = ipv4_checksum(ip);
+
+    struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0 };
+
+    fou.un.frag.mtu = bpf_htons(mtu);
+
+    *icmp = fou;
+
+    ((__u8 *) icmp)[5] = ((__u8)(iplen) >> 2); // struct icmphdr lacks a length field
+
+    __u16 n = 0;
+    for (n = 0; n < sizeof(struct icmphdr) + 568; n++) {
+	if (((void *) icmp) + n >= data_end)
+            break;
+	((__u8 *) foo)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
+    }
+
+    /* calulate checksum over the entire icmp packet + payload */
+    icmp->checksum = icmp_checksum(icmp, sizeof(struct icmphdr) + iplen);
+    
+    return 0;
+}
 
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
@@ -205,8 +365,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
     //int octets = data_end - data;
 
     struct info *info = bpf_map_lookup_elem(&infos, &ZERO);
+    struct service *service = bpf_map_lookup_elem(&services, &ZERO);
     
-    if (!info)
+    if (!info || !service)
 	return XDP_PASS;
 
     struct ethhdr *eth = data;
@@ -231,8 +392,40 @@ int xdp_fwd_func(struct xdp_md *ctx)
     
     if (ip->ttl <= 1)
 	return XDP_DROP;
+    
+    if (ip->protocol != IPPROTO_TCP)
+	return XDP_DROP;
 
-    if (fou_push(ctx, info->h_dest, info->saddr, info->daddr, info->port) != 0)	
+    if (next_header + sizeof(struct tcphdr) > data_end)
+	return XDP_DROP;
+
+    struct tcphdr *tcp = next_header;
+    
+    __u16 hash = tcp->source & 0x1fff; // limit to 0-8191
+    __u8 index = service->hash[hash];
+    __u16 port = service->port[index];
+    __u8 flag = service->flag[index];
+
+    struct dest dest = service->dest[index];
+    __be32 daddr = dest.dest4.addr;
+
+    if (index == 0 || daddr == 0 | flag != 0)
+	return XDP_DROP;
+    
+    if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > MTU) {
+	//if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > 50) { // testing
+
+	//__u16 flags = ip->frag_off >> 13;
+	//if (!(flags & 0x02)) // DF bit not set
+	//    return XDP_DROP;
+	
+	if (frag_needed(ctx, info->saddr, MTU - FOU4_OVERHEAD) < 0)
+	    return XDP_DROP;
+	
+	return XDP_TX;
+    }
+    
+    if (fou_push(ctx, info->h_dest, info->saddr, daddr, port) != 0)
 	return XDP_ABORTED;
     
     return XDP_TX; 

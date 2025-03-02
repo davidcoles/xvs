@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	_ "embed"
+	//"fmt"
 	"io/ioutil"
 	"unsafe"
 
@@ -23,12 +24,27 @@ func init() {
 type bpf_info struct {
 	vip    [4]byte
 	saddr  [4]byte
-	daddr  [4]byte
-	port   uint16
 	h_dest [6]byte
+	pad    [2]byte
 }
 
-func Layer3(nic uint32, vip, saddr, daddr [4]byte, port uint16, h_dest [6]byte) error {
+type bpf_dest4 struct {
+	addr [4]byte
+	vid  uint16
+	mac  [6]byte
+	pad  [4]byte
+}
+
+type bpf_service3 struct {
+	flag [256]byte
+	port [256]uint16
+	dest [256]bpf_dest4
+	hash [8192]byte
+}
+
+type addr4 = [4]byte
+
+func Layer3(nic uint32, h_dest [6]byte, vip addr4, port uint16, saddr addr4, dests ...addr4) error {
 
 	var ZERO uint32 = 0
 
@@ -37,8 +53,6 @@ func Layer3(nic uint32, vip, saddr, daddr [4]byte, port uint16, h_dest [6]byte) 
 	info := bpf_info{
 		vip:    vip,
 		saddr:  saddr,
-		daddr:  daddr,
-		port:   port,
 		h_dest: h_dest,
 	}
 
@@ -49,12 +63,30 @@ func Layer3(nic uint32, vip, saddr, daddr [4]byte, port uint16, h_dest [6]byte) 
 	}
 
 	infos, err := x.FindMap("infos", 4, int(unsafe.Sizeof(bpf_info{})))
+	services, err := x.FindMap("services", 4, int(unsafe.Sizeof(bpf_service3{})))
 
 	if err != nil {
 		return err
 	}
 
+	var service bpf_service3
+
+	for i, d := range dests {
+		service.flag[i+1] = 0
+		service.port[i+1] = 9999
+		service.dest[i+1] = bpf_dest4{addr: d}
+	}
+
+	for i := 0; i < len(service.hash); i++ {
+		d := i % len(dests)
+		service.hash[i] = byte(d + 1)
+	}
+
+	//fmt.Println(service)
+
 	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY)
+
+	services.UpdateElem(uP(&ZERO), uP(&service), xdp.BPF_ANY)
 
 	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
 		return err
