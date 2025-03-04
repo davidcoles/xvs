@@ -88,20 +88,8 @@ struct dest {
 
 const __u8 F_L2  = 0x00;
 const __u8 F_FOU = 0x01;
+const __u8 F_STICKY = 0x01;
 
-struct service {
-    __u8 flag[256]; // flag[0] - global flags for service; sticky, leastconns
-    __be16 port[256]; // port[0] - high byte leastons score, low byte destination index to use
-    struct dest dest[256];
-    __u8 hash[8192];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, unsigned int);
-    __type(value, struct service);
-    __uint(max_entries, 4096);
-} services SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -109,6 +97,37 @@ struct {
     __type(value, __u8[2048]);
     __uint(max_entries, 1);
 } buffers SEC(".maps");
+
+struct service6 {
+    struct dest6 addr;
+    __be16 port;
+    __u16 proto;
+};
+
+struct destinations {
+    __u8 hash[8192];
+    __u8 flag[256]; // flag[0] - global flags for service; sticky, leastconns
+    __u16 port[256]; // port[0] - high byte leastons score, low byte destination index to use
+    struct dest dest[256];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct service6);
+    __type(value, struct destinations);
+    __uint(max_entries, 4096);
+} destinations SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u8[16]);
+    __type(value, __u32);
+    __uint(max_entries, 4096);
+} vips SEC(".maps");
+
+
+
+/**********************************************************************/
 
 static __always_inline
 __u16 csum_fold_helper(__u32 csum)
@@ -159,7 +178,7 @@ int ip_decrease_ttl(struct iphdr *ip)
 static __always_inline
 int nulmac(unsigned char *mac)
 {
-    return (mac[0] == 0 && mac[1] == 0 && mac[2] == 0 && mac[3] == 0 && mac[4] == 0 && mac[5] == 0);
+    return (!mac[0] && !mac[1] && !mac[2] && !mac[3] && !mac[4] && !mac[5]);
 }
 
 static __always_inline
@@ -194,19 +213,25 @@ __u16 sdbm(unsigned char *ptr, __u8 len)
 }
 
 static __always_inline
-__u16 l4_hash(__be32 saddr, __be32 daddr, __be16 source, __be16 dest)
+__u16 l4_hash(struct iphdr *ip, void *l4)
 {
+    // UDP, TCP and SCTP all have src and dst port in 1st 32 bits
+    struct udphdr *udp = (struct udphdr *) l4;
     struct {
 	__be32 src;
 	__be32 dst;
 	__be16 sport;
 	__be16 dport;
-    } h = { .src = saddr, .dst = daddr, .sport = source, .dport = dest };
+    } h = { .src = ip->saddr, .dst = ip->daddr};
+    if (udp) {
+	h.sport = udp->source;
+	h.dport = udp->dest;
+    }
     return sdbm((unsigned char *)&h, sizeof(h));
 }
-	
+
 static __always_inline
-int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 port)
+int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -228,7 +253,7 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 
     if (ip + 1 > data_end)
         return -1;
-
+    
     ip_decrease_ttl(ip);
     
     struct iphdr ip_new = *ip;
@@ -244,11 +269,7 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     ip_new.check = 0;
     ip_new.check = ipv4_checksum(&ip_new);    
     
-    __be16 source =  bpf_htons(1234); // hash of orig ip src/dst, udp src/dst
-    __be16 dest   =  bpf_htons(port);
-    
-
-    struct udphdr udp_new = { .source = source, .dest = dest, .len = bpf_htons(udp_len) };
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
     
     if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
 	return -1;
@@ -280,10 +301,69 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     return 0;
 }
 
+
+
+//static __always_inline
+struct destinations *lookup4(__be32 addr4, __u16 port, __u8 protocol)
+{
+    struct dest6 daddr6 = {};
+    *((__be32 *) (daddr6.addr + 12)) = addr4;
+    struct service6 s6 = { .addr = daddr6, .port = bpf_ntohs(port), .proto = protocol };
+    struct destinations *service = bpf_map_lookup_elem(&destinations, &s6);
+    return service;
+}
+
+struct destination {
+    __be32 addr4;
+    __u8 addr6[16];
+    __u16 vlanid;
+    __u16 sport;
+    __u16 dport;
+    char mac[6];
+    __u8 type;
+};
+
+//static __always_inline
+struct destinations *lookup4_(struct iphdr *ip, struct udphdr *l4, struct destination *r)
+{
+    struct dest6 daddr6 = {};
+    *((__be32 *) (daddr6.addr + 12)) = ip->daddr;
+
+    struct service6 s6 = { .addr = daddr6, .port = bpf_ntohs(l4->dest), .proto = ip->protocol };
+    struct destinations *service = bpf_map_lookup_elem(&destinations, &s6);
+
+    if (!service)
+	return NULL;
+    
+    __u8 sticky = service->flag[0] & F_STICKY;
+    __u16 hash3 = l4_hash(ip, NULL);
+    __u16 hash4 = l4_hash(ip, l4);
+    __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
+
+    if (!index)
+	return NULL;
+    
+    struct dest dest = service->dest[index];
+    r->addr4 = dest.dest4.addr;
+    r->sport = 0x8000 | (hash4 & 0x7fff);
+    r->dport = service->port[index];
+
+    __u8 flag = service->flag[index];
+    
+    r->type = flag & 0x07; // mask off
+
+    if (r->addr4 == 0)
+	return NULL;
+    
+    return service;
+
+}
+
 static __always_inline
 int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
-    // FIXME - checksum doesn't work for much larger packets, no sure why - keep the size down for now
+    // FIXME: checksum doesn't work for much larger packets, unsure why - keep the size down for now
+    // maybe the csum_diff helper has a bounded loop and needs to be invoked mutiple times?
     const int max = 128;
 
     void *data     = (void *)(long)ctx->data;
@@ -403,9 +483,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
     //int octets = data_end - data;
 
     struct info *info = bpf_map_lookup_elem(&infos, &ZERO);
-    struct service *service = bpf_map_lookup_elem(&services, &ZERO);
     
-    if (!info || !service)
+    if (!info)
 	return XDP_PASS;
 
     struct ethhdr *eth = data;
@@ -419,15 +498,18 @@ int xdp_fwd_func(struct xdp_md *ctx)
     /* We don't deal wih any traffic that is not IPv4 */
     if (eth->h_proto != bpf_htons(ETH_P_IP))
         return XDP_PASS;
-
+    
     struct iphdr *ip = next_header;
     
     if (!(next_header = is_ipv4(ip, data_end)))
 	return XDP_DROP;
 
-    if (ip->daddr != info->vip)
-	return XDP_PASS;
-    
+    struct dest6 daddr6 = {};
+    *((__be32 *) (daddr6.addr + 12)) = ip->daddr;
+
+    if (!bpf_map_lookup_elem(&vips, &daddr6))
+    	return XDP_PASS;
+
     if (ip->ttl <= 1)
 	return XDP_DROP;
     
@@ -439,21 +521,45 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     struct tcphdr *tcp = next_header;
 
-    __u16 hash = l4_hash(ip->saddr, ip->daddr, tcp->source, tcp->dest) & 0x1fff; // limit to 0-8191
-    //__u16 hash = tcp->source & 0x1fff; // limit to 0-8191
-    __u8 index = service->hash[hash];
-    __u16 port = service->port[index];
-    __u8 flag = service->flag[index];
+    //struct service6 s6 = { .addr = daddr6, .port = bpf_ntohs(tcp->dest), .proto = IPPROTO_TCP };
+    //struct destinations *service = bpf_map_lookup_elem(&destinations, &s6);
 
+    struct destination foo;
+    //struct destinations *service = lookup4(ip->daddr, tcp->dest, IPPROTO_TCP);
+    struct destinations *service = lookup4_(ip, (struct udphdr *) tcp, &foo);
+
+    switch (foo.type) {
+    case F_FOU:
+	break;
+    default:
+	return XDP_DROP;
+    }
+
+    if (!service)
+	return XDP_DROP;
+
+    /*
+    __u8 sticky = service->flag[0] & F_STICKY;
+    __u16 hash3 = l4_hash(ip, NULL);
+    __u16 hash4 = l4_hash(ip, (struct udphdr *) tcp);    
+    __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
+
+    if (!index)
+	return XDP_DROP;
+    
     struct dest dest = service->dest[index];
     __be32 daddr = dest.dest4.addr;
-
-    if (index == 0 || daddr == 0 | flag != 0)
+    __u16 sport = 0x8000 | (hash4 & 0x7fff);
+    __u16 dport = service->port[index];
+    __u8 flag = service->flag[index];
+    
+    if (daddr == 0 | flag != F_FOU)
 	return XDP_DROP;
+    */
 
     int mtu = MTU;
 
-    if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu) { // testing
+    if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu) {
 	
 	__u16 flags = bpf_ntohs(ip->frag_off) >> 13;
 	if (!(flags & 0x02)) // DF bit not set
@@ -462,12 +568,12 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	if (frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD) < 0)
 	    return XDP_DROP;
 	
-	bpf_printk("XDP_TX\n");	
+	bpf_printk("ICMP_FRAG_NEEDED\n");	
 	
 	return XDP_TX;
     }
     
-    if (fou_push(ctx, info->h_dest, info->saddr, daddr, port) != 0)
+    if (fou_push(ctx, info->h_dest, info->saddr, foo.addr4, foo.sport, foo.dport) != 0)
 	return XDP_ABORTED;
     
     return XDP_TX; 

@@ -30,6 +30,7 @@ func mac(m [6]byte) string {
 
 func main() {
 
+	sticky := flag.Bool("s", false, "Sticky")
 	port := flag.Uint("p", 9999, "Port to use for FOU")
 
 	flag.Parse()
@@ -54,17 +55,13 @@ func main() {
 	}
 
 	fmt.Println("Starting ...")
-	err := xvs.Layer3(2, h_dest, vip.As4(), uint16(*port), saddr.As4(), addrs...)
+	err := xvs.Layer3(2, h_dest, saddr.As4(), vip.As4(), uint16(*port), *sticky, addrs...)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Println("Started")
-
-	for {
-		time.Sleep(time.Second)
-	}
+	fmt.Println("OK")
 }
 
 func main__() {
