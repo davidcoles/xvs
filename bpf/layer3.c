@@ -426,18 +426,24 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     void *data_end = (void *)(long)ctx->data_end;
     
     struct ethhdr *eth = data;
-    struct vlan_hdr *vlan = NULL;    
-    struct iphdr *ip = NULL;
+    //struct vlan_hdr *vlan = NULL;    
+    //struct iphdr *ip = NULL;
     
     if (eth + 1 > data_end)
 	return -1;
 
+    struct vlan_hdr vlan_new = {};
+    struct vlan_hdr *vlan = NULL;
+    struct iphdr *ip = NULL;
+    
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-	vlan = (struct vlan_hdr *) eth + 1;
+	vlan = (struct vlan_hdr *) (eth + 1);
 	
 	if (vlan + 1 > data_end)
-            return -1;
-
+	    return -1;
+	
+	vlan_new = *vlan;
+	
 	ip = (struct iphdr *)(vlan + 1);
     } else {
 	ip = (struct iphdr *)(eth + 1);
@@ -488,11 +494,27 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (eth + 1 > data_end)
 	return -1;
     
-    ip = (struct iphdr *)(eth + 1);
+    if(vlan) {
+	vlan = (struct vlan_hdr *)(eth + 1);
+	
+	if (vlan + 1 > data_end)
+	    return -1;
+	
+	//memcpy(vlan, &vlan_new, sizeof(*vlan));
+	*vlan = vlan_new;
+	
+	ip = (struct iphdr *)(vlan + 1);
+    } else {
+	ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
+    }
+
+    //ip = (struct iphdr *)(eth + 1);
 
     if (ip + 1 > data_end)
 	return -1;
 
+    /* FIXME - VLAN */
+    
     struct icmphdr *icmp = (struct icmphdr *)(ip + 1);
     
     if (icmp + 1 > data_end)
