@@ -29,18 +29,18 @@ type bpf_info struct {
 }
 
 type bpf_dest4 struct {
-	addr [4]byte
 	vid  uint16
 	mac  [6]byte
 	pad  [4]byte
+	addr [4]byte
 }
 
 type bpf_service3 struct {
 	hash   [8192]uint8
 	flag   [256]uint8
-	port   [256]uint16
-	dest   [256]bpf_dest4
-	source bpf_dest4
+	sport  [256]uint16
+	daddr  [256]bpf_dest4
+	saddr  bpf_dest4
 	h_dest [6]byte
 	pad    [2]byte
 }
@@ -102,8 +102,8 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	var service bpf_service3
 
 	const F_LAYER2_DSR uint8 = 0x00
-	const F_LAYER3_FOU4 uint8 = 0x01
-	const F_LAYER3_FOU6 uint8 = 0x02
+	const F_LAYER3_FOU4 uint8 = 0x01 // IPv4 host with FOU tunnel
+	const F_LAYER3_FOU6 uint8 = 0x02 // IPv6 host with FOU tunnel
 	//const F_FOU uint8 = 0x02
 	//const F_FOU uint8 = 0x03
 	//const F_FOU uint8 = 0x05
@@ -116,13 +116,13 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 		service.flag[0] |= F_STICKY
 	}
 
-	service.source = bpf_dest4{addr: saddr}
+	service.saddr = bpf_dest4{addr: saddr}
 	service.h_dest = h_dest
 
 	for i, d := range dests {
 		service.flag[i+1] = F_LAYER3_FOU4
-		service.port[i+1] = port
-		service.dest[i+1] = bpf_dest4{addr: d}
+		service.sport[i+1] = port
+		service.daddr[i+1] = bpf_dest4{addr: d}
 	}
 
 	for i := 0; i < len(service.hash); i++ {
