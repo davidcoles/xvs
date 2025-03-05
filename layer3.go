@@ -36,10 +36,13 @@ type bpf_dest4 struct {
 }
 
 type bpf_service3 struct {
-	hash [8192]uint8
-	flag [256]uint8
-	port [256]uint16
-	dest [256]bpf_dest4
+	hash   [8192]uint8
+	flag   [256]uint8
+	port   [256]uint16
+	dest   [256]bpf_dest4
+	source bpf_dest4
+	h_dest [6]byte
+	pad    [2]byte
 }
 
 type bpf_service6 struct {
@@ -113,8 +116,11 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 		service.flag[0] |= F_STICKY
 	}
 
+	service.source = bpf_dest4{addr: saddr}
+	service.h_dest = h_dest
+
 	for i, d := range dests {
-		service.flag[i+1] = F_LAYER3_FOU4 // FOU
+		service.flag[i+1] = F_LAYER3_FOU4
 		service.port[i+1] = port
 		service.dest[i+1] = bpf_dest4{addr: d}
 	}
@@ -124,7 +130,7 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 		service.hash[i] = byte(d + 1)
 	}
 
-	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY)
+	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
 
 	for _, p := range []uint16{80, 443, 8000} {
 		s6.port = p

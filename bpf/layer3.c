@@ -83,13 +83,15 @@ struct dest4 {
 struct dest6 {
     __u8 addr[16];
 };
-    
+
 struct dest {
     union {
-        struct dest4 dest4;
-        struct dest6 dest6;
+        struct dest4 addr4;
+        struct dest6 addr6;
     };
 };
+
+typedef struct dest addr;
 
 //const __u8 F_L2  = 0x00;
 //const __u8 F_FOU = 0x01;
@@ -117,6 +119,9 @@ struct destinations {
     __u8 flag[256]; // flag[0] - global flags for service; sticky, leastconns
     __u16 port[256]; // port[0] - high byte leastons score, low byte destination index to use
     struct dest dest[256];
+    struct dest source;
+    __u8 h_dest[6];
+    __u8 pad[2];
 };
 
 struct {
@@ -320,19 +325,18 @@ struct destinations *lookup4_(__be32 addr4, __u16 port, __u8 protocol)
 }
 
 struct destination {
-    __be32 addr4;
-    __u8 addr6[16];
-    __u16 vlanid;
-    __u16 sport;
-    __u16 dport;
-    char mac[6];
-    __u8 type;
+    struct dest addr;
+    struct dest saddr;
+    __u16 sport; // FOU
+    __u16 dport; // FOU
+    __u8 h_dest[6]; // router MAC
 };
 
 static __always_inline
-int send_fou_push(struct xdp_md *ctx, struct info *info, struct destination *dest)
+int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    return (fou_push(ctx, info->h_dest, info->saddr, dest->addr4, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
+    
+    return (fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->addr.addr4.addr, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
 }
 
 
@@ -355,6 +359,9 @@ int lookup4(struct iphdr *ip, void *l4, struct destination *r)
 
     if (!service)
 	return NOT_FOUND;
+
+    r->saddr = service->source;
+    memcpy(r->h_dest, service->h_dest, 6);
     
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l4_hash(ip, NULL);
@@ -368,8 +375,7 @@ int lookup4(struct iphdr *ip, void *l4, struct destination *r)
     __u8 flag = service->flag[index];
 
 
-    r->addr4 = dest.dest4.addr;
-    //*((struct addr6 *) (&(r->addr6))) = dest.dest6.addr;
+    r->addr = dest;    
     r->dport = service->port[index];
 
    r->sport = 0x8000 | (hash4 & 0x7fff);
@@ -524,10 +530,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
     void *data     = (void *)(long)ctx->data;
     //int octets = data_end - data;
 
-    struct info *info = bpf_map_lookup_elem(&infos, &ZERO);
-    
-    if (!info)
-	return XDP_PASS;
+    //struct info *info = bpf_map_lookup_elem(&infos, &ZERO);
+    //if (!info)
+    //return XDP_PASS;
 
     struct ethhdr *eth = data;
     __u32 nh_off = sizeof(struct ethhdr);
@@ -572,10 +577,11 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP if so */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
-	    return send_frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD);
+	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
+	//return send_frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD);	
 	
 	/* Encapsulate and send the packet */
-	return send_fou_push(ctx, info, &dest);
+	return send_fou4(ctx, &dest);
 	
     case LAYER3_FOU6:
 	/* not implemented yet */
