@@ -357,7 +357,7 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 	return -1;
     
     //memcpy(udp, &udp_new, sizeof(*udp));
-    *udp, udp_new;
+    *udp = udp_new;
     
     return 0;
 }
