@@ -75,7 +75,7 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 
 	s6 := bpf_service6{
 		addr:  vip6,
-		port:  80,
+		port:  8000,
 		proto: 6,
 	}
 
@@ -98,8 +98,9 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	}
 	var service bpf_service3
 
-	const F_L2 uint8 = 0x00
-	const F_FOU uint8 = 0x01
+	const F_LAYER2_DSR uint8 = 0x00
+	const F_LAYER3_FOU4 uint8 = 0x01
+	const F_LAYER3_FOU6 uint8 = 0x02
 	//const F_FOU uint8 = 0x02
 	//const F_FOU uint8 = 0x03
 	//const F_FOU uint8 = 0x05
@@ -113,7 +114,7 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	}
 
 	for i, d := range dests {
-		service.flag[i+1] = F_FOU // FOU
+		service.flag[i+1] = F_LAYER3_FOU4 // FOU
 		service.port[i+1] = port
 		service.dest[i+1] = bpf_dest4{addr: d}
 	}
@@ -124,7 +125,12 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	}
 
 	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY)
-	destinations.UpdateElem(uP(&s6), uP(&service), xdp.BPF_ANY)
+
+	for _, p := range []uint16{80, 443, 8000} {
+		s6.port = p
+		destinations.UpdateElem(uP(&s6), uP(&service), xdp.BPF_ANY)
+	}
+
 	vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
 
 	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {

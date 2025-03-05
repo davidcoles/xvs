@@ -44,6 +44,11 @@ ipip
 #include <netinet/tcp.h>
 #include <netinet/ip_icmp.h>
 
+#define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
+	    //__u16 flags = bpf_ntohs(ip->frag_off) >> 13;
+	    //if (!(flags & 0x02)) // DF bit not set
+    
+
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
 
 #define VERSION 1
@@ -86,8 +91,11 @@ struct dest {
     };
 };
 
-const __u8 F_L2  = 0x00;
-const __u8 F_FOU = 0x01;
+//const __u8 F_L2  = 0x00;
+//const __u8 F_FOU = 0x01;
+const __u8 F_LAYER2_DSR = 0x00;
+const __u8 F_LAYER3_FOU4 = 0x01;
+const __u8 F_LAYER3_FOU6 = 0x02;
 const __u8 F_STICKY = 0x01;
 
 
@@ -301,10 +309,8 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     return 0;
 }
 
-
-
 //static __always_inline
-struct destinations *lookup4(__be32 addr4, __u16 port, __u8 protocol)
+struct destinations *lookup4_(__be32 addr4, __u16 port, __u8 protocol)
 {
     struct dest6 daddr6 = {};
     *((__be32 *) (daddr6.addr + 12)) = addr4;
@@ -323,17 +329,32 @@ struct destination {
     __u8 type;
 };
 
-//static __always_inline
-struct destinations *lookup4_(struct iphdr *ip, struct udphdr *l4, struct destination *r)
+static __always_inline
+int send_fou_push(struct xdp_md *ctx, struct info *info, struct destination *dest)
 {
+    return (fou_push(ctx, info->h_dest, info->saddr, dest->addr4, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
+}
+
+
+enum lookup_result {
+		    NOT_FOUND = 0,
+		    LAYER2_DSR,
+		    LAYER3_FOU4,
+		    LAYER3_FOU6,		    
+};
+
+static __always_inline
+int lookup4(struct iphdr *ip, void *l4, struct destination *r)
+{
+    struct udphdr *udp = l4;
     struct dest6 daddr6 = {};
     *((__be32 *) (daddr6.addr + 12)) = ip->daddr;
-
-    struct service6 s6 = { .addr = daddr6, .port = bpf_ntohs(l4->dest), .proto = ip->protocol };
+    
+    struct service6 s6 = { .addr = daddr6, .port = bpf_ntohs(udp->dest), .proto = ip->protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &s6);
 
     if (!service)
-	return NULL;
+	return NOT_FOUND;
     
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l4_hash(ip, NULL);
@@ -341,23 +362,34 @@ struct destinations *lookup4_(struct iphdr *ip, struct udphdr *l4, struct destin
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
-	return NULL;
+	return NOT_FOUND;
     
     struct dest dest = service->dest[index];
+    __u8 flag = service->flag[index];
+
+
     r->addr4 = dest.dest4.addr;
-    r->sport = 0x8000 | (hash4 & 0x7fff);
+    //*((struct addr6 *) (&(r->addr6))) = dest.dest6.addr;
     r->dport = service->port[index];
 
-    __u8 flag = service->flag[index];
+   r->sport = 0x8000 | (hash4 & 0x7fff);
+   return LAYER3_FOU4;
     
-    r->type = flag & 0x07; // mask off
+   switch (flag) {
+	
+    case F_LAYER3_FOU4:
+	r->sport = 0x8000 | (hash4 & 0x7fff);
+	return LAYER3_FOU4;
+	
+    case F_LAYER3_FOU6:
+	r->sport = 0x8000 | (hash4 & 0x7fff);
+	return LAYER3_FOU6;
 
-    if (r->addr4 == 0)
-	return NULL;
-    
-    return service;
+    }
 
+   return NOT_FOUND;
 }
+
 
 static __always_inline
 int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
@@ -378,6 +410,11 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     
     if (ip + 1 > data_end)
 	return -1;
+
+
+    /* if DF is not set then drop */
+    if (!IS_DF(ip->frag_off))
+	return -1;
     
     int iplen = data_end - (void *) ip;
 
@@ -390,8 +427,6 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 
     // DELIBERATE BREAKAGE
     //ip->daddr = saddr; // prevent the ICMP from changing the path MTU whilst testing
-    //ip->check = 0;
-    //ip->check = ipv4_checksum(ip);
     
     int adjust = 0;
     
@@ -472,6 +507,13 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     return 0;
 }
 
+
+static __always_inline
+int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
+{
+    return (frag_needed(ctx, saddr, mtu - FOU4_OVERHEAD) < 0) ? XDP_DROP : XDP_TX;
+}
+
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
@@ -520,63 +562,27 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_DROP;
 
     struct tcphdr *tcp = next_header;
-
-    //struct service6 s6 = { .addr = daddr6, .port = bpf_ntohs(tcp->dest), .proto = IPPROTO_TCP };
-    //struct destinations *service = bpf_map_lookup_elem(&destinations, &s6);
-
-    struct destination foo;
-    //struct destinations *service = lookup4(ip->daddr, tcp->dest, IPPROTO_TCP);
-    struct destinations *service = lookup4_(ip, (struct udphdr *) tcp, &foo);
-
-    switch (foo.type) {
-    case F_FOU:
-	break;
-    default:
-	return XDP_DROP;
-    }
-
-    if (!service)
-	return XDP_DROP;
-
-    /*
-    __u8 sticky = service->flag[0] & F_STICKY;
-    __u16 hash3 = l4_hash(ip, NULL);
-    __u16 hash4 = l4_hash(ip, (struct udphdr *) tcp);    
-    __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
-
-    if (!index)
-	return XDP_DROP;
-    
-    struct dest dest = service->dest[index];
-    __be32 daddr = dest.dest4.addr;
-    __u16 sport = 0x8000 | (hash4 & 0x7fff);
-    __u16 dport = service->port[index];
-    __u8 flag = service->flag[index];
-    
-    if (daddr == 0 | flag != F_FOU)
-	return XDP_DROP;
-    */
+    struct destination dest = {};
 
     int mtu = MTU;
 
-    if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu) {
+    switch (lookup4(ip, tcp, &dest)) {
+
+    case LAYER3_FOU4:
+
+	/* Will the packet and FOU headers exceed the MTU? Send ICMP if so */
+	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
+	    return send_frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD);
 	
-	__u16 flags = bpf_ntohs(ip->frag_off) >> 13;
-	if (!(flags & 0x02)) // DF bit not set
-	    return XDP_DROP;
+	/* Encapsulate and send the packet */
+	return send_fou_push(ctx, info, &dest);
 	
-	if (frag_needed(ctx, info->saddr, mtu - FOU4_OVERHEAD) < 0)
-	    return XDP_DROP;
-	
-	bpf_printk("ICMP_FRAG_NEEDED\n");	
-	
-	return XDP_TX;
+    case LAYER3_FOU6:
+	/* not implemented yet */
+	break;
     }
     
-    if (fou_push(ctx, info->h_dest, info->saddr, foo.addr4, foo.sport, foo.dport) != 0)
-	return XDP_ABORTED;
-    
-    return XDP_TX; 
+    return XDP_DROP; 
 }
     
 SEC("xdp")
