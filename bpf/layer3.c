@@ -123,11 +123,11 @@ struct destination {
 struct destinations {
     __u8 hash[8192];
     __u8 flag[256]; // flag[0] - global flags for service; sticky, leastconns
-    __u16 dport[256]; // port[0] - high byte leastons score, low byte destination index to use
+    __u16 dport[256]; // port[0] - high byte leastconns score, low byte destination index to use
     struct addr daddr[256];
-    struct addr saddr;
-    __u8 h_dest[6];
-    __u8 pad[2];
+    struct addr saddr; // source address to use with tunnels
+    __u8 h_dest[6];    // router MAC address to send encapsulated packets to
+    __u16 vlanid;      // VLAN ID which encapsulated packets should be sent on
 };
 
 struct {
@@ -338,9 +338,6 @@ int lookup4(struct iphdr *ip, void *l4, struct destination *r)
     if (!service)
 	return NOT_FOUND;
 
-    r->saddr = service->saddr;
-    memcpy(r->h_dest, service->h_dest, 6);
-    
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l4_hash(ip, NULL);
     __u16 hash4 = l4_hash(ip, l4);
@@ -349,9 +346,11 @@ int lookup4(struct iphdr *ip, void *l4, struct destination *r)
     if (!index)
 	return NOT_FOUND;
     
-    r->daddr = service->daddr[index];
-    r->dport = service->dport[index];
-    r->sport = 0x8000 | (hash4 & 0x7fff);
+    r->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
+    r->saddr = service->saddr;             // source address to send L3 tunnel traffic from
+    r->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
+    r->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
+    memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel
     
     __u8 flag = service->flag[index];
 
