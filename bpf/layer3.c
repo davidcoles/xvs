@@ -276,8 +276,25 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     if (nulmac(eth_new.h_dest) || nulmac(eth_new.h_source))
 	return -1;
 
-    struct iphdr *ip = (struct iphdr *)(eth + 1);
+    //struct iphdr *ip = (struct iphdr *)(eth + 1);
 
+    struct vlan_hdr vlan_new = {};
+    struct vlan_hdr *vlan = NULL;
+    struct iphdr *ip = NULL;
+    
+    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+	vlan = (struct vlan_hdr *) (eth + 1);
+	
+	if (vlan + 1 > data_end)
+	    return -1;
+	
+	vlan_new = *vlan;
+	
+	ip = (struct iphdr *)(vlan + 1);
+    } else {
+	ip = (struct iphdr *)(eth + 1);
+    }
+    
     if (ip + 1 > data_end)
         return -1;
     
@@ -309,21 +326,38 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     if (eth + 1 > data_end)
 	return -1;
     
-    memcpy(eth, &eth_new, sizeof(*eth));
-    
-    ip = data + sizeof(struct ethhdr);
+    //memcpy(eth, &eth_new, sizeof(*eth));
+    *eth = eth_new;   
+
+    //ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
+
+    if(vlan) {
+	vlan = (struct vlan_hdr *)(eth + 1);
+	
+	if (vlan + 1 > data_end)
+	    return -1;
+	
+	//memcpy(vlan, &vlan_new, sizeof(*vlan));
+	*vlan = vlan_new;
+	
+	ip = (struct iphdr *)(vlan + 1);
+    } else {
+	ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
+    }
     
     if (ip + 1 > data_end)
         return -1;
     
-    memcpy(ip, &ip_new, sizeof(*ip));
+    //memcpy(ip, &ip_new, sizeof(*ip));
+    *ip = ip_new;
     
     struct udphdr *udp = (void *) ip + sizeof(*ip);
     
     if (udp + 1 > data_end)
 	return -1;
     
-    memcpy(udp, &udp_new, sizeof(*udp));
+    //memcpy(udp, &udp_new, sizeof(*udp));
+    *udp, udp_new;
     
     return 0;
 }
