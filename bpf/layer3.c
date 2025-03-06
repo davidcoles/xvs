@@ -257,30 +257,21 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
     return sdbm((unsigned char *)&h, sizeof(h));
 }
 
+
 static __always_inline
 int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
-    struct ethhdr *eth = (void *)(long)ctx->data;
+    struct ethhdr *eth = data, eth_new = {};
+    struct vlan_hdr *vlan = NULL, vlan_new = {};
+    struct iphdr *ip = NULL, ip_new = {};
     
     if (eth + 1 > data_end)
         return -1;
 
-    struct ethhdr eth_new = *eth;
-    
-    memcpy(eth_new.h_source, eth_new.h_dest, 6);
-    memcpy(eth_new.h_dest, router, 6);    
-    
-    if (nulmac(eth_new.h_dest) || nulmac(eth_new.h_source))
-	return -1;
-
-    //struct iphdr *ip = (struct iphdr *)(eth + 1);
-
-    struct vlan_hdr vlan_new = {};
-    struct vlan_hdr *vlan = NULL;
-    struct iphdr *ip = NULL;
+    eth_new = *eth;    
     
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
 	vlan = (struct vlan_hdr *) (eth + 1);
@@ -298,11 +289,18 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     if (ip + 1 > data_end)
         return -1;
     
+    memcpy(eth_new.h_source, eth_new.h_dest, 6);
+    memcpy(eth_new.h_dest, router, 6);    
+    
+    if (nulmac(eth_new.h_dest) || nulmac(eth_new.h_source))
+	return -1;
+    
     ip_decrease_ttl(ip);
     
-    struct iphdr ip_new = *ip;
+    ip_new = *ip;
 
     int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
     
     ip_new.version = 4;
     ip_new.ihl = 5;    
@@ -313,23 +311,18 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     ip_new.check = 0;
     ip_new.check = ipv4_checksum(&ip_new);    
     
-    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
-    
     if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
 	return -1;
     
     data     = (void *)(long)ctx->data;
     data_end = (void *)(long)ctx->data_end;
 
-    eth = (void *)(long)ctx->data;
+    eth = data;
     
     if (eth + 1 > data_end)
 	return -1;
     
-    //memcpy(eth, &eth_new, sizeof(*eth));
     *eth = eth_new;   
-
-    //ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
 
     if(vlan) {
 	vlan = (struct vlan_hdr *)(eth + 1);
@@ -337,18 +330,16 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 	if (vlan + 1 > data_end)
 	    return -1;
 	
-	//memcpy(vlan, &vlan_new, sizeof(*vlan));
 	*vlan = vlan_new;
 	
 	ip = (struct iphdr *)(vlan + 1);
     } else {
-	ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
+	ip = (struct iphdr *)(eth + 1);
     }
     
     if (ip + 1 > data_end)
         return -1;
     
-    //memcpy(ip, &ip_new, sizeof(*ip));
     *ip = ip_new;
     
     struct udphdr *udp = (void *) ip + sizeof(*ip);
@@ -356,7 +347,6 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     if (udp + 1 > data_end)
 	return -1;
     
-    //memcpy(udp, &udp_new, sizeof(*udp));
     *udp = udp_new;
     
     return 0;
@@ -366,6 +356,7 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
+    //return (fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
     return (fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
 }
 
@@ -425,17 +416,15 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     
-    struct ethhdr *eth = data;
-    //struct vlan_hdr *vlan = NULL;    
-    //struct iphdr *ip = NULL;
+    struct ethhdr *eth = data, eth_new = {};
+    struct vlan_hdr *vlan = NULL, vlan_new = {};
+    struct iphdr *ip = NULL, ip_copy ={};
     
     if (eth + 1 > data_end)
 	return -1;
 
-    struct vlan_hdr vlan_new = {};
-    struct vlan_hdr *vlan = NULL;
-    struct iphdr *ip = NULL;
-    
+    eth_new = *eth;
+
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
 	vlan = (struct vlan_hdr *) (eth + 1);
 	
@@ -452,6 +441,8 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (ip + 1 > data_end)
 	return -1;
 
+    ip_copy = *ip;
+
     /* if DF is not set then drop */
     if (!IS_DF(ip->frag_off))
 	return -1;
@@ -462,9 +453,6 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (iplen < max)
       return -1;
     
-    struct ethhdr eth_copy = *eth;
-    struct iphdr ip_copy = *ip;
-
     // DELIBERATE BREAKAGE
     //ip->daddr = saddr; // prevent the ICMP from changing the path MTU whilst testing
     
@@ -493,6 +481,8 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     
     if (eth + 1 > data_end)
 	return -1;
+
+    *eth = eth_new;
     
     if(vlan) {
 	vlan = (struct vlan_hdr *)(eth + 1);
@@ -500,7 +490,6 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 	if (vlan + 1 > data_end)
 	    return -1;
 	
-	//memcpy(vlan, &vlan_new, sizeof(*vlan));
 	*vlan = vlan_new;
 	
 	ip = (struct iphdr *)(vlan + 1);
@@ -508,26 +497,26 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 	ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
     }
 
-    //ip = (struct iphdr *)(eth + 1);
-
+    if (vlan)
+	bpf_printk("VLAN\n");
+    
     if (ip + 1 > data_end)
 	return -1;
 
-    /* FIXME - VLAN */
-    
     struct icmphdr *icmp = (struct icmphdr *)(ip + 1);
     
     if (icmp + 1 > data_end)
 	return -1;
     
-    *eth = eth_copy;
     *ip = ip_copy;
 
-    // reverse addresses to send ICMP message to client
-    memcpy(eth->h_dest, eth_copy.h_source, 6);
-    memcpy(eth->h_source, eth_copy.h_dest, 6);
+    // reverse HW addresses to send ICMP message to client
+    memcpy(eth->h_dest, eth_new.h_source, 6);
+    memcpy(eth->h_source, eth_new.h_dest, 6);
+
+    // reply to client with LB's address
     ip->daddr = ip_copy.saddr;
-    ip->saddr = saddr;
+    ip->saddr = saddr; // FIXME - how will this work behimd NAT?
 
     ip->version = 4;
     ip->ihl = 5;
@@ -544,7 +533,6 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     *icmp = fou;
 
     ((__u8 *) icmp)[5] = ((__u8)(iplen) >> 2); // struct icmphdr lacks a length field
-
 
     __u8 *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 
@@ -567,7 +555,7 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 static __always_inline
 int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
-    return (frag_needed(ctx, saddr, mtu - FOU4_OVERHEAD) < 0) ? XDP_DROP : XDP_TX;
+    return (frag_needed(ctx, saddr, mtu) < 0) ? XDP_ABORTED : XDP_TX;
 }
 
 SEC("xdp")
