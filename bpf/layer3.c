@@ -274,16 +274,16 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     eth_new = *eth;    
     
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-	vlan = (struct vlan_hdr *) (eth + 1);
+	vlan = (void *) (eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
 	
 	vlan_new = *vlan;
 	
-	ip = (struct iphdr *)(vlan + 1);
+	ip = (void *) (vlan + 1);
     } else {
-	ip = (struct iphdr *)(eth + 1);
+	ip = (void *) (eth + 1);
     }
     
     if (ip + 1 > data_end)
@@ -332,9 +332,9 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 	
 	*vlan = vlan_new;
 	
-	ip = (struct iphdr *)(vlan + 1);
+	ip = (void *) (vlan + 1);
     } else {
-	ip = (struct iphdr *)(eth + 1);
+	ip = (void *) (eth + 1);
     }
     
     if (ip + 1 > data_end)
@@ -342,7 +342,7 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     
     *ip = ip_new;
     
-    struct udphdr *udp = (void *) ip + sizeof(*ip);
+    struct udphdr *udp = (void *) (ip + 1);
     
     if (udp + 1 > data_end)
 	return -1;
@@ -356,7 +356,6 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    //return (fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
     return (fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
 }
 
@@ -426,16 +425,16 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     eth_new = *eth;
 
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-	vlan = (struct vlan_hdr *) (eth + 1);
+	vlan = (void *)(eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
 	
 	vlan_new = *vlan;
 	
-	ip = (struct iphdr *)(vlan + 1);
+	ip = (void *)(vlan + 1);
     } else {
-	ip = (struct iphdr *)(eth + 1);
+	ip = (void *)(eth + 1);
     }
     
     if (ip + 1 > data_end)
@@ -447,7 +446,7 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (!IS_DF(ip->frag_off))
 	return -1;
     
-    int iplen = data_end - (void *) ip;
+    int iplen = data_end - (void *)ip;
 
     /* if a packet was smaller than "max" bytes then it should not have been too big - drop */
     if (iplen < max)
@@ -485,25 +484,22 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     *eth = eth_new;
     
     if(vlan) {
-	vlan = (struct vlan_hdr *)(eth + 1);
+	vlan = (void *)(eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
 	
 	*vlan = vlan_new;
 	
-	ip = (struct iphdr *)(vlan + 1);
+	ip = (void *)(vlan + 1);
     } else {
-	ip = (struct iphdr *)(eth + 1); //data + sizeof(struct ethhdr);
+	ip = (void *)(eth + 1);
     }
 
-    if (vlan)
-	bpf_printk("VLAN\n");
-    
     if (ip + 1 > data_end)
 	return -1;
-
-    struct icmphdr *icmp = (struct icmphdr *)(ip + 1);
+    
+    struct icmphdr *icmp = (void *)(ip + 1);
     
     if (icmp + 1 > data_end)
 	return -1;
