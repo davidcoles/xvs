@@ -137,7 +137,9 @@ struct destinations {
     struct addr daddr[256];
     struct addr saddr; // source address to use with tunnels
     __u8 h_dest[6];    // router MAC address to send encapsulated packets to
-    __u16 vlanid;      // VLAN ID which encapsulated packets should be sent on
+    __u16 vlanid;      // VLAN ID on which encapsulated packets should be received/sent
+    //struct addr icmp; // optional address to send ICMP UNREACH/FRAG from?
+    // maybe seperate vlan/mac records if IPv6 is to support L2
 };
 
 struct {
@@ -264,22 +266,19 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
-    struct ethhdr *eth = data, eth_new = {};
-    struct vlan_hdr *vlan = NULL, vlan_new = {};
-    struct iphdr *ip = NULL, ip_new = {};
-    
+    struct ethhdr *eth = data, eth_copy = {};
+    struct vlan_hdr *vlan = NULL, vlan_copy = {};
+    struct iphdr *ip = NULL, ip_copy = {};
+
+    /* Obtain pointers to each header in the packet */
     if (eth + 1 > data_end)
         return -1;
 
-    eth_new = *eth;    
-    
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
 	vlan = (void *) (eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
-	
-	vlan_new = *vlan;
 	
 	ip = (void *) (vlan + 1);
     } else {
@@ -288,32 +287,42 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     
     if (ip + 1 > data_end)
         return -1;
-    
-    memcpy(eth_new.h_source, eth_new.h_dest, 6);
-    memcpy(eth_new.h_dest, router, 6);    
-    
-    if (nulmac(eth_new.h_dest) || nulmac(eth_new.h_source))
-	return -1;
-    
-    ip_decrease_ttl(ip);
-    
-    ip_new = *ip;
 
+    /* We are essentially forwarding the packet, so reduce time to live */
+    ip_decrease_ttl(ip);
+
+    /* Take a copy of all the headers to rewrite later */
+    eth_copy = *eth;        
+    if (vlan) vlan_copy = *vlan;
+    ip_copy = *ip;
+
+    /* Forward packet to the router */
+    memcpy(eth_copy.h_source, eth_copy.h_dest, 6);
+    memcpy(eth_copy.h_dest, router, 6);    
+
+    /* LATER: Return the ethernet frame to whence it came, if it was from a router */
+    //memcpy(eth_copy.h_source, eth->h_dest, 6);
+    //memcpy(eth_copy.h_dest, eth->h_source, 6);    
+
+    /* calculate the length of the FOU payload and populate the UDP header */
     int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
     struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
-    
-    ip_new.version = 4;
-    ip_new.ihl = 5;    
-    ip_new.saddr = saddr;
-    ip_new.daddr = daddr;
-    ip_new.tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
-    ip_new.protocol = IPPROTO_UDP;
-    ip_new.check = 0;
-    ip_new.check = ipv4_checksum(&ip_new);    
-    
+
+    /* Re-address the (new) IP header to send back to the client */
+    ip_copy.version = 4;
+    ip_copy.ihl = 5;    
+    ip_copy.saddr = saddr;
+    ip_copy.daddr = daddr;
+    ip_copy.tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
+    ip_copy.protocol = IPPROTO_UDP;
+    ip_copy.check = 0;
+    ip_copy.check = ipv4_checksum(&ip_copy);    
+
+    /* Insert space for new headers at the start of the packet */
     if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
 	return -1;
-    
+
+    /* Now we need to re-calculate header pointers - them's the rules */
     data     = (void *)(long)ctx->data;
     data_end = (void *)(long)ctx->data_end;
 
@@ -322,15 +331,11 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     if (eth + 1 > data_end)
 	return -1;
     
-    *eth = eth_new;   
-
     if(vlan) {
 	vlan = (struct vlan_hdr *)(eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
-	
-	*vlan = vlan_new;
 	
 	ip = (void *) (vlan + 1);
     } else {
@@ -339,16 +344,22 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     
     if (ip + 1 > data_end)
         return -1;
-    
-    *ip = ip_new;
-    
+        
     struct udphdr *udp = (void *) (ip + 1);
     
     if (udp + 1 > data_end)
 	return -1;
-    
+
+    /* Write headers back at the new offsets */
+    *eth = eth_copy;   
+    if (vlan) *vlan = vlan_copy;
+    *ip = ip_copy;
     *udp = udp_new;
-    
+
+    /* some final sanity checks */
+    if (nulmac(eth->h_source) || nulmac(eth->h_dest) || !(ip->saddr) || !(ip->daddr))
+	return -1;
+
     return 0;
 }
 
@@ -415,22 +426,18 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     
-    struct ethhdr *eth = data, eth_new = {};
-    struct vlan_hdr *vlan = NULL, vlan_new = {};
+    struct ethhdr *eth = data, eth_copy = {};
+    struct vlan_hdr *vlan = NULL, vlan_copy = {};
     struct iphdr *ip = NULL, ip_copy ={};
     
     if (eth + 1 > data_end)
 	return -1;
-
-    eth_new = *eth;
 
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
 	vlan = (void *)(eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
-	
-	vlan_new = *vlan;
 	
 	ip = (void *)(vlan + 1);
     } else {
@@ -440,8 +447,10 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (ip + 1 > data_end)
 	return -1;
 
+    eth_copy = *eth;
+    if (vlan) vlan_copy = *vlan;
     ip_copy = *ip;
-
+    
     /* if DF is not set then drop */
     if (!IS_DF(ip->frag_off))
 	return -1;
@@ -481,15 +490,11 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (eth + 1 > data_end)
 	return -1;
 
-    *eth = eth_new;
-    
     if(vlan) {
 	vlan = (void *)(eth + 1);
 	
 	if (vlan + 1 > data_end)
 	    return -1;
-	
-	*vlan = vlan_new;
 	
 	ip = (void *)(vlan + 1);
     } else {
@@ -504,22 +509,25 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     if (icmp + 1 > data_end)
 	return -1;
     
+    *eth = eth_copy;
+    if (vlan) *vlan = vlan_copy;
     *ip = ip_copy;
 
-    // reverse HW addresses to send ICMP message to client
-    memcpy(eth->h_dest, eth_new.h_source, 6);
-    memcpy(eth->h_source, eth_new.h_dest, 6);
+    // reverse HW addresses to send ICMP message to client ?
+    memcpy(eth->h_dest, eth_copy.h_source, 6);
+    memcpy(eth->h_source, eth_copy.h_dest, 6);
 
     // reply to client with LB's address
     ip->daddr = ip_copy.saddr;
     ip->saddr = saddr;
-    // FIXME - how will the above work behimd NAT?
+    // FIXME - how will the above work behind NAT?
     // 1) 2nd address stored only used for replying to client
     // 2) static NAT entry for LB -> outside world
     // 3) dynamic NAT pool
     // 4) larger internal MTU
     // ensure DEST_UNREACH/FRAG_NEEDED is allowed out
     // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
+    // respond to every occurence or keep a record of recent notifications?
 
     ip->version = 4;
     ip->ihl = 5;
@@ -535,7 +543,7 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 
     *icmp = fou;
 
-    ((__u8 *) icmp)[5] = ((__u8)(iplen) >> 2); // struct icmphdr lacks a length field
+    ((__u8 *) icmp)[5] = ((__u8)(iplen >> 2)); // struct icmphdr lacks a length field
 
     __u8 *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 
