@@ -512,7 +512,14 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 
     // reply to client with LB's address
     ip->daddr = ip_copy.saddr;
-    ip->saddr = saddr; // FIXME - how will this work behimd NAT?
+    ip->saddr = saddr;
+    // FIXME - how will the above work behimd NAT?
+    // 1) 2nd address stored only used for replying to client
+    // 2) static NAT entry for LB -> outside world
+    // 3) dynamic NAT pool
+    // 4) larger internal MTU
+    // ensure DEST_UNREACH/FRAG_NEEDED is allowed out
+    // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
 
     ip->version = 4;
     ip->ihl = 5;
