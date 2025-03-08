@@ -290,24 +290,16 @@ int fou_push2(struct xdp_md *ctx, struct pointers *p)
     if (reparse_frame2(ctx, p) < 0)
 	 return -1;
 
-    struct ethhdr *eth = p->eth;
-    struct vlan_hdr *vlan = p->vlan;
-    struct iphdr *ip = p->ip;
-    
-    struct udphdr *udp = (void *) (ip + 1);
+    struct udphdr *udp = (void *) (p->ip + 1);
     
     if (udp + 1 > (void *)(long)ctx->data_end)
 	return -1;
 
     /* Re-write headers at the new offsets */
-    *eth = eth_copy;  
-    if (vlan) *vlan = vlan_copy;
-    *ip = ip_copy;
+    (*p->eth) = eth_copy;  
+    if (p->vlan) *(p->vlan) = vlan_copy;
+    *(p->ip) = ip_copy;
 
-    p->eth = eth;
-    p->vlan = vlan;
-    p->ip = ip;
-    
     return udp_len;
 }
 
@@ -316,49 +308,44 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 {
     struct pointers p = {};
     
-    /* calculate the length of the FOU payload and populate a UDP header */
+    /* adjust the packet to add the FOU header */
     int udp_len = fou_push2(ctx, &p);
 
     if (udp_len < 0)
 	return XDP_ABORTED;
 
-    void *data_end = (void *)(long)ctx->data_end;
-
     struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr *udp = (void *) (p.ip + 1);
     
-    struct ethhdr *eth = p.eth;
-    struct iphdr *ip = p.ip;
-    struct udphdr *udp = (void *) (ip + 1);
-    
-    if (udp + 1 > data_end)
+    if (udp + 1 > (void *)(long)ctx->data_end)
 	return XDP_ABORTED;
 
     *udp = udp_new;
     
     /* Update the outer IP header to send to the FOU target */
-    ip->version = 4;
-    ip->ihl = 5;
-    ip->saddr = saddr;
-    ip->daddr = daddr;
-    ip->tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
-    ip->protocol = IPPROTO_UDP;
-    ip->check = 0;
-    ip->check = ipv4_checksum(ip);    
+    p.ip->version = 4;
+    p.ip->ihl = 5;
+    p.ip->saddr = saddr;
+    p.ip->daddr = daddr;
+    p.ip->tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
+    p.ip->protocol = IPPROTO_UDP;
+    p.ip->check = 0;
+    p.ip->check = ipv4_checksum(p.ip);
 
     if (!nulmac(router)) {
 	/* If a router is explicitly indicated then direct the frame there */
-	memcpy(eth->h_source, eth->h_dest, 6);
-	memcpy(eth->h_dest, router, 6);
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
     } else {
 	/* Otherwise return it to the device that it came from */
 	char temp[6];
-	memcpy(temp, eth->h_source, 6);
-	memcpy(eth->h_source, eth->h_dest, 6);
-	memcpy(eth->h_dest, temp, 6);
+	memcpy(temp, p.eth->h_source, 6);
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, temp, 6);
     }
     
     /* some final sanity checks */
-    if (nulmac(eth->h_source) || nulmac(eth->h_dest) || !(ip->saddr) || !(ip->daddr))
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest) || !(p.ip->saddr) || !(p.ip->daddr))
 	return XDP_ABORTED;
 
     /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
