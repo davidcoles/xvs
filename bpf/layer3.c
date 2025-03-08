@@ -45,7 +45,7 @@ ipip
 #include <netinet/tcp.h>
 
 #include "vlan.h"
-//#include "new.h"
+#include "new.h"
 
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
@@ -271,13 +271,13 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     struct ethhdr *eth = data, eth_copy = {};
     struct vlan_hdr *vlan = NULL, vlan_copy = {};
     struct iphdr *ip = NULL, ip_copy = {};
-
-   if (eth + 1 > data_end)
+    
+    if (eth + 1 > data_end)
 	return -1;
-
+    
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
         vlan = (void *)(eth + 1);
-
+	
 	if (vlan + 1 > data_end)
             return -1;
 
