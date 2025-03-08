@@ -57,6 +57,7 @@ type addr6 = [16]byte
 func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sticky bool, dests ...addr4) error {
 
 	var ZERO uint32 = 0
+	var vlanid uint32 = 100
 
 	var native bool
 
@@ -124,6 +125,7 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 
 	service.saddr = bpf_dest4{addr: saddr}
 	service.h_dest = h_dest
+	service.vlanid = uint16(vlanid)
 
 	for i, d := range dests {
 		service.flag[i+1] = F_LAYER3_FOU4
@@ -138,7 +140,7 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 
 	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
 
-	redirect_map.UpdateElem(uP(&ZERO), uP(&nic), xdp.BPF_ANY)
+	redirect_map.UpdateElem(uP(&vlanid), uP(&nic), xdp.BPF_ANY)
 
 	for _, p := range []uint16{80, 443, 8000} {
 		s6.port = p

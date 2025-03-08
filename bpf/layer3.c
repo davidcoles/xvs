@@ -20,6 +20,9 @@
 
 bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
 
+modprobe ipip
+modprobe fou
+
 /etc/networkd-dispatcher/routable.d/50-ifup-hooks:
 #!/bin/sh
 ip fou add port 9999 ipproto 4
@@ -654,6 +657,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     case LAYER3_FOU4:
 	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
+	// FIXME: need to make provision for untagged nond interfaces
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
 	    return XDP_DROP;
 	
