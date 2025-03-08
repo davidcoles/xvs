@@ -261,11 +261,8 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
     return sdbm((unsigned char *)&h, sizeof(h));
 }
 
-
-
-
-//static __always_inline
-int fou_push2(struct xdp_md *ctx, struct pointers *p)
+static __always_inline
+int fou4_adjust(struct xdp_md *ctx, struct pointers *p)
 {
     struct ethhdr eth_copy = {};
     struct vlan_hdr vlan_copy = {};
@@ -286,10 +283,10 @@ int fou_push2(struct xdp_md *ctx, struct pointers *p)
     if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
 	return -1;
     
-    /* Now we need to re-calculate all of the header pointers - them's the rules */
+    /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers - them's the rules */
     if (reparse_frame2(ctx, p) < 0)
-	 return -1;
-
+	return -1;
+    
     struct udphdr *udp = (void *) (p->ip + 1);
     
     if (udp + 1 > (void *)(long)ctx->data_end)
@@ -304,21 +301,21 @@ int fou_push2(struct xdp_md *ctx, struct pointers *p)
 }
 
 static __always_inline
-int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+int fou4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     struct pointers p = {};
     
-    /* adjust the packet to add the FOU header */
-    int udp_len = fou_push2(ctx, &p);
-
+    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    int udp_len = fou4_adjust(ctx, &p);
+    
     if (udp_len < 0)
-	return XDP_ABORTED;
+	return -1;
 
     struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
     struct udphdr *udp = (void *) (p.ip + 1);
     
     if (udp + 1 > (void *)(long)ctx->data_end)
-	return XDP_ABORTED;
+	return -1;
 
     *udp = udp_new;
     
@@ -346,17 +343,18 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     
     /* some final sanity checks */
     if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest) || !(p.ip->saddr) || !(p.ip->daddr))
-	return XDP_ABORTED;
+	return -1;
 
     /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
-    return XDP_TX;
+    return 0;
 }
 
 
 static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    return fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport);
+    return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
+	XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
