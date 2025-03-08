@@ -45,7 +45,7 @@ ipip
 #include <netinet/tcp.h>
 
 #include "vlan.h"
-#include "new.h"
+//#include "new.h"
 
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
@@ -262,8 +262,8 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
 }
 
 
-//static __always_inline
-int fou_push_(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+static __always_inline
+int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -272,30 +272,22 @@ int fou_push_(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u1
     struct vlan_hdr *vlan = NULL, vlan_copy = {};
     struct iphdr *ip = NULL, ip_copy = {};
 
-    if (PARSE_FRAME(eth, vlan, ip, data_end))
-	return XDP_ABORTED;
-
-    eth = data;
-    
-    /* Obtain pointers to each header in the packet */
-    /*
-    if (eth + 1 > data_end)
-        return XDP_ABORTED;
+   if (eth + 1 > data_end)
+	return -1;
 
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-	vlan = (void *) (eth + 1);
-	
+        vlan = (void *)(eth + 1);
+
 	if (vlan + 1 > data_end)
-	    return XDP_ABORTED;
-	
-	ip = (void *) (vlan + 1);
+            return -1;
+
+	ip = (void *)(vlan + 1);
     } else {
-	ip = (void *) (eth + 1);
+        ip = (void *)(eth + 1);
     }
-    
+
     if (ip + 1 > data_end)
-        return XDP_ABORTED;
-    */
+        return -1;
 
     /* Take a copy of all the headers to rewrite later */
     eth_copy = *eth;        
@@ -315,29 +307,24 @@ int fou_push_(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u1
     data_end = (void *)(long)ctx->data_end;
 
     eth = data;
-
-    if (PARSE_FRAME(eth, vlan, ip, data_end))
-        return XDP_ABORTED;
-
-    /*
+    
     if (eth + 1 > data_end)
-	return XDP_ABORTED;
+        return XDP_ABORTED;
     
     if(vlan) {
-	vlan = (struct vlan_hdr *)(eth + 1);
+        vlan = (struct vlan_hdr *)(eth + 1);
 	
-	if (vlan + 1 > data_end)
-	    return XDP_ABORTED;
+        if (vlan + 1 > data_end)
+            return XDP_ABORTED;
 	
-	ip = (void *) (vlan + 1);
+        ip = (void *) (vlan + 1);
     } else {
-	ip = (void *) (eth + 1);
+        ip = (void *) (eth + 1);
     }
     
     if (ip + 1 > data_end)
         return XDP_ABORTED;
-    */
-        
+    
     struct udphdr *udp = (void *) (ip + 1);
     
     if (udp + 1 > data_end)
