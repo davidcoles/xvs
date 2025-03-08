@@ -42,7 +42,7 @@ type bpf_service3 struct {
 	daddr  [256]bpf_dest4
 	saddr  bpf_dest4
 	h_dest [6]byte
-	pad    [2]byte
+	vlanid uint16
 }
 
 type bpf_service6 struct {
@@ -83,6 +83,12 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	}
 
 	infos, err := x.FindMap("infos", 4, int(unsafe.Sizeof(bpf_info{})))
+
+	if err != nil {
+		return err
+	}
+
+	redirect_map, err := x.FindMap("redirect_map", 4, 4)
 
 	if err != nil {
 		return err
@@ -131,6 +137,8 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	}
 
 	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
+
+	redirect_map.UpdateElem(uP(&ZERO), uP(&nic), xdp.BPF_ANY)
 
 	for _, p := range []uint16{80, 443, 8000} {
 		s6.port = p

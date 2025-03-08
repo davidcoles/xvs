@@ -107,6 +107,7 @@ struct destination {
     __u16 sport; // FOU
     __u16 dport; // FOU
     __u8 h_dest[6]; // router MAC
+    __u16 vlanid;
 };
 
 //struct fookey {
@@ -157,6 +158,12 @@ struct {
     __uint(max_entries, 4096);
 } destinations SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 4096);
+} redirect_map SEC(".maps");
 
 /**********************************************************************/
 
@@ -383,6 +390,7 @@ enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // 
     r->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
     r->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
     memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel
+    r->vlanid = service->vlanid;           // VLAN ID that L3 services should use
     
     __u8 flag = service->flag[index];
 
@@ -549,6 +557,21 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     return 0;
 }
 
+int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
+
+    if (vlan) {
+	__u16 vlanid = bpf_ntohs(vlan->h_vlan_TCI) & 0x0fff;
+	if (vlanid != expected)
+	    return -1;
+    } else {
+	__u32 *interface = bpf_map_lookup_elem(&redirect_map, &expected);   
+	if (!interface || !(*interface) || (*interface != ingress))
+	    return -1;
+    }
+
+    return 0;
+}
+
 
 static __always_inline
 int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
@@ -626,12 +649,13 @@ int xdp_fwd_func(struct xdp_md *ctx)
     ip_decrease_ttl(ip);    
 
     int mtu = MTU;
-
+	
     switch (lookup4(ip, tcp, &dest)) {
 
     case LAYER3_FOU4:
 	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
-	// FIXME: check ingress interface/VLAN is correct
+	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
+	    return XDP_DROP;
 	
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
