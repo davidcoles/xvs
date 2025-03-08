@@ -267,69 +267,37 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
 //static __always_inline
 int fou_push2(struct xdp_md *ctx, struct pointers *p)
 {
-    void *data     = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr eth_copy = {};
+    struct vlan_hdr vlan_copy = {};
+    struct iphdr ip_copy = {};
 
-    struct ethhdr *eth = data, eth_copy = {};
-    struct vlan_hdr *vlan = NULL, vlan_copy = {};
-    struct iphdr *ip = NULL, ip_copy = {};
-    
-    if (eth + 1 > data_end)
+    if (parse_frame2(ctx, p) < 0)
 	return -1;
-    
-    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-        vlan = (void *)(eth + 1);
-	
-	if (vlan + 1 > data_end)
-            return -1;
-
-	ip = (void *)(vlan + 1);
-    } else {
-        ip = (void *)(eth + 1);
-    }
-
-    if (ip + 1 > data_end)
-        return -1;
 
     /* Take a copy of all the headers to rewrite later */
-    eth_copy = *eth;        
-    if (vlan) vlan_copy = *vlan;
-    ip_copy = *ip;
+    eth_copy = *(p->eth);
+    if (p->vlan) vlan_copy = *(p->vlan);
+    ip_copy = *(p->ip);
     
-    /* calculate the length of the FOU payload and populate a UDP header */
-    int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
+    /* calculate the length of the FOU payload (UDP header + original IP packet) */
+    int udp_len = sizeof(struct udphdr) + ((void *)(long)ctx->data_end - ((void *) p->ip));
 
     /* Insert space for new headers at the start of the packet */
     if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
-	return XDP_ABORTED;
-
+	return -1;
+    
     /* Now we need to re-calculate all of the header pointers - them's the rules */
-    data     = (void *)(long)ctx->data;
-    data_end = (void *)(long)ctx->data_end;
+    if (reparse_frame2(ctx, p) < 0)
+	 return -1;
 
-    eth = data;
-    
-    if (eth + 1 > data_end)
-        return XDP_ABORTED;
-    
-    if(vlan) {
-        vlan = (struct vlan_hdr *)(eth + 1);
-	
-        if (vlan + 1 > data_end)
-            return XDP_ABORTED;
-	
-        ip = (void *) (vlan + 1);
-    } else {
-        ip = (void *) (eth + 1);
-    }
-    
-    if (ip + 1 > data_end)
-        return XDP_ABORTED;
+    struct ethhdr *eth = p->eth;
+    struct vlan_hdr *vlan = p->vlan;
+    struct iphdr *ip = p->ip;
     
     struct udphdr *udp = (void *) (ip + 1);
     
-    if (udp + 1 > data_end)
-	return XDP_ABORTED;
+    if (udp + 1 > (void *)(long)ctx->data_end)
+	return -1;
 
     /* Re-write headers at the new offsets */
     *eth = eth_copy;  
@@ -346,77 +314,27 @@ int fou_push2(struct xdp_md *ctx, struct pointers *p)
 static __always_inline
 int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
-    void *data     = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-
-    struct ethhdr *eth = data, eth_copy = {};
-    struct vlan_hdr *vlan = NULL, vlan_copy = {};
-    struct iphdr *ip = NULL, ip_copy = {};
-    
-    if (eth + 1 > data_end)
-	return -1;
-    
-    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-        vlan = (void *)(eth + 1);
-	
-	if (vlan + 1 > data_end)
-            return -1;
-
-	ip = (void *)(vlan + 1);
-    } else {
-        ip = (void *)(eth + 1);
-    }
-
-    if (ip + 1 > data_end)
-        return -1;
-
-    /* Take a copy of all the headers to rewrite later */
-    eth_copy = *eth;        
-    if (vlan) vlan_copy = *vlan;
-    ip_copy = *ip;
+    struct pointers p = {};
     
     /* calculate the length of the FOU payload and populate a UDP header */
-    int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
-    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    int udp_len = fou_push2(ctx, &p);
 
-    /* Insert space for new headers at the start of the packet */
-    if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
+    if (udp_len < 0)
 	return XDP_ABORTED;
 
-    /* Now we need to re-calculate all of the header pointers - them's the rules */
-    data     = (void *)(long)ctx->data;
-    data_end = (void *)(long)ctx->data_end;
+    void *data_end = (void *)(long)ctx->data_end;
 
-    eth = data;
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
     
-    if (eth + 1 > data_end)
-        return XDP_ABORTED;
-    
-    if(vlan) {
-        vlan = (struct vlan_hdr *)(eth + 1);
-	
-        if (vlan + 1 > data_end)
-            return XDP_ABORTED;
-	
-        ip = (void *) (vlan + 1);
-    } else {
-        ip = (void *) (eth + 1);
-    }
-    
-    if (ip + 1 > data_end)
-        return XDP_ABORTED;
-    
+    struct ethhdr *eth = p.eth;
+    struct iphdr *ip = p.ip;
     struct udphdr *udp = (void *) (ip + 1);
     
     if (udp + 1 > data_end)
 	return XDP_ABORTED;
 
-    /* Re-write headers at the new offsets */
-    *eth = eth_copy;  
-    if (vlan) *vlan = vlan_copy;
-    *ip = ip_copy;
     *udp = udp_new;
-
+    
     /* Update the outer IP header to send to the FOU target */
     ip->version = 4;
     ip->ihl = 5;
@@ -429,12 +347,14 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
 
     if (!nulmac(router)) {
 	/* If a router is explicitly indicated then direct the frame there */
-	memcpy(eth->h_source, eth_copy.h_dest, 6);
+	memcpy(eth->h_source, eth->h_dest, 6);
 	memcpy(eth->h_dest, router, 6);
     } else {
 	/* Otherwise return it to the device that it came from */
+	char temp[6];
+	memcpy(temp, eth->h_source, 6);
 	memcpy(eth->h_source, eth->h_dest, 6);
-	memcpy(eth->h_dest, eth->h_source, 6);
+	memcpy(eth->h_dest, temp, 6);
     }
     
     /* some final sanity checks */
