@@ -18,7 +18,7 @@
 
 /*
 
- bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
+bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
 
 /etc/networkd-dispatcher/routable.d/50-ifup-hooks:
 #!/bin/sh
@@ -45,6 +45,7 @@ ipip
 #include <netinet/tcp.h>
 
 #include "vlan.h"
+#include "new.h"
 
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
@@ -76,13 +77,6 @@ struct info {
     char pad[2];
 };
 
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, unsigned int);
-    __type(value, struct info);
-    __uint(max_entries, 1);
-} infos SEC(".maps");
-
 struct addr4 {
     __u16 vid;   // L2DSR only
     __u8 mac[6]; // L2DSR only
@@ -101,25 +95,10 @@ struct addr {
     };
 };
 
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, unsigned int);
-    __type(value, __u8[2048]);
-    __uint(max_entries, 1);
-} buffers SEC(".maps");
-
 struct servicekey {
     struct addr addr;    
     __be16 port;
     __u16 proto;
-};
-
-struct fookey {
-    struct addr saddr;    
-    __be16 sport;
-    __u16 proto;
-    struct addr daddr;
-    __be16 dport;
 };
 
 struct destination {
@@ -129,6 +108,14 @@ struct destination {
     __u16 dport; // FOU
     __u8 h_dest[6]; // router MAC
 };
+
+//struct fookey {
+//    struct addr saddr;    
+//    __be16 sport;
+//    __u16 proto;
+//    struct addr daddr;
+//    __be16 dport;
+//};
 
 struct destinations {
     __u8 hash[8192];
@@ -143,11 +130,18 @@ struct destinations {
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct servicekey);
-    __type(value, struct destinations);
-    __uint(max_entries, 4096);
-} destinations SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, unsigned int);
+    __type(value, __u8[2048]);
+    __uint(max_entries, 1);
+} buffers SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, unsigned int);
+    __type(value, struct info);
+    __uint(max_entries, 1);
+} infos SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -155,6 +149,14 @@ struct {
     __type(value, __u32);
     __uint(max_entries, 4096);
 } vips SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct servicekey);
+    __type(value, struct destinations);
+    __uint(max_entries, 4096);
+} destinations SEC(".maps");
+
 
 /**********************************************************************/
 
@@ -260,8 +262,8 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
 }
 
 
-static __always_inline
-int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+//static __always_inline
+int fou_push_(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -270,15 +272,21 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     struct vlan_hdr *vlan = NULL, vlan_copy = {};
     struct iphdr *ip = NULL, ip_copy = {};
 
+    if (PARSE_FRAME(eth, vlan, ip, data_end))
+	return XDP_ABORTED;
+
+    eth = data;
+    
     /* Obtain pointers to each header in the packet */
+    /*
     if (eth + 1 > data_end)
-        return -1;
+        return XDP_ABORTED;
 
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
 	vlan = (void *) (eth + 1);
 	
 	if (vlan + 1 > data_end)
-	    return -1;
+	    return XDP_ABORTED;
 	
 	ip = (void *) (vlan + 1);
     } else {
@@ -286,56 +294,40 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     }
     
     if (ip + 1 > data_end)
-        return -1;
-
-    /* We are essentially forwarding the packet, so reduce time to live */
-    ip_decrease_ttl(ip);
+        return XDP_ABORTED;
+    */
 
     /* Take a copy of all the headers to rewrite later */
     eth_copy = *eth;        
     if (vlan) vlan_copy = *vlan;
     ip_copy = *ip;
-
-    /* Forward packet to the router */
-    memcpy(eth_copy.h_source, eth_copy.h_dest, 6);
-    memcpy(eth_copy.h_dest, router, 6);    
-
-    /* LATER: Return the ethernet frame to whence it came, if it was from a router */
-    //memcpy(eth_copy.h_source, eth->h_dest, 6);
-    //memcpy(eth_copy.h_dest, eth->h_source, 6);    
-
-    /* calculate the length of the FOU payload and populate the UDP header */
+    
+    /* calculate the length of the FOU payload and populate a UDP header */
     int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
     struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
 
-    /* Re-address the (new) IP header to send back to the client */
-    ip_copy.version = 4;
-    ip_copy.ihl = 5;    
-    ip_copy.saddr = saddr;
-    ip_copy.daddr = daddr;
-    ip_copy.tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
-    ip_copy.protocol = IPPROTO_UDP;
-    ip_copy.check = 0;
-    ip_copy.check = ipv4_checksum(&ip_copy);    
-
     /* Insert space for new headers at the start of the packet */
     if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
-	return -1;
+	return XDP_ABORTED;
 
-    /* Now we need to re-calculate header pointers - them's the rules */
+    /* Now we need to re-calculate all of the header pointers - them's the rules */
     data     = (void *)(long)ctx->data;
     data_end = (void *)(long)ctx->data_end;
 
     eth = data;
-    
+
+    if (PARSE_FRAME(eth, vlan, ip, data_end))
+        return XDP_ABORTED;
+
+    /*
     if (eth + 1 > data_end)
-	return -1;
+	return XDP_ABORTED;
     
     if(vlan) {
 	vlan = (struct vlan_hdr *)(eth + 1);
 	
 	if (vlan + 1 > data_end)
-	    return -1;
+	    return XDP_ABORTED;
 	
 	ip = (void *) (vlan + 1);
     } else {
@@ -343,31 +335,53 @@ int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16
     }
     
     if (ip + 1 > data_end)
-        return -1;
+        return XDP_ABORTED;
+    */
         
     struct udphdr *udp = (void *) (ip + 1);
     
     if (udp + 1 > data_end)
-	return -1;
+	return XDP_ABORTED;
 
-    /* Write headers back at the new offsets */
-    *eth = eth_copy;   
+    /* Re-write headers at the new offsets */
+    *eth = eth_copy;  
     if (vlan) *vlan = vlan_copy;
     *ip = ip_copy;
     *udp = udp_new;
 
+    /* Update the outer IP header to send to the FOU target */
+    ip->version = 4;
+    ip->ihl = 5;
+    ip->saddr = saddr;
+    ip->daddr = daddr;
+    ip->tot_len = bpf_htons(sizeof(struct iphdr) + udp_len);
+    ip->protocol = IPPROTO_UDP;
+    ip->check = 0;
+    ip->check = ipv4_checksum(ip);    
+
+    if (!nulmac(router)) {
+	/* If a router is explicitly indicated then direct the frame there */
+	memcpy(eth->h_source, eth_copy.h_dest, 6);
+	memcpy(eth->h_dest, router, 6);
+    } else {
+	/* Otherwise return it to the device that it came from */
+	memcpy(eth->h_source, eth->h_dest, 6);
+	memcpy(eth->h_dest, eth->h_source, 6);
+    }
+    
     /* some final sanity checks */
     if (nulmac(eth->h_source) || nulmac(eth->h_dest) || !(ip->saddr) || !(ip->daddr))
-	return -1;
+	return XDP_ABORTED;
 
-    return 0;
+    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    return XDP_TX;
 }
 
 
 static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    return (fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) != 0) ? XDP_ABORTED : XDP_TX;
+    return fou_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport);
 }
 
 static __always_inline
@@ -566,6 +580,7 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 static __always_inline
 int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
+    bpf_printk("FRAG_NEEDED\n");
     return (frag_needed(ctx, saddr, mtu) < 0) ? XDP_ABORTED : XDP_TX;
 }
 
@@ -634,11 +649,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
     struct tcphdr *tcp = next_header;
     struct destination dest = {};
 
+    /* We're going to forward the packet, so we should decrement the time to live */
+    ip_decrease_ttl(ip);    
+
     int mtu = MTU;
 
     switch (lookup4(ip, tcp, &dest)) {
 
     case LAYER3_FOU4:
+	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
+	// FIXME: check ingress interface/VLAN is correct
+	
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
