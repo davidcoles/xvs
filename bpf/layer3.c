@@ -262,6 +262,87 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
 }
 
 
+
+
+//static __always_inline
+int fou_push2(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    struct ethhdr *eth = data, eth_copy = {};
+    struct vlan_hdr *vlan = NULL, vlan_copy = {};
+    struct iphdr *ip = NULL, ip_copy = {};
+    
+    if (eth + 1 > data_end)
+	return -1;
+    
+    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+        vlan = (void *)(eth + 1);
+	
+	if (vlan + 1 > data_end)
+            return -1;
+
+	ip = (void *)(vlan + 1);
+    } else {
+        ip = (void *)(eth + 1);
+    }
+
+    if (ip + 1 > data_end)
+        return -1;
+
+    /* Take a copy of all the headers to rewrite later */
+    eth_copy = *eth;        
+    if (vlan) vlan_copy = *vlan;
+    ip_copy = *ip;
+    
+    /* calculate the length of the FOU payload and populate a UDP header */
+    int udp_len = sizeof(struct udphdr) + (data_end - ((void *) ip));
+
+    /* Insert space for new headers at the start of the packet */
+    if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
+	return XDP_ABORTED;
+
+    /* Now we need to re-calculate all of the header pointers - them's the rules */
+    data     = (void *)(long)ctx->data;
+    data_end = (void *)(long)ctx->data_end;
+
+    eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_ABORTED;
+    
+    if(vlan) {
+        vlan = (struct vlan_hdr *)(eth + 1);
+	
+        if (vlan + 1 > data_end)
+            return XDP_ABORTED;
+	
+        ip = (void *) (vlan + 1);
+    } else {
+        ip = (void *) (eth + 1);
+    }
+    
+    if (ip + 1 > data_end)
+        return XDP_ABORTED;
+    
+    struct udphdr *udp = (void *) (ip + 1);
+    
+    if (udp + 1 > data_end)
+	return XDP_ABORTED;
+
+    /* Re-write headers at the new offsets */
+    *eth = eth_copy;  
+    if (vlan) *vlan = vlan_copy;
+    *ip = ip_copy;
+
+    p->eth = eth;
+    p->vlan = vlan;
+    p->ip = ip;
+    
+    return udp_len;
+}
+
 static __always_inline
 int fou_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
