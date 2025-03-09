@@ -415,7 +415,148 @@ enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) //
 }
 
 static __always_inline
+int frag_needed_trim(struct xdp_md *ctx, struct pointers *p, int max)
+{
+
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    struct ethhdr eth_copy = {};
+    struct vlan_hdr vlan_copy = {};
+    struct iphdr ip_copy = {};
+
+    if (parse_frame2(ctx, p) < 0)
+	return -1;
+
+    eth_copy = *(p->eth);
+    if (p->vlan) vlan_copy = *(p->vlan);
+    ip_copy = *(p->ip);
+    
+    /* if DF is not set then drop */
+    if (!IS_DF(p->ip->frag_off))
+	return -1;
+    
+    int iplen = data_end - (void *)(p->ip);
+
+    /* if a packet was smaller than "max" bytes then it should not have been too big - drop */
+    if (iplen < max)
+      return -1;
+    
+    // DELIBERATE BREAKAGE
+    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+    
+    int adjust = 0;
+    
+    /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
+    if (iplen > max) {
+	adjust = iplen - max;
+	
+	if(bpf_xdp_adjust_tail(ctx, 0 - adjust))
+	    return -1;
+	
+	iplen = max;
+    }
+    
+    /* extend header - extra ip and icmp needed*/
+    adjust = sizeof(struct iphdr) + sizeof(struct icmphdr);
+    
+    if (bpf_xdp_adjust_head(ctx, 0 - adjust))
+	return -1;
+
+    if (reparse_frame2(ctx, p) < 0)
+        return -1;
+
+    *(p->eth) = eth_copy;
+    if (p->vlan) *(p->vlan) = vlan_copy;
+    *(p->ip) = ip_copy;
+
+    return iplen;
+}
+
+static __always_inline
+void sanitise_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol)
+{
+    ip->version = 4;
+    ip->ihl = 5;
+    ip->ttl = 64;
+    ip->tot_len = bpf_htons(tot_len);
+    ip->protocol = protocol;
+    ip->check = 0;
+    ip->check = ipv4_checksum(ip);
+}
+
+static __always_inline
+void reverse_ethhdr(struct ethhdr *eth)
+{
+    char temp[6];
+    memcpy(temp, eth->h_dest, 6);
+    memcpy(eth->h_dest, eth->h_source, 6);
+    memcpy(eth->h_source, temp, 6);
+}
+
+static __always_inline
 int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
+{
+    // FIXME: checksum doesn't work for much larger packets, unsure why - keep the size down for now
+    // maybe the csum_diff helper has a bounded loop and needs to be invoked mutiple times?
+    const int max = 128;
+    struct pointers p = {};
+    int iplen;
+    __u8 *buffer = NULL;
+    
+    if ((iplen = frag_needed_trim(ctx, &p, max)) < 0)
+	return -1;
+
+    void *data_end = (void *)(long)ctx->data_end;
+    //struct ethhdr *eth = p.eth;
+    //struct iphdr *ip = p.ip;
+    struct icmphdr *icmp = (void *)(p.ip + 1);
+    
+    if (icmp + 1 > data_end)
+	return -1;
+
+    // reverse HW addresses to send ICMP message to client ?
+    //char temp[6];
+    //memcpy(temp, eth->h_dest, 6);
+    //memcpy(eth->h_dest, eth->h_source, 6);
+    //memcpy(eth->h_source, temp, 6);
+    reverse_ethhdr(p.eth);
+
+    // reply to client with LB's address
+    p.ip->daddr = p.ip->saddr;
+    p.ip->saddr = saddr;
+    // FIXME - how will the above work behind NAT?
+    // 1) 2nd address stored only used for replying to client
+    // 2) static NAT entry for LB -> outside world
+    // 3) dynamic NAT pool
+    // 4) larger internal MTU
+    // ensure DEST_UNREACH/FRAG_NEEDED is allowed out
+    // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
+    // respond to every occurence or keep a record of recent notifications?
+
+    sanitise_iphdr(p.ip, sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen, IPPROTO_ICMP);
+
+    struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0, .un.frag.mtu = bpf_htons(mtu) };
+    *icmp = fou;
+
+    ((__u8 *) icmp)[5] = ((__u8)(iplen >> 2)); // struct icmphdr lacks a length field
+
+    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
+	return -1;
+    
+    for (__u16 n = 0; n < sizeof(struct icmphdr) + max; n++) {
+	if (((void *) icmp) + n >= data_end)
+            break;
+	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
+    }
+
+    /* calulate checksum over the entire icmp packet + payload (copied to buffer) */
+    icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);
+
+    return 0;
+}
+
+//static __always_inline
+int frag_needed_orig(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
     // FIXME: checksum doesn't work for much larger packets, unsure why - keep the size down for now
     // maybe the csum_diff helper has a bounded loop and needs to be invoked mutiple times?
