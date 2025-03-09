@@ -417,7 +417,6 @@ enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) //
 static __always_inline
 int frag_needed_trim(struct xdp_md *ctx, struct pointers *p, int max)
 {
-
     void *data_end = (void *)(long)ctx->data_end;
     
     struct ethhdr eth_copy = {};
@@ -459,7 +458,8 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p, int max)
     /* extend header - extra ip and icmp needed*/
     adjust = sizeof(struct iphdr) + sizeof(struct icmphdr);
     
-    if (bpf_xdp_adjust_head(ctx, 0 - adjust))
+    //if (bpf_xdp_adjust_head(ctx, 0 - adjust))
+    if (bpf_xdp_adjust_head(ctx, 0 - (sizeof(struct iphdr) + sizeof(struct icmphdr))))	
 	return -1;
 
     if (reparse_frame2(ctx, p) < 0)
@@ -507,18 +507,11 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 	return -1;
 
     void *data_end = (void *)(long)ctx->data_end;
-    //struct ethhdr *eth = p.eth;
-    //struct iphdr *ip = p.ip;
     struct icmphdr *icmp = (void *)(p.ip + 1);
     
     if (icmp + 1 > data_end)
 	return -1;
 
-    // reverse HW addresses to send ICMP message to client ?
-    //char temp[6];
-    //memcpy(temp, eth->h_dest, 6);
-    //memcpy(eth->h_dest, eth->h_source, 6);
-    //memcpy(eth->h_source, temp, 6);
     reverse_ethhdr(p.eth);
 
     // reply to client with LB's address
