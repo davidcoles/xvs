@@ -64,8 +64,7 @@ const __u8 F_LAYER2_DSR  = 0x00;
 const __u8 F_LAYER3_FOU4 = 0x01;
 const __u8 F_LAYER3_FOU6 = 0x02;
 const __u8 F_LAYER3_IPIP = 0x03;
-
-const __u8 F_LAYER3_6IN4 = 0x06;
+const __u8 F_LAYER3_6IN4 = 0x04;
 
 enum lookup_result {
 		    NOT_FOUND = 0,
@@ -119,14 +118,6 @@ struct destination {
     __u8 h_dest[6]; // router MAC
     __u16 vlanid;
 };
-
-//struct fookey {
-//    struct addr saddr;    
-//    __be16 sport;
-//    __u16 proto;
-//    struct addr daddr;
-//    __be16 dport;
-//};
 
 struct destinations {
     __u8 hash[8192];
@@ -336,7 +327,10 @@ int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 {
     struct pointers p = {};
 
-    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    if (!saddr || !daddr)
+	return -1;
+    
+   /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
     //int payload_len = ipip_adjust(ctx, &p);
     int payload_len = adjust_head_ipip4(ctx, &p);
     
@@ -357,8 +351,8 @@ int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 	reverse_ethhdr(p.eth);
     }
     
-    /* some final sanity checks */
-    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest) || !(p.ip->saddr) || !(p.ip->daddr))
+    /* some final sanity checks on ethernet addresses */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
 	return -1;
 
     /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
@@ -370,6 +364,9 @@ static __always_inline
 int fou4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     struct pointers p = {};
+
+    if (!saddr || !daddr || !sport || !dport)
+	return -1;
     
     /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
     //int udp_len = fou4_adjust(ctx, &p);
@@ -400,8 +397,8 @@ int fou4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u1
 	reverse_ethhdr(p.eth);
     }
     
-    /* some final sanity checks */
-    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest) || !(p.ip->saddr) || !(p.ip->daddr))
+    /* some final sanity checks on ethernet addresses */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
 	return -1;
 
     /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
@@ -491,7 +488,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
       return -1;
     
     // DELIBERATE BREAKAGE
-    //p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
     
     /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
     if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))
