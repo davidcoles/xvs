@@ -47,9 +47,6 @@ ipip
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
 
-#include "vlan.h"
-#include "new.h"
-
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
 
@@ -57,6 +54,7 @@ ipip
 #define SECOND_NS 1000000000l
 
 const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
+const __u8 IPIP_OVERHEAD = sizeof(struct iphdr);
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 
@@ -65,13 +63,22 @@ const __u8 F_STICKY = 0x01;
 const __u8 F_LAYER2_DSR  = 0x00;
 const __u8 F_LAYER3_FOU4 = 0x01;
 const __u8 F_LAYER3_FOU6 = 0x02;
+const __u8 F_LAYER3_IPIP = 0x03;
+
+const __u8 F_LAYER3_6IN4 = 0x06;
 
 enum lookup_result {
 		    NOT_FOUND = 0,
 		    LAYER2_DSR,
 		    LAYER3_FOU4, // FOU to IPv4 host
 		    LAYER3_FOU6, // FOU to IPv6 host
+		    LAYER3_IPIP,
+		    LAYER3_6IN4,
 };
+
+#include "vlan.h"
+#include "new.h"
+
 
 struct info {
     __be32 vip;
@@ -293,29 +300,71 @@ void reverse_ethhdr(struct ethhdr *eth)
 }
 
 static __always_inline
-int fou4_adjust(struct xdp_md *ctx, struct pointers *p)
+int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead, int payload_header_len)
 {
-    if (preserve_headers(ctx, p) < 0)	
+    if (preserve_headers(ctx, p) < 0)
 	return -1;
 
-    /* calculate the length of the FOU payload (UDP header + original IP packet) */
-    int udp_len = sizeof(struct udphdr) + ((void *)(long)ctx->data_end - ((void *) p->ip));
+    // could be calculated from overhead
+    int payload_len = payload_header_len + ((void *)(long)ctx->data_end - ((void *) p->ip));
 
     /* Insert space for new headers at the start of the packet */
-    if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
+    if (bpf_xdp_adjust_head(ctx, 0 - overhead))
 	return -1;
     
     /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers  and restore contents */
-    if (restore_headers(ctx, p) < 0)	
+    if (restore_headers(ctx, p) < 0)
+	return -1;
+
+    return payload_len;
+}
+
+static __always_inline
+int adjust_head_fou4(struct xdp_md *ctx, struct pointers *p)
+{
+    return adjust_head(ctx, p, FOU4_OVERHEAD, sizeof(struct udphdr));
+}
+
+static __always_inline
+int adjust_head_ipip4(struct xdp_md *ctx, struct pointers *p)
+{
+    return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
+}
+
+static __always_inline
+int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+{
+    struct pointers p = {};
+
+    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    //int payload_len = ipip_adjust(ctx, &p);
+    int payload_len = adjust_head_ipip4(ctx, &p);
+    
+    if (payload_len < 0)
 	return -1;
     
-    //struct udphdr *udp = (void *) (p->ip + 1);
+    /* Update the outer IP header to send to the IPIP target */
+    p.ip->saddr = saddr;
+    p.ip->daddr = daddr;
+    sanitise_iphdr(p.ip, sizeof(struct iphdr) + payload_len, IPPROTO_IPIP);    
     
-    //if (udp + 1 > (void *)(long)ctx->data_end)
-    //	return -1;
+    if (!nulmac(router)) {
+	/* If a router is explicitly indicated then direct the frame there */
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	/* Otherwise return it to the device that it came from */
+	reverse_ethhdr(p.eth);
+    }
+    
+    /* some final sanity checks */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest) || !(p.ip->saddr) || !(p.ip->daddr))
+	return -1;
 
-    return udp_len;
+    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    return 0;
 }
+
 
 static __always_inline
 int fou4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
@@ -323,7 +372,8 @@ int fou4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u1
     struct pointers p = {};
     
     /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
-    int udp_len = fou4_adjust(ctx, &p);
+    //int udp_len = fou4_adjust(ctx, &p);
+    int udp_len = adjust_head_fou4(ctx, &p);
     
     if (udp_len < 0)
 	return -1;
@@ -367,6 +417,13 @@ int send_fou4(struct xdp_md *ctx, struct destination *dest)
 }
 
 static __always_inline
+int send_ipip(struct xdp_md *ctx, struct destination *dest)
+{
+    return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+	XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
 enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
 {
     // lookup flow in state map?
@@ -400,8 +457,9 @@ enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // 
     
     switch (flag) {
     case F_LAYER2_DSR:  return LAYER2_DSR;
-    case F_LAYER3_FOU4:	return LAYER3_FOU4;
+    case F_LAYER3_FOU4: return LAYER3_FOU4;
     case F_LAYER3_FOU6: return LAYER3_FOU6;
+    case F_LAYER3_IPIP: return LAYER3_IPIP;	
     }
 
    return NOT_FOUND;
@@ -433,7 +491,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
       return -1;
     
     // DELIBERATE BREAKAGE
-    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+    //p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
     
     /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
     if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))
@@ -747,7 +805,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     case LAYER3_FOU4:
 	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
-	// FIXME: need to make provision for untagged nond interfaces
+	// FIXME: need to make provision for untagged bond interfaces
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
 	    return XDP_DROP;
 	
@@ -755,11 +813,24 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
 	
-	/* Encapsulate and send the packet */
 	return send_fou4(ctx, &dest);
 
+    case LAYER3_IPIP:
+	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
+	// FIXME: need to make provision for untagged bond interfaces
+	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
+	    return XDP_DROP;
+
+	/* Will the packet and extra IP header exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
+	if ((data_end - ((void *) ip)) + IPIP_OVERHEAD > mtu)
+	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - IPIP_OVERHEAD);
+	
+	return send_ipip(ctx, &dest);
+		
+	
     case LAYER2_DSR:  /* not implemented yet */
     case LAYER3_FOU6: /* not implemented yet */
+    case LAYER3_6IN4:
     case NOT_FOUND:
 	break;
     }

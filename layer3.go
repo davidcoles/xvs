@@ -54,7 +54,7 @@ type bpf_service6 struct {
 type addr4 = [4]byte
 type addr6 = [16]byte
 
-func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sticky bool, dests ...addr4) error {
+func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sticky bool, dests ...addr4) error {
 
 	var ZERO uint32 = 0
 	var vlanid uint32 = 100
@@ -109,15 +109,17 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	var service bpf_service3
 
 	const F_LAYER2_DSR uint8 = 0x00
-	const F_LAYER3_FOU4 uint8 = 0x01 // IPv4 host with FOU tunnel
-	const F_LAYER3_FOU6 uint8 = 0x02 // IPv6 host with FOU tunnel
-	//const F_FOU uint8 = 0x02
-	//const F_FOU uint8 = 0x03
-	//const F_FOU uint8 = 0x05
-	//const F_FOU uint8 = 0x06
-	//const F_FOU uint8 = 0x07
+	const F_LAYER3_FOU4 uint8 = 0x01  // IPv4 host with FOU tunnel
+	const F_LAYER3_FOU6 uint8 = 0x02  // IPv6 host with FOU tunnel
+	const F_LAYER3_IPIP4 uint8 = 0x03 // IPv4 host with IP-in-IP tunnel
 
 	const F_STICKY uint8 = 0x01
+
+	tunnel := F_LAYER3_FOU4
+
+	if ipip {
+		tunnel = F_LAYER3_IPIP4
+	}
 
 	if sticky {
 		service.flag[0] |= F_STICKY
@@ -128,7 +130,7 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sti
 	service.vlanid = uint16(vlanid)
 
 	for i, d := range dests {
-		service.flag[i+1] = F_LAYER3_FOU4
+		service.flag[i+1] = tunnel
 		service.sport[i+1] = port
 		service.daddr[i+1] = bpf_dest4{addr: d}
 	}

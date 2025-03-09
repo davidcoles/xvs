@@ -250,3 +250,42 @@ int restore_headers(struct xdp_md *ctx, struct pointers *p)
     
     return 0;
 }
+
+//static __always_inline
+int fou4_adjust(struct xdp_md *ctx, struct pointers *p)
+{
+    if (preserve_headers(ctx, p) < 0)	
+	return -1;
+
+    /* calculate the length of the FOU payload (UDP header + original IP packet) */
+    int payload_len = sizeof(struct udphdr) + ((void *)(long)ctx->data_end - ((void *) p->ip));
+
+    /* Insert space for new headers at the start of the packet */
+    if (bpf_xdp_adjust_head(ctx, 0 - FOU4_OVERHEAD))
+	return -1;
+    
+    /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers  and restore contents */
+    if (restore_headers(ctx, p) < 0)	
+	return -1;
+
+    return payload_len;
+}
+
+//static __always_inline
+int ipip_adjust(struct xdp_md *ctx, struct pointers *p)
+{
+    if (preserve_headers(ctx, p) < 0)
+	return -1;
+    
+    int payload_len = ((void *)(long)ctx->data_end - ((void *) p->ip));
+
+    /* Insert space for new headers at the start of the packet */
+    if (bpf_xdp_adjust_head(ctx, 0 - IPIP_OVERHEAD))
+	return -1;
+    
+    /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers  and restore contents */
+    if (restore_headers(ctx, p) < 0)
+	return -1;
+
+    return payload_len;
+}
