@@ -57,9 +57,9 @@ struct iphdr *parse(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vla
 
 
 struct pointers {
-    struct ethhdr *eth;
-    struct vlan_hdr *vlan;
-    struct iphdr *ip;
+    struct ethhdr *eth, eth_copy;
+    struct vlan_hdr *vlan, vlan_copy;
+    struct iphdr *ip, ip_copy;
 };
 
 #define PARSE_FRAME(eth, vlan, ip, data_end) ((eth + 1 > data_end) ? -1 : \
@@ -120,6 +120,10 @@ int parse_frame2(struct xdp_md *ctx, struct pointers *p)
     if (p->ip + 1 > data_end)
 	return -1;
 
+    p->eth_copy = *(p->eth);
+    if (p->vlan) p->vlan_copy = *(p->vlan);
+    p->ip_copy = *(p->ip);
+    
      return 0;
 }
 
@@ -176,6 +180,73 @@ int reparse_frame2(struct xdp_md *ctx, struct pointers *p)
     
     if (p->ip + 1 > data_end)
 	return -1;
+
+    //*(p->eth) = p->eth_copy;
+    //if (p->vlan) *(p->vlan) = p->vlan_copy;
+    //*(p->ip) = p->ip_copy;
+    
+    return 0;
+}
+
+int preserve_headers(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    p->vlan = NULL;
+    
+    p->eth = data;
+    
+    if (p->eth + 1 > data_end)
+        return -1;
+    
+    if (p->eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+        p->vlan = (void *)(p->eth + 1);
+	
+	if (p->vlan + 1 > data_end)
+	    return -1;
+	
+	p->ip = (void *)(p->vlan + 1);
+    } else {
+        p->ip = (void *)(p->eth + 1);
+    }
+
+    if (p->ip + 1 > data_end)
+	return -1;
+
+    p->eth_copy = *(p->eth);
+    if (p->vlan) p->vlan_copy = *(p->vlan);
+    p->ip_copy = *(p->ip);
+    
+     return 0;
+}
+
+int restore_headers(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    p->eth = data;
+    
+    if (p->eth + 1 > data_end)
+        return -1;
+    
+    if(p->vlan) {
+        p->vlan = (void *)(p->eth + 1);
+
+	if (p->vlan + 1 > data_end)
+            return -1;
+	
+	p->ip = (void *)(p->vlan + 1);
+    } else {
+	p->ip = (void *)(p->eth + 1);
+    }
+    
+    if (p->ip + 1 > data_end)
+	return -1;
+
+    *(p->eth) = p->eth_copy;
+    if (p->vlan) *(p->vlan) = p->vlan_copy;
+    *(p->ip) = p->ip_copy;
     
     return 0;
 }
