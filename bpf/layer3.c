@@ -53,8 +53,6 @@ ipip
 #define VERSION 1
 #define SECOND_NS 1000000000l
 
-const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
-const __u8 IPIP_OVERHEAD = sizeof(struct iphdr);
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 
@@ -131,6 +129,8 @@ struct destinations {
     // maybe seperate vlan/mac records if IPv6 is to support L2
 };
 
+/**********************************************************************/
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, unsigned int);
@@ -169,249 +169,12 @@ struct {
 /**********************************************************************/
 
 static __always_inline
-__u16 csum_fold_helper(__u32 csum)
-{
-    __u32 sum;
-    sum = (csum >> 16) + (csum & 0xffff);
-    sum += (sum >> 16);
-    return ~sum;
-}
-
-static __always_inline
-void *is_ipv4(void *data, void *data_end)
-{
-    struct iphdr *iph = data;
-    __u32 nh_off = sizeof(struct iphdr);
-
-    if (data + nh_off > data_end)
-        return NULL;
-
-    if (iph->version != 4)
-	return NULL;
-    
-    if (iph->ihl < 5)
-        return NULL;
-
-    if (iph->ihl == 5)
-        return data + nh_off;
-
-    return NULL; // remove to allow IPv4 options - needs testing first and probably not advisable
-
-    nh_off = (iph->ihl) * 4;
-
-    if (data + nh_off > data_end)
-        return NULL;
-
-    return data + nh_off;
-}
-
-static __always_inline
-int ip_decrease_ttl(struct iphdr *ip)
-{
-    __u32 check = ip->check;
-    check += bpf_htons(0x0100);
-    ip->check = (__u16)(check + (check >= 0xFFFF));
-    return --(ip->ttl);
-}
-
-static __always_inline
-int nulmac(unsigned char *mac)
-{
-    return (!mac[0] && !mac[1] && !mac[2] && !mac[3] && !mac[4] && !mac[5]);
-}
-
-static __always_inline
-__u16 ipv4_checksum(struct iphdr *ip)
-{
-    __u32 size = sizeof(struct iphdr);
-    __u32 csum = bpf_csum_diff((__be32 *) ip, 0, (__be32 *) ip, size, 0);
-    return csum_fold_helper(csum);
-}
-
-
-static __always_inline
-__u16 icmp_checksum(struct icmphdr *icmp, __u16 size)
-{
-    __u32 csum = bpf_csum_diff((__be32 *) icmp, 0, (__be32 *) icmp, size, 0);
-    return csum_fold_helper(csum);
-}
-
-static __always_inline
-__u16 sdbm(unsigned char *ptr, __u8 len)
-{
-    unsigned long hash = 0;
-    unsigned char c;
-    unsigned int n;
-
-    for(n = 0; n < len; n++) {
-        c = ptr[n];
-        hash = c + (hash << 6) + (hash << 16) - hash;
-    }
-
-    return hash & 0xffff;
-}
-
-static __always_inline
-__u16 l4_hash(struct iphdr *ip, void *l4)
-{
-    // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
-    struct udphdr *udp = (struct udphdr *) l4;
-    struct {
-	__be32 src;
-	__be32 dst;
-	__be16 sport;
-	__be16 dport;
-    } h = { .src = ip->saddr, .dst = ip->daddr};
-    if (udp) {
-	h.sport = udp->source;
-	h.dport = udp->dest;
-    }
-    return sdbm((unsigned char *)&h, sizeof(h));
-}
-
-static __always_inline
-void sanitise_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol)
-{
-    ip->version = 4;
-    ip->ihl = 5;
-    ip->ttl = 64;
-    ip->tot_len = bpf_htons(tot_len);
-    ip->protocol = protocol;
-    ip->check = 0;
-    ip->check = ipv4_checksum(ip);
-}
-
-static __always_inline
-void reverse_ethhdr(struct ethhdr *eth)
-{
-    char temp[6];
-    memcpy(temp, eth->h_dest, 6);
-    memcpy(eth->h_dest, eth->h_source, 6);
-    memcpy(eth->h_source, temp, 6);
-}
-
-static __always_inline
-int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead, int payload_header_len)
-{
-    if (preserve_headers(ctx, p) < 0)
-	return -1;
-
-    // could be calculated from overhead
-    int payload_len = payload_header_len + ((void *)(long)ctx->data_end - ((void *) p->ip));
-
-    /* Insert space for new headers at the start of the packet */
-    if (bpf_xdp_adjust_head(ctx, 0 - overhead))
-	return -1;
-    
-    /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers  and restore contents */
-    if (restore_headers(ctx, p) < 0)
-	return -1;
-
-    return payload_len;
-}
-
-static __always_inline
-int adjust_head_fou4(struct xdp_md *ctx, struct pointers *p)
-{
-    return adjust_head(ctx, p, FOU4_OVERHEAD, sizeof(struct udphdr));
-}
-
-static __always_inline
-int adjust_head_ipip4(struct xdp_md *ctx, struct pointers *p)
-{
-    return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
-}
-
-static __always_inline
-int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
-{
-    struct pointers p = {};
-
-    if (!saddr || !daddr)
-	return -1;
-    
-   /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
-    //int payload_len = ipip_adjust(ctx, &p);
-    int payload_len = adjust_head_ipip4(ctx, &p);
-    
-    if (payload_len < 0)
-	return -1;
-    
-    /* Update the outer IP header to send to the IPIP target */
-    p.ip->saddr = saddr;
-    p.ip->daddr = daddr;
-    sanitise_iphdr(p.ip, sizeof(struct iphdr) + payload_len, IPPROTO_IPIP);    
-    
-    if (!nulmac(router)) {
-	/* If a router is explicitly indicated then direct the frame there */
-	memcpy(p.eth->h_source, p.eth->h_dest, 6);
-	memcpy(p.eth->h_dest, router, 6);
-    } else {
-	/* Otherwise return it to the device that it came from */
-	reverse_ethhdr(p.eth);
-    }
-    
-    /* some final sanity checks on ethernet addresses */
-    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
-	return -1;
-
-    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
-    return 0;
-}
-
-
-static __always_inline
-int fou4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
-{
-    struct pointers p = {};
-
-    if (!saddr || !daddr || !sport || !dport)
-	return -1;
-    
-    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
-    //int udp_len = fou4_adjust(ctx, &p);
-    int udp_len = adjust_head_fou4(ctx, &p);
-    
-    if (udp_len < 0)
-	return -1;
-
-    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
-    struct udphdr *udp = (void *) (p.ip + 1);
-    
-    if (udp + 1 > (void *)(long)ctx->data_end)
-	return -1;
-
-    *udp = udp_new;
-    
-    /* Update the outer IP header to send to the FOU target */
-    p.ip->saddr = saddr;
-    p.ip->daddr = daddr;
-    sanitise_iphdr(p.ip, sizeof(struct iphdr) + udp_len, IPPROTO_UDP);
-    
-    if (!nulmac(router)) {
-	/* If a router is explicitly indicated then direct the frame there */
-	memcpy(p.eth->h_source, p.eth->h_dest, 6);
-	memcpy(p.eth->h_dest, router, 6);
-    } else {
-	/* Otherwise return it to the device that it came from */
-	reverse_ethhdr(p.eth);
-    }
-    
-    /* some final sanity checks on ethernet addresses */
-    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
-	return -1;
-
-    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
-    return 0;
-}
-
-
-static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
     return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
+
 
 static __always_inline
 int send_ipip(struct xdp_md *ctx, struct destination *dest)
@@ -419,6 +182,20 @@ int send_ipip(struct xdp_md *ctx, struct destination *dest)
     return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
 	XDP_ABORTED : XDP_TX;
 }
+
+
+static __always_inline
+int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
+{
+    bpf_printk("FRAG_NEEDED\n");
+
+    __u8 *buffer = NULL;
+    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
+	return XDP_ABORTED;
+     
+    return (frag_needed(ctx, saddr, mtu, buffer) < 0) ? XDP_ABORTED : XDP_TX;
+}
+
 
 static __always_inline
 enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
@@ -468,242 +245,6 @@ enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) //
     return lookup(ip, l4, r);
 }
 
-static __always_inline
-int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
-{
-    const int max = 128;
-    void *data_end = (void *)(long)ctx->data_end;
-        
-    if (preserve_headers(ctx, p) < 0)
-	return -1;
-
-    /* if DF is not set then drop */
-    if (!IS_DF(p->ip->frag_off))
-	return -1;
-    
-    int iplen = data_end - (void *)(p->ip);
-
-    /* if a packet was smaller than "max" bytes then it should not have been too big - drop */
-    if (iplen < max)
-      return -1;
-    
-    // DELIBERATE BREAKAGE
-    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
-    
-    /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
-    if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))
-	return -1;
-    
-    /* extend header - extra ip and icmp needed*/
-    if (bpf_xdp_adjust_head(ctx, 0 - (int)(sizeof(struct iphdr) + sizeof(struct icmphdr))))	
-	return -1;
-
-    if (restore_headers(ctx, p) < 0)	
-        return -1;
-
-    return max;
-}
-
-static __always_inline
-int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
-{
-    // FIXME: checksum doesn't work for much larger packets, unsure why - keep the size down for now
-    // maybe the csum_diff helper has a bounded loop and needs to be invoked mutiple times?
-    struct pointers p = {};
-    int iplen;
-    __u8 *buffer = NULL;
-    
-    //if ((iplen = frag_needed_trim(ctx, &p, max)) < 0)
-    if ((iplen = frag_needed_trim(ctx, &p)) < 0)	
-	return -1;
-
-    void *data_end = (void *)(long)ctx->data_end;
-    struct icmphdr *icmp = (void *)(p.ip + 1);
-    
-    if (icmp + 1 > data_end)
-	return -1;
-
-    reverse_ethhdr(p.eth);
-
-    // reply to client with LB's address
-    p.ip->daddr = p.ip->saddr;
-    p.ip->saddr = saddr;
-    // FIXME - how will the above work behind NAT?
-    // 1) 2nd address stored only used for replying to client
-    // 2) static NAT entry for LB -> outside world
-    // 3) dynamic NAT pool
-    // 4) larger internal MTU
-    // ensure DEST_UNREACH/FRAG_NEEDED is allowed out
-    // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
-    // respond to every occurence or keep a record of recent notifications?
-
-    sanitise_iphdr(p.ip, sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen, IPPROTO_ICMP);
-
-    struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0, .un.frag.mtu = bpf_htons(mtu) };
-    *icmp = fou;
-
-    ((__u8 *) icmp)[5] = ((__u8)(iplen >> 2)); // struct icmphdr lacks a length field
-
-    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
-	return -1;
-    
-    for (__u16 n = 0; n < sizeof(struct icmphdr) + iplen; n++) {
-	if (((void *) icmp) + n >= data_end)
-            break;
-	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
-    }
-
-    /* calulate checksum over the entire icmp packet + payload (copied to buffer) */
-    icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);
-
-    return 0;
-}
-
-//static __always_inline
-int frag_needed_orig(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
-{
-    // FIXME: checksum doesn't work for much larger packets, unsure why - keep the size down for now
-    // maybe the csum_diff helper has a bounded loop and needs to be invoked mutiple times?
-    const int max = 128;
-
-    void *data     = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    
-    struct ethhdr *eth = data, eth_copy = {};
-    struct vlan_hdr *vlan = NULL, vlan_copy = {};
-    struct iphdr *ip = NULL, ip_copy ={};
-    
-    if (eth + 1 > data_end)
-	return -1;
-
-    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-	vlan = (void *)(eth + 1);
-	
-	if (vlan + 1 > data_end)
-	    return -1;
-	
-	ip = (void *)(vlan + 1);
-    } else {
-	ip = (void *)(eth + 1);
-    }
-    
-    if (ip + 1 > data_end)
-	return -1;
-
-    eth_copy = *eth;
-    if (vlan) vlan_copy = *vlan;
-    ip_copy = *ip;
-    
-    /* if DF is not set then drop */
-    if (!IS_DF(ip->frag_off))
-	return -1;
-    
-    int iplen = data_end - (void *)ip;
-
-    /* if a packet was smaller than "max" bytes then it should not have been too big - drop */
-    if (iplen < max)
-      return -1;
-    
-    // DELIBERATE BREAKAGE
-    //ip->daddr = saddr; // prevent the ICMP from changing the path MTU whilst testing
-    
-    int adjust = 0;
-    
-    /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
-    if (iplen > max) {
-	adjust = iplen - max;
-	
-	if(bpf_xdp_adjust_tail(ctx, 0 - adjust))
-	    return -1;
-	
-	iplen = max;
-    }
-    
-    /* extend header - extra ip and icmp needed*/
-    adjust = sizeof(struct iphdr) + sizeof(struct icmphdr);
-    
-    if (bpf_xdp_adjust_head(ctx, 0 - adjust))
-	return -1;
-
-    data     = (void *)(long)ctx->data;
-    data_end = (void *)(long)ctx->data_end;
-    
-    eth = data;
-    
-    if (eth + 1 > data_end)
-	return -1;
-
-    if(vlan) {
-	vlan = (void *)(eth + 1);
-	
-	if (vlan + 1 > data_end)
-	    return -1;
-	
-	ip = (void *)(vlan + 1);
-    } else {
-	ip = (void *)(eth + 1);
-    }
-
-    if (ip + 1 > data_end)
-	return -1;
-    
-    struct icmphdr *icmp = (void *)(ip + 1);
-    
-    if (icmp + 1 > data_end)
-	return -1;
-    
-    *eth = eth_copy;
-    if (vlan) *vlan = vlan_copy;
-    *ip = ip_copy;
-
-    // reverse HW addresses to send ICMP message to client ?
-    memcpy(eth->h_dest, eth_copy.h_source, 6);
-    memcpy(eth->h_source, eth_copy.h_dest, 6);
-
-    // reply to client with LB's address
-    ip->daddr = ip_copy.saddr;
-    ip->saddr = saddr;
-    // FIXME - how will the above work behind NAT?
-    // 1) 2nd address stored only used for replying to client
-    // 2) static NAT entry for LB -> outside world
-    // 3) dynamic NAT pool
-    // 4) larger internal MTU
-    // ensure DEST_UNREACH/FRAG_NEEDED is allowed out
-    // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
-    // respond to every occurence or keep a record of recent notifications?
-
-    ip->version = 4;
-    ip->ihl = 5;
-    ip->ttl = 64;
-    ip->tot_len = bpf_htons(sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen);
-    ip->protocol = IPPROTO_ICMP;
-    ip->check = 0;
-    ip->check = ipv4_checksum(ip);
-
-    struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0 };
-
-    fou.un.frag.mtu = bpf_htons(mtu);
-
-    *icmp = fou;
-
-    ((__u8 *) icmp)[5] = ((__u8)(iplen >> 2)); // struct icmphdr lacks a length field
-
-    __u8 *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
-
-    if (!buffer)
-	return -1;
-    
-    for (__u16 n = 0; n < sizeof(struct icmphdr) + max; n++) {
-	if (((void *) icmp) + n >= data_end)
-            break;
-	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
-    }
-
-    /* calulate checksum over the entire icmp packet + payload (copied to buffer) */
-    icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);
-
-    return 0;
-}
 
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
 
@@ -720,13 +261,6 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
     return 0;
 }
 
-
-static __always_inline
-int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
-{
-    bpf_printk("FRAG_NEEDED\n");
-    return (frag_needed(ctx, saddr, mtu) < 0) ? XDP_ABORTED : XDP_TX;
-}
 
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
@@ -772,40 +306,63 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_PASS;
     
     struct iphdr *ip = next_header;
-    
-    if (!(next_header = is_ipv4(ip, data_end)))
+
+    if (ip + 1 > data_end)
 	return XDP_PASS;
 
     struct addr daddr = { .addr4.addr = ip->daddr };
-
+    
     if (!bpf_map_lookup_elem(&vips, &daddr))
     	return XDP_PASS;
+
+    if (ip->version != 4)
+	return XDP_DROP;
+    
+    if (ip->ihl != 5)
+        return XDP_DROP;
 
     if (ip->ttl <= 1)
 	return XDP_DROP;
     
+    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
+    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
+        return XDP_DROP;
+    
     if (ip->protocol != IPPROTO_TCP)
 	return XDP_DROP;
-
-    if (next_header + sizeof(struct tcphdr) > data_end)
-	return XDP_DROP;
-
+    
     struct tcphdr *tcp = next_header;
+
+    if (tcp + 1 > data_end)
+      return XDP_DROP;
+    
     struct destination dest = {};
 
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
 
     int mtu = MTU;
-	
-    switch (lookup4(ip, tcp, &dest)) {
 
+    enum lookup_result result = lookup4(ip, tcp, &dest);
+
+    // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
+    // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
+    switch (result) {
     case LAYER3_FOU4:
-	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
-	// FIXME: need to make provision for untagged bond interfaces
+    case LAYER3_FOU6:
+    case LAYER3_6IN4:
+    case LAYER3_IPIP:
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
-	    return XDP_DROP;
+            return XDP_DROP;
+	break;
 	
+    case LAYER2_DSR:
+    case NOT_FOUND:
+	break;
+    }
+    
+    switch (result) {
+    case LAYER3_FOU4:
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
@@ -813,21 +370,16 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return send_fou4(ctx, &dest);
 
     case LAYER3_IPIP:
-	/* Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent */
-	// FIXME: need to make provision for untagged bond interfaces
-	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
-	    return XDP_DROP;
-
 	/* Will the packet and extra IP header exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + IPIP_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - IPIP_OVERHEAD);
 	
 	return send_ipip(ctx, &dest);
-		
+	
 	
     case LAYER2_DSR:  /* not implemented yet */
     case LAYER3_FOU6: /* not implemented yet */
-    case LAYER3_6IN4:
+    case LAYER3_6IN4: /* not implemented yet */
     case NOT_FOUND:
 	break;
     }
