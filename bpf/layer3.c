@@ -238,22 +238,24 @@ __u16 l4_hashx(struct addr saddr, struct addr daddr, void *l4)
 }
 
 static __always_inline
-//enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
-//enum lookup_result lookup(struct iphdr *ip, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
-enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4x, __u8 protocol, struct destination *r) // flags arg?    
+enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
 {
     // lookup flow in state map?
     
     __be16 sport = 0;
     __be16 dport = 0;    
     
-    if (l4x) {
-	struct udphdr *udp = l4x;
+    if (l4) {
+	struct udphdr *udp = l4;
 	sport = udp->source;
 	dport = udp->dest;	
 	
     } 
 
+    int x = sport;
+    int y = dport;
+    bpf_printk("PORTS %d %d\n", x, y);
+    
     struct servicekey key = { .addr = daddr, .port = bpf_ntohs(dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
@@ -264,7 +266,7 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4x, __u8 
     
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l4_hashx(saddr, daddr, NULL);
-    __u16 hash4 = l4_hashx(saddr, daddr, l4x);
+    __u16 hash4 = l4_hashx(saddr, daddr, l4);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
@@ -302,9 +304,9 @@ enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) //
 static __always_inline
 enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) // flags arg?
 {
-    struct addr s = {};
-    struct addr d = {};
-    return lookup(s, d, NULL, 0, r);
+    //struct addr s = {};
+    //struct addr d = {};
+    //return lookup(s, d, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
     struct addr saddr = { .addr6 =  ip6->ip6_src };
     struct addr daddr = { .addr6 =  ip6->ip6_dst };
     return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
@@ -345,32 +347,32 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
 	return XDP_PASS;
 
-    struct tcphdr *tcp = (void *) ip6 + 1;
+    struct tcphdr *tcp = (void *) (ip6 + 1);
 
     if (tcp + 1 > data_end)
         return XDP_PASS;
+
+    int x = bpf_ntohs(tcp->dest);
     
-    bpf_printk("IPv6 TCP!\n");
+    bpf_printk("IPv6 TCP! %d\n", x);
 
     struct destination dest = {};
-	
+
+    enum lookup_result result = lookup6(ip6, tcp, &dest);
     
-    switch (lookup6(ip6, tcp, &dest)) {
+    switch (result) {
     case LAYER3_FOU4:
-	break;
-    case LAYER3_FOU6:
-    case LAYER3_6IN4:
+	return send2_fou4(ctx, &dest);
     case LAYER3_IPIP:
 	return send_sit(ctx, &dest);
-	//return send2_ipip(ctx, &dest);
+    case LAYER3_FOU6:
+    case LAYER3_6IN4:
     case LAYER2_DSR:
     case NOT_FOUND:
-	return XDP_DROP;
+	break;
     }
 
-    return send2_fou4(ctx, &dest);
-    // encap ipv6 in IPv4 + UDP
-    //return XDP_DROP;
+    return XDP_DROP;
 }
 
 

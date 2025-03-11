@@ -32,7 +32,9 @@ func main() {
 
 	sticky := flag.Bool("s", false, "Sticky")
 	ipip := flag.Bool("i", false, "IP-in-IP")
-	port := flag.Uint("p", 9999, "Port to use for FOU")
+	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
+	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
+	ip6 := flag.String("6", "", "IPv6 VIP")
 
 	flag.Parse()
 
@@ -43,6 +45,10 @@ func main() {
 	saddr := netip.MustParseAddr(args[1])
 	vip := netip.MustParseAddr(args[2])
 
+	var vip2 netip.Addr
+	if *ip6 != "" {
+		vip2 = netip.MustParseAddr(*ip6)
+	}
 	var h_dest [6]byte
 
 	copy(h_dest[:], mac[:])
@@ -56,7 +62,7 @@ func main() {
 	}
 
 	fmt.Println("Starting ...")
-	err := xvs.Layer3(*ipip, 2, h_dest, saddr.As4(), vip.As4(), uint16(*port), *sticky, addrs...)
+	err := xvs.Layer3(*ipip, 2, h_dest, saddr.As4(), vip, vip2, uint16(*l3port4), uint16(*l3port6), *sticky, addrs...)
 
 	if err != nil {
 		log.Fatal(err)

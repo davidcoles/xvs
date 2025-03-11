@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	//"fmt"
 	"io/ioutil"
+	"net/netip"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/xdp"
@@ -35,7 +36,7 @@ type bpf_dest4 struct {
 	addr [4]byte
 }
 
-type bpf_service3 struct {
+type bpf_destinations struct {
 	hash   [8192]uint8
 	flag   [256]uint8
 	sport  [256]uint16
@@ -45,7 +46,7 @@ type bpf_service3 struct {
 	vlanid uint16
 }
 
-type bpf_service6 struct {
+type bpf_servicekey struct {
 	addr  addr6
 	port  uint16
 	proto uint16
@@ -54,18 +55,21 @@ type bpf_service6 struct {
 type addr4 = [4]byte
 type addr6 = [16]byte
 
-func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port uint16, sticky bool, dests ...addr4) error {
+func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...addr4) error {
+
+	const TCP uint16 = 6
+	const UDP uint16 = 17
 
 	var ZERO uint32 = 0
 	var vlanid uint32 = 100
 
 	var native bool
 
-	info := bpf_info{
-		vip:    vip,
-		saddr:  saddr,
-		h_dest: h_dest,
-	}
+	//info := bpf_info{
+	//	vip:    vip,
+	//	saddr:  saddr,
+	//	h_dest: h_dest,
+	//}
 
 	x, err := xdp.LoadBpfFile(layer3_o)
 
@@ -73,17 +77,7 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port 
 		return err
 	}
 
-	var vip6 addr6
-
-	copy(vip6[12:], vip[:])
-
-	s6 := bpf_service6{
-		addr:  vip6,
-		port:  8000,
-		proto: 6,
-	}
-
-	infos, err := x.FindMap("infos", 4, int(unsafe.Sizeof(bpf_info{})))
+	//	infos, err := x.FindMap("infos", 4, int(unsafe.Sizeof(bpf_info{})))
 
 	if err != nil {
 		return err
@@ -101,12 +95,15 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port 
 		return err
 	}
 
-	destinations, err := x.FindMap("destinations", int(unsafe.Sizeof(bpf_service6{})), int(unsafe.Sizeof(bpf_service3{})))
+	destinations, err := x.FindMap("destinations", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_destinations{})))
 
 	if err != nil {
 		return err
 	}
-	var service bpf_service3
+
+	redirect_map.UpdateElem(uP(&vlanid), uP(&nic), xdp.BPF_ANY)
+
+	//infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
 
 	const F_LAYER2_DSR uint8 = 0x00
 	const F_LAYER3_FOU4 uint8 = 0x01  // IPv4 host with FOU tunnel
@@ -121,46 +118,57 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port 
 		tunnel = F_LAYER3_IPIP4
 	}
 
-	if sticky {
-		service.flag[0] |= F_STICKY
+	all := []netip.Addr{vip, vip2}
+
+	for _, ip := range all {
+
+		var vip6 addr6
+		var port uint16 = l3port4
+
+		if ip.Is4() {
+			i := ip.As4()
+			copy(vip6[12:], i[:])
+		} else {
+			i := ip.As16()
+			copy(vip6[:], i[:])
+			port = l3port6
+		}
+
+		vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
+
+		key := bpf_servicekey{
+			addr:  vip6,
+			port:  8000,
+			proto: TCP,
+		}
+
+		var val bpf_destinations
+
+		if sticky {
+			val.flag[0] |= F_STICKY
+		}
+
+		val.saddr = bpf_dest4{addr: saddr}
+		val.h_dest = h_dest
+		val.vlanid = uint16(vlanid)
+
+		for i, d := range dests {
+			val.flag[i+1] = tunnel
+			val.sport[i+1] = port
+			val.daddr[i+1] = bpf_dest4{addr: d}
+		}
+
+		for i, _ := range val.hash {
+			d := i % len(dests)
+			val.hash[i] = byte(d + 1)
+		}
+
+		for _, p := range []uint16{80, 443, 8000} {
+			key.port = p
+			destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+		}
+
 	}
-
-	service.saddr = bpf_dest4{addr: saddr}
-	service.h_dest = h_dest
-	service.vlanid = uint16(vlanid)
-
-	for i, d := range dests {
-		service.flag[i+1] = tunnel
-		service.sport[i+1] = port
-		service.daddr[i+1] = bpf_dest4{addr: d}
-	}
-
-	for i := 0; i < len(service.hash); i++ {
-		d := i % len(dests)
-		service.hash[i] = byte(d + 1)
-	}
-
-	infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
-
-	redirect_map.UpdateElem(uP(&vlanid), uP(&nic), xdp.BPF_ANY)
-
-	for _, p := range []uint16{80, 443, 8000} {
-		s6.port = p
-		destinations.UpdateElem(uP(&s6), uP(&service), xdp.BPF_ANY)
-	}
-
-	for i, d := range dests {
-		service.flag[i+1] = tunnel
-		service.sport[i+1] = 6666
-		service.daddr[i+1] = bpf_dest4{addr: d}
-	}
-
-	s6.addr = addr6{}
-	s6.port = 0
-	s6.proto = 0
-	destinations.UpdateElem(uP(&s6), uP(&service), xdp.BPF_ANY)
-
-	vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
 
 	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
 		return err
