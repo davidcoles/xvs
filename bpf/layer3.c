@@ -87,9 +87,10 @@ struct info {
 };
 
 struct addr4 {
-    __u16 vid;   // L2DSR only
-    __u8 mac[6]; // L2DSR only
-    __u8 pad[4];
+    __u8 pad[12];
+    //__u16 vid;   // L2DSR only
+    //__u8 mac[6]; // L2DSR only
+    //__u8 pad[4];
     __be32 addr;
 };
 
@@ -311,6 +312,19 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 }
 
 
+static __always_inline
+int is_ipv4_addr(struct addr addr) {
+    char *p = addr.addr4.pad;
+
+    if (!p[0] && !p[1] && !p[2] && !p[3] &&
+	!p[4] && !p[5] && !p[6] && !p[7] &&
+	!p[8] && !p[9] && !p[10] && !p[11])
+	return 1;
+    
+    return 0;
+}
+
+static __always_inline
 int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan, struct ip6_hdr *ip6)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -336,11 +350,16 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
 
     int x = bpf_ntohs(tcp->dest);
     
-    bpf_printk("IPv6 TCP! %d\n", x);
+    bpf_printk("IPv6 TCP %d\n", x);
 
     struct destination dest = {};
 
     enum lookup_result result = lookup6(ip6, tcp, &dest);
+
+    if (!is_ipv4_addr(dest.daddr)) {
+	bpf_printk("IPv6 destinations not supported yet");
+	return XDP_ABORTED;
+    }
     
     switch (result) {
     case LAYER3_FOU4:
