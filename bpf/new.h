@@ -805,8 +805,6 @@ int xin4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u8
     /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
     int orig_len = adjust_head2_ipip4(ctx, &p);
 
-    bpf_printk("6IN4 %d\n", orig_len);
-
     if (orig_len < 0)
 	return -1;
 
@@ -816,6 +814,8 @@ int xin4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u8
 	p.eth->h_proto = bpf_htons(ETH_P_IP);
     }
     
+    bpf_printk("6IN4 %d\n", orig_len);
+
     /* Update the outer IP header to send to the IPIP target */
     int tot_len = sizeof(struct iphdr) + orig_len;
     new_iphdr(p.ip, tot_len, inner, saddr, daddr);
@@ -838,14 +838,55 @@ int xin4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u8
 }
 
 static __always_inline
+int xxipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+{
+    struct pointers p = {};
+
+    if (!saddr || !daddr)
+	return -1;
+    
+   /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    int payload_len = adjust_head_ipip4(ctx, &p);
+    
+    if (payload_len < 0)
+	return -1;
+    
+    /* Update the outer IP header to send to the IPIP target */
+    p.ip->saddr = saddr;
+    p.ip->daddr = daddr;
+    sanitise_iphdr(p.ip, sizeof(struct iphdr) + payload_len, IPPROTO_IPIP);    
+    
+    if (!nulmac(router)) {
+	/* If a router is explicitly indicated then direct the frame there */
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	/* Otherwise return it to the device that it came from */
+	reverse_ethhdr(p.eth);
+    }
+    
+    /* some final sanity checks on ethernet addresses */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    return 0;
+}
+
+
+
+static __always_inline
 int sit_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 {
     return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPV6);
 }
 
-
 static __always_inline
 int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 {
-    return xin4_push(ctx, router, saddr, daddr, IPPROTO_IP);
+    return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
 }
+
+
+
+
