@@ -497,21 +497,3 @@ int  xdp_pass_func(struct xdp_md *ctx)
 char _license[] SEC("license") = "GPL";
 
 #endif
-
-
-
-//static __always_inline
-//int send_fou4(struct xdp_md *ctx, struct destination *dest)
-//{
-//    return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
-//	XDP_ABORTED : XDP_TX;
-//}
-
-
-//static __always_inline
-//int send2_ipip(struct xdp_md *ctx, struct destination *dest)
-//{
-//    return ipip_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
-//	XDP_ABORTED : XDP_TX;
-//}
-

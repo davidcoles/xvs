@@ -342,9 +342,9 @@ static __always_inline
 void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __be32 daddr)
 {
     struct iphdr i = {};
-    //*ip = i;
+    *ip = i;
 
-    memcpy(ip, &i, sizeof(struct iphdr));
+    //memcpy(ip, &i, sizeof(struct iphdr));
     
     ip->version = 4;
     ip->ihl = 5;
@@ -785,8 +785,6 @@ int fou4_push2(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 d
     int tot_len = sizeof(struct iphdr) + udp_len;
     new_iphdr(p.ip, tot_len, IPPROTO_UDP, saddr, daddr);
 
-    //*udp = udp_new;
-
     if (!nulmac(router)) {
 	/* If a router is explicitly indicated then direct the frame there */
 	memcpy(p.eth->h_source, p.eth->h_dest, 6);
@@ -899,7 +897,3 @@ int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 {
     return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
 }
-
-
-
-
