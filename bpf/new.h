@@ -165,6 +165,7 @@ int nulmac(unsigned char *mac)
 
 
 const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
+const __u8 FOU6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct udphdr);
 const __u8 IPIP_OVERHEAD = sizeof(struct iphdr);
 
 
@@ -371,8 +372,13 @@ int adjust_head2(struct xdp_md *ctx, struct pointers *p, int overhead)
 static __always_inline
 int adjust_head2_fou4(struct xdp_md *ctx, struct pointers *p)
 {
-    //return adjust_head(ctx, p, FOU4_OVERHEAD, sizeof(struct udphdr));
     return adjust_head2(ctx, p, FOU4_OVERHEAD);
+}
+
+static __always_inline
+int adjust_head2_fou6(struct xdp_md *ctx, struct pointers *p)
+{
+    return adjust_head2(ctx, p, FOU6_OVERHEAD);
 }
 
 static __always_inline
@@ -493,4 +499,93 @@ static __always_inline
 int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 {
     return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+static __always_inline
+void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6_addr saddr, struct in6_addr daddr)
+{
+    struct ip6_hdr i = {};
+    *ip = i;
+
+    //ip->ip6_ctlun.ip6_un2_vfc = bpf_htonl(0x40000000); // epty TC and flow label for now
+    ip->ip6_ctlun.ip6_un2_vfc = 0x6 << 4;
+    ip->ip6_ctlun.ip6_un1.ip6_un1_plen =  bpf_htons(payload_len);
+    ip->ip6_ctlun.ip6_un1.ip6_un1_nxt = protocol;
+    ip->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64;
+    
+    ip->ip6_src = saddr;
+    ip->ip6_dst = daddr;
+}
+
+
+// struct in6_addr
+static __always_inline
+int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 sport, __u16 dport)
+{
+    struct pointers p = {};
+
+    //if (!saddr || !daddr || !sport || !dport)
+    if (!sport || !dport) // FIXME
+	return -1;
+    
+    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    int orig_len = adjust_head2_fou6(ctx, &p);
+
+    if (orig_len < 0)
+	return -1;
+
+    struct ip6_hdr *new = (void *) p.ip;
+
+    if (new + 1 > (void *)(long)ctx->data_end)
+	return -1;
+    
+    
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IPV6);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IPV6);
+    }
+
+    int udp_len = sizeof(struct udphdr) + orig_len;
+    
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr *udp = (void *) (new + 1);
+    
+    if (udp + 1 > (void *)(long)ctx->data_end)
+	return -1;
+
+    *udp = udp_new;
+
+    /* Update the outer IP header to send to the FOU target */
+    //int tot_len = sizeof(struct ip6_hdr) + udp_len;
+    new_ip6hdr(new, udp_len, IPPROTO_UDP, saddr, daddr);
+
+    bpf_printk("fou6 %d\n", udp_len);
+    
+    if (!nulmac(router)) {
+	/* If a router is explicitly indicated then direct the frame there */
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	/* Otherwise return it to the device that it came from */
+	reverse_ethhdr(p.eth);
+    }
+
+    /* some final sanity checks on ethernet addresses */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    return 0;
 }

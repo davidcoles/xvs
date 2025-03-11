@@ -54,11 +54,13 @@ func main() {
 	copy(h_dest[:], mac[:])
 
 	type addr4 = [4]byte
-	var addrs []addr4
+	//var addrs []addr4
+	var addrs []netip.Addr
 
 	for _, d := range args[3:] {
 		addr := netip.MustParseAddr(d)
-		addrs = append(addrs, addr.As4())
+		//addrs = append(addrs, addr.As4())
+		addrs = append(addrs, addr)
 	}
 
 	fmt.Println("Starting ...")

@@ -36,11 +36,14 @@ type bpf_dest4 struct {
 	addr [4]byte
 }
 
+type bpf_dest [16]byte
+
 type bpf_destinations struct {
-	hash   [8192]uint8
-	flag   [256]uint8
-	sport  [256]uint16
-	daddr  [256]bpf_dest4
+	hash  [8192]uint8
+	flag  [256]uint8
+	sport [256]uint16
+	//daddr  [256]bpf_dest4
+	daddr  [256]bpf_dest
 	saddr  bpf_dest4
 	h_dest [6]byte
 	vlanid uint16
@@ -55,7 +58,7 @@ type bpf_servicekey struct {
 type addr4 = [4]byte
 type addr6 = [16]byte
 
-func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...addr4) error {
+func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
 
 	const TCP uint16 = 6
 	const UDP uint16 = 17
@@ -131,7 +134,7 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		} else {
 			i := ip.As16()
 			copy(vip6[:], i[:])
-			port = l3port6
+			port = l3port4
 		}
 
 		vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
@@ -155,7 +158,17 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		for i, d := range dests {
 			val.flag[i+1] = tunnel
 			val.sport[i+1] = port
-			val.daddr[i+1] = bpf_dest4{addr: d}
+
+			if d.Is6() {
+				ip6 := d.As16()
+				val.daddr[i+1] = ip6
+			} else {
+				ip := d.As4()
+				var ip6 [16]byte
+				copy(ip6[12:], ip[:])
+				//val.daddr[i+1] = bpf_dest4{addr: d}
+				val.daddr[i+1] = ip6
+			}
 		}
 
 		for i, _ := range val.hash {

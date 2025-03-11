@@ -179,6 +179,15 @@ int send2_fou4(struct xdp_md *ctx, struct destination *dest)
 }
 
 static __always_inline
+int send_fou6(struct xdp_md *ctx, struct destination *dest)
+{
+    bpf_printk("send_fou6\n");
+    //int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 sport, __u16 dport)
+    return fou6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
 int send_sit(struct xdp_md *ctx, struct destination *dest)
 {
     return sit_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
@@ -357,6 +366,12 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     enum lookup_result result = lookup6(ip6, tcp, &dest);
 
     if (!is_ipv4_addr(dest.daddr)) {
+	switch (result) {
+	case LAYER3_FOU4:
+	    return send_fou6(ctx, &dest);
+	default:
+	    break;
+	}
 	bpf_printk("IPv6 destinations not supported yet");
 	return XDP_ABORTED;
     }
