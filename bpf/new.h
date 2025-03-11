@@ -496,7 +496,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
       return -1;
     
     // DELIBERATE BREAKAGE
-    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+    //p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
     
     /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
     if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))

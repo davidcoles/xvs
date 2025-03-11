@@ -47,6 +47,8 @@ ipip
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
 
+#include <netinet/ip6.h>
+
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
 
@@ -98,7 +100,7 @@ struct addr6 {
 struct addr {
     union {
         struct addr4 addr4;
-        struct addr6 addr6;
+        struct in6_addr addr6;
     };
 };
 
@@ -196,23 +198,41 @@ int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     return (frag_needed(ctx, saddr, mtu, buffer) < 0) ? XDP_ABORTED : XDP_TX;
 }
 
+static __always_inline
+__u16 l4_hashx(struct addr saddr, struct addr daddr, void *l4)
+{
+    // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
+    struct udphdr *udp = (struct udphdr *) l4;
+    struct {
+	struct addr src;
+	struct addr dst;
+	__be16 sport;
+	__be16 dport;
+    } h = { .src = saddr, .dst = daddr};
+    if (udp) {
+	h.sport = udp->source;
+	h.dport = udp->dest;
+    }
+    return sdbm((unsigned char *)&h, sizeof(h));
+}
 
 static __always_inline
-enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
+//enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
+//enum lookup_result lookup(struct iphdr *ip, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
+enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
 {
     // lookup flow in state map?
     
     struct udphdr *udp = l4;
-    struct addr daddr = { .addr4.addr =  ip->daddr };
-    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(udp->dest), .proto = ip->protocol }; 
+    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(udp->dest), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (!service)
 	return NOT_FOUND;
 
     __u8 sticky = service->flag[0] & F_STICKY;
-    __u16 hash3 = l4_hash(ip, NULL);
-    __u16 hash4 = l4_hash(ip, l4);
+    __u16 hash3 = l4_hashx(saddr, daddr, NULL);
+    __u16 hash4 = l4_hashx(saddr, daddr, l4);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
@@ -242,7 +262,17 @@ enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // 
 static __always_inline
 enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
 {
-    return lookup(ip, l4, r);
+    struct addr saddr = { .addr4.addr =  ip->saddr };
+    struct addr daddr = { .addr4.addr =  ip->daddr };
+    return lookup(saddr, daddr, l4, ip->protocol, r);
+}
+
+static __always_inline
+enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) // flags arg?
+{
+    struct addr saddr = { .addr6 =  ip6->ip6_src };
+    struct addr daddr = { .addr6 =  ip6->ip6_dst };
+    return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
 }
 
 
@@ -260,6 +290,52 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
     return 0;
 }
+
+
+int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan, struct ip6_hdr *ip6)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+
+    if (ip6 + 1 > data_end)
+	return XDP_PASS;
+    
+    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
+	return XDP_PASS;
+
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
+	bpf_printk("IPv6 ICMP!\n");
+	return XDP_PASS;
+    }
+    
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
+	return XDP_PASS;
+
+    struct tcphdr *tcp = (void *) ip6 + 1;
+
+    if (tcp + 1 > data_end)
+        return XDP_PASS;
+    
+    bpf_printk("IPv6 TCP!\n");
+
+    struct destination dest = {};
+	
+    
+    switch (lookup6(ip6, tcp, &dest)) {
+    case LAYER3_FOU4:
+	break;
+    case LAYER3_FOU6:
+    case LAYER3_6IN4:
+    case LAYER3_IPIP:
+    case LAYER2_DSR:
+    case NOT_FOUND:
+	return XDP_DROP;
+    break;
+    }
+
+    // encap ipv6 in IPv4 + UDP
+    return XDP_DROP;
+}
+
 
 
 SEC("xdp")
@@ -302,6 +378,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	next_header = vlan + 1;
     }
 
+    if (next_proto == bpf_htons(ETH_P_IPV6)) {
+	return xdp_fwd_func6(ctx, eth, vlan, next_header);
+    }
+    
     if (next_proto != bpf_htons(ETH_P_IP))
 	return XDP_PASS;
     
@@ -331,7 +411,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (ip->protocol != IPPROTO_TCP)
 	return XDP_DROP;
     
-    struct tcphdr *tcp = next_header;
+    struct tcphdr *tcp = (void *)(ip + 1);
 
     if (tcp + 1 > data_end)
       return XDP_DROP;
@@ -366,7 +446,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
-	
+
 	return send_fou4(ctx, &dest);
 
     case LAYER3_IPIP:
