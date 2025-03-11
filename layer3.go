@@ -134,16 +134,10 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		} else {
 			i := ip.As16()
 			copy(vip6[:], i[:])
-			port = l3port4
+			port = l3port6
 		}
 
 		vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
-
-		key := bpf_servicekey{
-			addr:  vip6,
-			port:  8000,
-			proto: TCP,
-		}
 
 		var val bpf_destinations
 
@@ -159,16 +153,16 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 			val.flag[i+1] = tunnel
 			val.sport[i+1] = port
 
+			var daddr [16]byte
+
 			if d.Is6() {
-				ip6 := d.As16()
-				val.daddr[i+1] = ip6
+				daddr = d.As16()
 			} else {
 				ip := d.As4()
-				var ip6 [16]byte
-				copy(ip6[12:], ip[:])
-				//val.daddr[i+1] = bpf_dest4{addr: d}
-				val.daddr[i+1] = ip6
+				copy(daddr[12:], ip[:])
 			}
+
+			val.daddr[i+1] = daddr
 		}
 
 		for i, _ := range val.hash {
@@ -176,11 +170,14 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 			val.hash[i] = byte(d + 1)
 		}
 
-		for _, p := range []uint16{80, 443, 8000} {
-			key.port = p
+		for _, port := range []uint16{80, 443, 8000} {
+			key := bpf_servicekey{
+				addr:  vip6,
+				port:  port,
+				proto: TCP,
+			}
 			destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
 		}
-
 	}
 
 	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {

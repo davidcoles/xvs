@@ -178,7 +178,7 @@ int send2_fou4(struct xdp_md *ctx, struct destination *dest)
 	XDP_ABORTED : XDP_TX;
 }
 
-static __always_inline
+//static __always_inline
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
     bpf_printk("send_fou6\n");
@@ -366,12 +366,12 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     enum lookup_result result = lookup6(ip6, tcp, &dest);
 
     if (!is_ipv4_addr(dest.daddr)) {
-	switch (result) {
-	case LAYER3_FOU4:
-	    return send_fou6(ctx, &dest);
-	default:
-	    break;
-	}
+	//switch (result) {
+	//case LAYER3_FOU4:
+	//    return send_fou6(ctx, &dest);
+	//default:
+	//    break;
+	//}
 	bpf_printk("IPv6 destinations not supported yet");
 	return XDP_ABORTED;
     }
@@ -493,11 +493,16 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	
     case LAYER2_DSR:
     case NOT_FOUND:
-	break;
+	return XDP_DROP;
+    }
+
+    if (!is_ipv4_addr(dest.daddr)) {
+	bpf_printk("Not supported\n");
+	return XDP_ABORTED;
     }
     
     switch (result) {
-    case LAYER3_FOU4:
+    case LAYER3_FOU4:	
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
