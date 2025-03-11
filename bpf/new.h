@@ -602,3 +602,248 @@ __u16 l4_hash(struct iphdr *ip, void *l4)
     }
     return sdbm((unsigned char *)&h, sizeof(h));
 }
+
+
+
+
+int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    p->vlan = NULL;
+    p->eth = data;
+    
+    if (p->eth + 1 > data_end)
+        return -1;
+    
+    if (p->eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+        p->vlan = (void *)(p->eth + 1);
+	
+	if (p->vlan + 1 > data_end)
+	    return -1;
+	
+	p->ip = (void *)(p->vlan + 1);
+    } else {
+        p->ip = (void *)(p->eth + 1);
+    }
+
+    //if (p->ip + 1 > data_end)
+    //return -1;
+
+    p->eth_copy = *(p->eth);
+    if (p->vlan) p->vlan_copy = *(p->vlan);
+    //p->ip_copy = *(p->ip);
+    
+     return 0;
+}
+
+int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    p->eth = data;
+    
+    if (p->eth + 1 > data_end)
+        return -1;
+    
+    if(p->vlan) {
+        p->vlan = (void *)(p->eth + 1);
+
+	if (p->vlan + 1 > data_end)
+            return -1;
+	
+	p->ip = (void *)(p->vlan + 1);
+    } else {
+	p->ip = (void *)(p->eth + 1);
+    }
+    
+    //if (p->ip + 1 > data_end)
+    //return -1;
+
+    *(p->eth) = p->eth_copy;
+    if (p->vlan) *(p->vlan) = p->vlan_copy;
+    //*(p->ip) = p->ip_copy;
+    
+    return 0;
+}
+
+static __always_inline
+int adjust_head2(struct xdp_md *ctx, struct pointers *p, int overhead)
+//int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead, int payload_header_len)
+{
+    if (preserve_l2_headers(ctx, p) < 0)
+	return -1;
+
+    void *data_end = (void *)(long)ctx->data_end;
+    int orig_len = data_end - (void *) p->ip;
+    
+    //if (sizeof(struct iphdr) > overhead)
+    //return -1;
+    
+    /* Insert space for new headers at the start of the packet */
+    if (bpf_xdp_adjust_head(ctx, 0 - overhead))
+	return -1;
+    
+    /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers  and restore contents */
+    if (restore_l2_headers(ctx, p) < 0)
+	return -1;
+
+    return orig_len;
+}
+
+static __always_inline
+int adjust_head2_fou4(struct xdp_md *ctx, struct pointers *p)
+{
+    //return adjust_head(ctx, p, FOU4_OVERHEAD, sizeof(struct udphdr));
+    return adjust_head2(ctx, p, FOU4_OVERHEAD);
+}
+
+static __always_inline
+int adjust_head2_ipip4(struct xdp_md *ctx, struct pointers *p)
+{
+    //return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
+    return adjust_head2(ctx, p, IPIP_OVERHEAD);
+}
+
+
+static __always_inline
+void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __be32 daddr)
+{
+    struct iphdr i = {};
+    *ip = i;
+
+    //memcpy(ip, &i, sizeof(struct iphdr));
+    
+    ip->version = 4;
+    ip->ihl = 5;
+    // DSCP ECN leave as 0
+    ip->tot_len = bpf_htons(tot_len);
+
+    //ip->id = bpf_ktime_get_ns() & 0xffff;
+    // flags - DF?
+    // fragmentation offset - 0
+    
+    ip->ttl = 64;
+    ip->protocol = protocol;
+    ip->check = 0;
+    
+    ip->saddr = saddr;
+    ip->daddr = daddr;
+    
+    ip->check = ipv4_checksum(ip);
+}
+
+
+static __always_inline
+int fou4_push2(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+{
+    struct pointers p = {};
+    __u32 x = router[0];
+    __u32 y = router[1];
+    __u32 z = router[2];
+
+    bpf_printk("ROUTER %x:%x:%x\n", x,y,z);
+
+    x = router[3];
+    y = router[4];
+    z = router[5];
+    bpf_printk("ROUTER %x:%x:%x\n", x,y,z);
+
+    if (!saddr || !daddr || !sport || !dport)
+	return -1;
+    
+    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    int orig_len = adjust_head2_fou4(ctx, &p);
+
+    if (orig_len < 0)
+	return -1;
+
+
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IP);
+    }
+    
+
+    int udp_len = sizeof(struct udphdr) + orig_len;
+    
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr *udp = (void *) (p.ip + 1);
+    
+    if (udp + 1 > (void *)(long)ctx->data_end)
+	return -1;
+
+    *udp = udp_new;
+
+    x = (void *)udp - (void *)(long)ctx->data;
+    y = (void *)p.ip - (void *)(long)ctx->data;
+    z = (void *)(long)ctx->data_end - (void *)(long)ctx->data;
+    
+    bpf_printk("HERE2 %d %d %d\n", x,y,z);
+
+    /* Update the outer IP header to send to the FOU target */
+    int tot_len = sizeof(struct iphdr) + udp_len;
+    new_iphdr(p.ip, tot_len, IPPROTO_UDP, saddr, daddr);
+
+    *udp = udp_new;
+    
+    x = orig_len;
+    y = udp_len;
+    z = tot_len;
+    
+    bpf_printk("LENGTH %d %d %d\n", x,y,z);
+
+
+    x = bpf_ntohl(daddr);
+    y = bpf_ntohs(udp->source);
+    z = bpf_ntohs(udp->dest);
+    
+    bpf_printk("PORTS %d %d %d\n", x,y,z);
+
+
+    if (!nulmac(router)) {
+	/* If a router is explicitly indicated then direct the frame there */
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	/* Otherwise return it to the device that it came from */
+	reverse_ethhdr(p.eth);
+    }
+
+    /* some final sanity checks on ethernet addresses */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+
+    unsigned char *h = NULL;
+
+    h = p.eth->h_source;
+    x = h[0];
+    y = h[1];
+    z = h[2];
+    bpf_printk("SOURCE %x:%x:%x\n", x,y,z);
+    x = h[3];
+    y = h[4];
+    z = h[5];
+    bpf_printk("SOURCE %x:%x:%x\n", x,y,z);
+
+    h = p.eth->h_dest;
+    x = h[0];
+    y = h[1];
+    z = h[2];
+    bpf_printk("DEST %x:%x:%x\n", x,y,z);
+    x = h[3];
+    y = h[4];
+    z = h[5];
+    bpf_printk("DEST %x:%x:%x\n", x,y,z);
+
+    
+    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    return 0;
+}
+
+
+

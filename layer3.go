@@ -149,6 +149,17 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip addr4, port 
 		destinations.UpdateElem(uP(&s6), uP(&service), xdp.BPF_ANY)
 	}
 
+	for i, d := range dests {
+		service.flag[i+1] = tunnel
+		service.sport[i+1] = 6666
+		service.daddr[i+1] = bpf_dest4{addr: d}
+	}
+
+	s6.addr = addr6{}
+	s6.port = 0
+	s6.proto = 0
+	destinations.UpdateElem(uP(&s6), uP(&service), xdp.BPF_ANY)
+
 	vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
 
 	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {

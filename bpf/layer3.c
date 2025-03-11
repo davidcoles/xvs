@@ -171,6 +171,13 @@ struct {
 /**********************************************************************/
 
 static __always_inline
+int send2_fou4(struct xdp_md *ctx, struct destination *dest)
+{
+    return fou4_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+//static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
     return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
@@ -219,20 +226,31 @@ __u16 l4_hashx(struct addr saddr, struct addr daddr, void *l4)
 static __always_inline
 //enum lookup_result lookup(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
 //enum lookup_result lookup(struct iphdr *ip, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
-enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
+enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4x, __u8 protocol, struct destination *r) // flags arg?    
 {
     // lookup flow in state map?
     
-    struct udphdr *udp = l4;
-    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(udp->dest), .proto = protocol };
+    __be16 sport = 0;
+    __be16 dport = 0;    
+    
+    if (l4x) {
+	struct udphdr *udp = l4x;
+	sport = udp->source;
+	dport = udp->dest;	
+	
+    } 
+
+    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (!service)
 	return NOT_FOUND;
 
+    bpf_printk("FOUND\n");
+    
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l4_hashx(saddr, daddr, NULL);
-    __u16 hash4 = l4_hashx(saddr, daddr, l4);
+    __u16 hash4 = l4_hashx(saddr, daddr, l4x);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
@@ -270,6 +288,9 @@ enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) //
 static __always_inline
 enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) // flags arg?
 {
+    struct addr s = {};
+    struct addr d = {};
+    return lookup(s, d, NULL, 0, r);
     struct addr saddr = { .addr6 =  ip6->ip6_src };
     struct addr daddr = { .addr6 =  ip6->ip6_dst };
     return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
@@ -329,11 +350,11 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     case LAYER2_DSR:
     case NOT_FOUND:
 	return XDP_DROP;
-    break;
     }
 
+    return send2_fou4(ctx, &dest);
     // encap ipv6 in IPv4 + UDP
-    return XDP_DROP;
+    //return XDP_DROP;
 }
 
 
@@ -447,7 +468,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
 
-	return send_fou4(ctx, &dest);
+	return send2_fou4(ctx, &dest);
 
     case LAYER3_IPIP:
 	/* Will the packet and extra IP header exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
