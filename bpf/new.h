@@ -394,7 +394,7 @@ int adjust_head_ipip4(struct xdp_md *ctx, struct pointers *p)
 }
 
 static __always_inline
-int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+int xipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 {
     struct pointers p = {};
 
@@ -628,8 +628,8 @@ int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
         p->ip = (void *)(p->eth + 1);
     }
 
-    //if (p->ip + 1 > data_end)
-    //return -1;
+    if (p->ip + 1 > data_end)
+	return -1;
 
     p->eth_copy = *(p->eth);
     if (p->vlan) p->vlan_copy = *(p->vlan);
@@ -659,8 +659,8 @@ int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
 	p->ip = (void *)(p->eth + 1);
     }
     
-    //if (p->ip + 1 > data_end)
-    //return -1;
+    if (p->ip + 1 > data_end)
+    return -1;
 
     *(p->eth) = p->eth_copy;
     if (p->vlan) *(p->vlan) = p->vlan_copy;
@@ -712,16 +712,16 @@ static __always_inline
 void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __be32 daddr)
 {
     struct iphdr i = {};
-    *ip = i;
+    //*ip = i;
 
-    //memcpy(ip, &i, sizeof(struct iphdr));
+    memcpy(ip, &i, sizeof(struct iphdr));
     
     ip->version = 4;
     ip->ihl = 5;
     // DSCP ECN leave as 0
     ip->tot_len = bpf_htons(tot_len);
 
-    //ip->id = bpf_ktime_get_ns() & 0xffff;
+    ip->id = bpf_ktime_get_ns() & 0xffff;
     // flags - DF?
     // fragmentation offset - 0
     
@@ -740,16 +740,6 @@ static __always_inline
 int fou4_push2(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
     struct pointers p = {};
-    __u32 x = router[0];
-    __u32 y = router[1];
-    __u32 z = router[2];
-
-    bpf_printk("ROUTER %x:%x:%x\n", x,y,z);
-
-    x = router[3];
-    y = router[4];
-    z = router[5];
-    bpf_printk("ROUTER %x:%x:%x\n", x,y,z);
 
     if (!saddr || !daddr || !sport || !dport)
 	return -1;
@@ -766,7 +756,6 @@ int fou4_push2(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 d
     } else {
 	p.eth->h_proto = bpf_htons(ETH_P_IP);
     }
-    
 
     int udp_len = sizeof(struct udphdr) + orig_len;
     
@@ -778,31 +767,11 @@ int fou4_push2(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 d
 
     *udp = udp_new;
 
-    x = (void *)udp - (void *)(long)ctx->data;
-    y = (void *)p.ip - (void *)(long)ctx->data;
-    z = (void *)(long)ctx->data_end - (void *)(long)ctx->data;
-    
-    bpf_printk("HERE2 %d %d %d\n", x,y,z);
-
     /* Update the outer IP header to send to the FOU target */
     int tot_len = sizeof(struct iphdr) + udp_len;
     new_iphdr(p.ip, tot_len, IPPROTO_UDP, saddr, daddr);
 
-    *udp = udp_new;
-    
-    x = orig_len;
-    y = udp_len;
-    z = tot_len;
-    
-    bpf_printk("LENGTH %d %d %d\n", x,y,z);
-
-
-    x = bpf_ntohl(daddr);
-    y = bpf_ntohs(udp->source);
-    z = bpf_ntohs(udp->dest);
-    
-    bpf_printk("PORTS %d %d %d\n", x,y,z);
-
+    //*udp = udp_new;
 
     if (!nulmac(router)) {
 	/* If a router is explicitly indicated then direct the frame there */
@@ -817,33 +786,66 @@ int fou4_push2(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 d
     if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
 	return -1;
 
-
-    unsigned char *h = NULL;
-
-    h = p.eth->h_source;
-    x = h[0];
-    y = h[1];
-    z = h[2];
-    bpf_printk("SOURCE %x:%x:%x\n", x,y,z);
-    x = h[3];
-    y = h[4];
-    z = h[5];
-    bpf_printk("SOURCE %x:%x:%x\n", x,y,z);
-
-    h = p.eth->h_dest;
-    x = h[0];
-    y = h[1];
-    z = h[2];
-    bpf_printk("DEST %x:%x:%x\n", x,y,z);
-    x = h[3];
-    y = h[4];
-    z = h[5];
-    bpf_printk("DEST %x:%x:%x\n", x,y,z);
-
-    
     /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
     return 0;
 }
 
 
 
+
+
+static __always_inline
+int xin4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u8 inner)
+{
+    struct pointers p = {};
+
+    if (!saddr || !daddr)
+	return -1;
+    
+    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    int orig_len = adjust_head2_ipip4(ctx, &p);
+
+    bpf_printk("6IN4 %d\n", orig_len);
+
+    if (orig_len < 0)
+	return -1;
+
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IP);
+    }
+    
+    /* Update the outer IP header to send to the IPIP target */
+    int tot_len = sizeof(struct iphdr) + orig_len;
+    new_iphdr(p.ip, tot_len, inner, saddr, daddr);
+    
+    if (!nulmac(router)) {
+	/* If a router is explicitly indicated then direct the frame there */
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	/* Otherwise return it to the device that it came from */
+	reverse_ethhdr(p.eth);
+    }
+    
+    /* some final sanity checks on ethernet addresses */
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    return 0;
+}
+
+static __always_inline
+int sit_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+{
+    return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPV6);
+}
+
+
+static __always_inline
+int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+{
+    return xin4_push(ctx, router, saddr, daddr, IPPROTO_IP);
+}

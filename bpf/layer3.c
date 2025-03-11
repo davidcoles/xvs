@@ -185,6 +185,20 @@ int send_fou4(struct xdp_md *ctx, struct destination *dest)
 }
 
 
+//static __always_inline
+//int send2_ipip(struct xdp_md *ctx, struct destination *dest)
+//{
+//    return ipip_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+//	XDP_ABORTED : XDP_TX;
+//}
+
+static __always_inline
+int send_sit(struct xdp_md *ctx, struct destination *dest)
+{
+    return sit_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+	XDP_ABORTED : XDP_TX;
+}
+
 static __always_inline
 int send_ipip(struct xdp_md *ctx, struct destination *dest)
 {
@@ -347,6 +361,8 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     case LAYER3_FOU6:
     case LAYER3_6IN4:
     case LAYER3_IPIP:
+	return send_sit(ctx, &dest);
+	//return send2_ipip(ctx, &dest);
     case LAYER2_DSR:
     case NOT_FOUND:
 	return XDP_DROP;
