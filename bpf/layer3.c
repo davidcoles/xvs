@@ -177,21 +177,6 @@ int send2_fou4(struct xdp_md *ctx, struct destination *dest)
 	XDP_ABORTED : XDP_TX;
 }
 
-//static __always_inline
-int send_fou4(struct xdp_md *ctx, struct destination *dest)
-{
-    return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-
-
-//static __always_inline
-//int send2_ipip(struct xdp_md *ctx, struct destination *dest)
-//{
-//    return ipip_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
-//	XDP_ABORTED : XDP_TX;
-//}
-
 static __always_inline
 int send_sit(struct xdp_md *ctx, struct destination *dest)
 {
@@ -220,7 +205,7 @@ int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 }
 
 static __always_inline
-__u16 l4_hashx(struct addr saddr, struct addr daddr, void *l4)
+__u16 l4_hash(struct addr saddr, struct addr daddr, void *l4)
 {
     // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
     struct udphdr *udp = (struct udphdr *) l4;
@@ -252,9 +237,9 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 	
     } 
 
-    int x = sport;
-    int y = dport;
-    bpf_printk("PORTS %d %d\n", x, y);
+    //int x = sport;
+    //int y = dport;
+    //bpf_printk("PORTS %d %d\n", x, y);
     
     struct servicekey key = { .addr = daddr, .port = bpf_ntohs(dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
@@ -262,11 +247,11 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     if (!service)
 	return NOT_FOUND;
 
-    bpf_printk("FOUND\n");
+    //bpf_printk("FOUND\n");
     
     __u8 sticky = service->flag[0] & F_STICKY;
-    __u16 hash3 = l4_hashx(saddr, daddr, NULL);
-    __u16 hash4 = l4_hashx(saddr, daddr, l4);
+    __u16 hash3 = l4_hash(saddr, daddr, NULL);
+    __u16 hash4 = l4_hash(saddr, daddr, l4);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
@@ -276,8 +261,8 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     r->saddr = service->saddr;             // source address to send L3 tunnel traffic from
     r->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
     r->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
-    memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel
-    r->vlanid = service->vlanid;           // VLAN ID that L3 services should use
+    memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel - may be better in vips
+    r->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may bebetter in vips
     
     __u8 flag = service->flag[index];
 
@@ -289,26 +274,23 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     case F_LAYER3_FOU6: return LAYER3_FOU6;
     case F_LAYER3_IPIP: return LAYER3_IPIP;	
     }
-
+    
    return NOT_FOUND;
 }
 
 static __always_inline
-enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r) // flags arg?
+enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r)
 {
-    struct addr saddr = { .addr4.addr =  ip->saddr };
-    struct addr daddr = { .addr4.addr =  ip->daddr };
+    struct addr saddr = { .addr4.addr = ip->saddr };
+    struct addr daddr = { .addr4.addr = ip->daddr };
     return lookup(saddr, daddr, l4, ip->protocol, r);
 }
 
 static __always_inline
-enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) // flags arg?
+enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) 
 {
-    //struct addr s = {};
-    //struct addr d = {};
-    //return lookup(s, d, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
-    struct addr saddr = { .addr6 =  ip6->ip6_src };
-    struct addr daddr = { .addr6 =  ip6->ip6_dst };
+    struct addr saddr = { .addr6 = ip6->ip6_src };
+    struct addr daddr = { .addr6 = ip6->ip6_dst };
     return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
 }
 
@@ -515,4 +497,21 @@ int  xdp_pass_func(struct xdp_md *ctx)
 char _license[] SEC("license") = "GPL";
 
 #endif
+
+
+
+//static __always_inline
+//int send_fou4(struct xdp_md *ctx, struct destination *dest)
+//{
+//    return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
+//	XDP_ABORTED : XDP_TX;
+//}
+
+
+//static __always_inline
+//int send2_ipip(struct xdp_md *ctx, struct destination *dest)
+//{
+//    return ipip_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+//	XDP_ABORTED : XDP_TX;
+//}
 
