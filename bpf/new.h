@@ -1,3 +1,12 @@
+struct pointers {
+    struct ethhdr *eth, eth_copy;
+    struct vlan_hdr *vlan, vlan_copy;
+    struct iphdr *ip, ip_copy;
+};
+
+
+
+
 /*
 
 static __always_inline
@@ -85,12 +94,6 @@ struct iphdr *xparse(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vl
         return XDP_ABORTED;
     */
 
-
-struct pointers {
-    struct ethhdr *eth, eth_copy;
-    struct vlan_hdr *vlan, vlan_copy;
-    struct iphdr *ip, ip_copy;
-};
 
 /*
 #define PARSE_FRAME(eth, vlan, ip, data_end) ((eth + 1 > data_end) ? -1 : \
@@ -321,7 +324,7 @@ __u16 icmp_checksum(struct icmphdr *icmp, __u16 size)
     return csum_fold_helper(csum);
 }
 
-
+/*
 static __always_inline
 void sanitise_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol)
 {
@@ -331,6 +334,34 @@ void sanitise_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol)
     ip->tot_len = bpf_htons(tot_len);
     ip->protocol = protocol;
     ip->check = 0;
+    ip->check = ipv4_checksum(ip);
+}
+*/
+
+static __always_inline
+void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __be32 daddr)
+{
+    struct iphdr i = {};
+    //*ip = i;
+
+    memcpy(ip, &i, sizeof(struct iphdr));
+    
+    ip->version = 4;
+    ip->ihl = 5;
+    // DSCP ECN leave as 0
+    ip->tot_len = bpf_htons(tot_len);
+
+    ip->id = bpf_ktime_get_ns() & 0xffff;
+    // flags - DF?
+    // fragmentation offset - 0
+    
+    ip->ttl = 64;
+    ip->protocol = protocol;
+    ip->check = 0;
+    
+    ip->saddr = saddr;
+    ip->daddr = daddr;
+    
     ip->check = ipv4_checksum(ip);
 }
 
@@ -504,7 +535,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
       return -1;
     
     // DELIBERATE BREAKAGE
-    //p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
     
     /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
     if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))
@@ -543,8 +574,6 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
     reverse_ethhdr(p.eth);
 
     // reply to client with LB's address
-    p.ip->daddr = p.ip->saddr;
-    p.ip->saddr = saddr;
     // FIXME - how will the above work behind NAT?
     // 1) 2nd address stored only used for replying to client
     // 2) static NAT entry for LB -> outside world
@@ -554,7 +583,11 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
     // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
     // respond to every occurence or keep a record of recent notifications?
 
-    sanitise_iphdr(p.ip, sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen, IPPROTO_ICMP);
+    //p.ip->daddr = p.ip->saddr;
+    //p.ip->saddr = saddr;
+    //sanitise_iphdr(p.ip, sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen, IPPROTO_ICMP);
+    int tot_len = sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen;
+    new_iphdr(p.ip, tot_len, IPPROTO_ICMP, saddr, p.ip->saddr); // source becomes LB's IP, destination is theclient
 
     struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0, .un.frag.mtu = bpf_htons(mtu) };
     *icmp = fou;
@@ -715,32 +748,6 @@ int adjust_head2_ipip4(struct xdp_md *ctx, struct pointers *p)
 }
 
 
-static __always_inline
-void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __be32 daddr)
-{
-    struct iphdr i = {};
-    //*ip = i;
-
-    memcpy(ip, &i, sizeof(struct iphdr));
-    
-    ip->version = 4;
-    ip->ihl = 5;
-    // DSCP ECN leave as 0
-    ip->tot_len = bpf_htons(tot_len);
-
-    ip->id = bpf_ktime_get_ns() & 0xffff;
-    // flags - DF?
-    // fragmentation offset - 0
-    
-    ip->ttl = 64;
-    ip->protocol = protocol;
-    ip->check = 0;
-    
-    ip->saddr = saddr;
-    ip->daddr = daddr;
-    
-    ip->check = ipv4_checksum(ip);
-}
 
 
 static __always_inline
