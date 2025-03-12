@@ -18,6 +18,10 @@
 
 /*
 
+https://www.etb-tech.com/netronome-agilio-cx-40gb-qsfp-dual-port-low-profile-network-card-pcbd0097-005-nic00476.html
+
+https://datatracker.ietf.org/doc/html/draft-herbert-gue-01
+
 bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
 
 modprobe ipip
@@ -61,18 +65,15 @@ const __u16 MTU = 1500;
 const __u8 F_STICKY = 0x01;
 
 const __u8 F_LAYER2_DSR  = 0x00;
-const __u8 F_LAYER3_FOU4 = 0x01;
-const __u8 F_LAYER3_FOU6 = 0x02;
+const __u8 F_LAYER3_FOU = 0x01;
+//const __u8 F_LAYER3_FOU6 = 0x02;
 const __u8 F_LAYER3_IPIP = 0x03;
-const __u8 F_LAYER3_6IN4 = 0x04;
 
 enum lookup_result {
 		    NOT_FOUND = 0,
 		    LAYER2_DSR,
-		    LAYER3_FOU4, // FOU to IPv4 host
-		    LAYER3_FOU6, // FOU to IPv6 host
-		    LAYER3_IPIP,
-		    LAYER3_6IN4,
+		    LAYER3_FOU,  // FOU + IP-in-IP and 6in4
+		    LAYER3_IPIP, // IP-in-IP and 6in4
 };
 
 #include "vlan.h"
@@ -172,7 +173,7 @@ struct {
 /**********************************************************************/
 
 static __always_inline
-int send2_fou4(struct xdp_md *ctx, struct destination *dest)
+int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
     return fou4_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
 	XDP_ABORTED : XDP_TX;
@@ -280,8 +281,7 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     
     switch (flag) {
     case F_LAYER2_DSR:  return LAYER2_DSR;
-    case F_LAYER3_FOU4: return LAYER3_FOU4;
-    case F_LAYER3_FOU6: return LAYER3_FOU6;
+    case F_LAYER3_FOU:  return LAYER3_FOU;
     case F_LAYER3_IPIP: return LAYER3_IPIP;	
     }
     
@@ -366,9 +366,10 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     enum lookup_result result = lookup6(ip6, tcp, &dest);
 
     if (!is_ipv4_addr(dest.daddr)) {
+	// I can't see how to do FOU over IPv6
+	//dest.dport = 8888;
 	//switch (result) {
-	//case LAYER3_FOU4:
-	//    return send_fou6(ctx, &dest);
+	//    case LAYER3_FOU: return send_fou6(ctx, &dest);
 	//default:
 	//    break;
 	//}
@@ -377,12 +378,10 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     }
     
     switch (result) {
-    case LAYER3_FOU4:
-	return send2_fou4(ctx, &dest);
+    case LAYER3_FOU:
+	return send_fou4(ctx, &dest);
     case LAYER3_IPIP:
 	return send_sit(ctx, &dest);
-    case LAYER3_FOU6:
-    case LAYER3_6IN4:
     case LAYER2_DSR:
     case NOT_FOUND:
 	break;
@@ -483,9 +482,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
     switch (result) {
-    case LAYER3_FOU4:
-    case LAYER3_FOU6:
-    case LAYER3_6IN4:
+    case LAYER3_FOU:
     case LAYER3_IPIP:
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
             return XDP_DROP;
@@ -497,17 +494,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
     }
 
     if (!is_ipv4_addr(dest.daddr)) {
-	bpf_printk("Not supported\n");
-	return XDP_ABORTED;
+        bpf_printk("IPv6 destinations not supported yet");
+    	return XDP_ABORTED;
     }
     
     switch (result) {
-    case LAYER3_FOU4:	
+    case LAYER3_FOU:	
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
 
-	return send2_fou4(ctx, &dest);
+	return send_fou4(ctx, &dest);
 
     case LAYER3_IPIP:
 	/* Will the packet and extra IP header exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
@@ -518,8 +515,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	
 	
     case LAYER2_DSR:  /* not implemented yet */
-    case LAYER3_FOU6: /* not implemented yet */
-    case LAYER3_6IN4: /* not implemented yet */
     case NOT_FOUND:
 	break;
     }

@@ -43,8 +43,9 @@ type bpf_destinations struct {
 	flag  [256]uint8
 	sport [256]uint16
 	//daddr  [256]bpf_dest4
-	daddr  [256]bpf_dest
-	saddr  bpf_dest4
+	daddr [256]bpf_dest
+	//saddr  bpf_dest4
+	saddr  bpf_dest
 	h_dest [6]byte
 	vlanid uint16
 }
@@ -145,7 +146,7 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 			val.flag[0] |= F_STICKY
 		}
 
-		val.saddr = bpf_dest4{addr: saddr}
+		copy(val.saddr[12:], saddr[:])
 		val.h_dest = h_dest
 		val.vlanid = uint16(vlanid)
 
