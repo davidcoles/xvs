@@ -183,8 +183,22 @@ int send_fou4(struct xdp_md *ctx, struct destination *dest)
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
     bpf_printk("send_fou6\n");
-    //int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 sport, __u16 dport)
     return fou6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+//static __always_inline
+int send_ip6ip6(struct xdp_md *ctx, struct destination *dest)
+{
+    bpf_printk("send_ip6ip6\n");
+    return ip6ip6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+int send_ip4in6(struct xdp_md *ctx, struct destination *dest)
+{
+    bpf_printk("send_ip4ip6\n");
+    return ip4in6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
@@ -367,12 +381,11 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
 
     if (!is_ipv4_addr(dest.daddr)) {
 	// I can't see how to do FOU over IPv6
-	//dest.dport = 8888;
-	//switch (result) {
-	//    case LAYER3_FOU: return send_fou6(ctx, &dest);
-	//default:
-	//    break;
-	//}
+	switch (result) {
+	case LAYER3_IPIP: return send_ip6ip6(ctx, &dest);
+	default:
+	    break;
+	}
 	bpf_printk("IPv6 destinations not supported yet");
 	return XDP_ABORTED;
     }
@@ -494,7 +507,12 @@ int xdp_fwd_func(struct xdp_md *ctx)
     }
 
     if (!is_ipv4_addr(dest.daddr)) {
-        bpf_printk("IPv6 destinations not supported yet");
+	switch(result) {
+	case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
+	default:
+	    break;
+	}
+        bpf_printk("IPv6 destinations not supported yet\n");
     	return XDP_ABORTED;
     }
     
