@@ -46,6 +46,7 @@ type bpf_destinations struct {
 	daddr [256]bpf_dest
 	//saddr  bpf_dest4
 	saddr  bpf_dest
+	saddr6 addr6
 	h_dest [6]byte
 	vlanid uint16
 }
@@ -111,7 +112,7 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	const F_LAYER2_DSR uint8 = 0x00
 	const F_LAYER3_FOU4 uint8 = 0x01  // IPv4 host with FOU tunnel
-	const F_LAYER3_FOU6 uint8 = 0x02  // IPv6 host with FOU tunnel
+	const F_LAYER3_GRE uint8 = 0x02   // IPv6 host with FOU tunnel
 	const F_LAYER3_IPIP4 uint8 = 0x03 // IPv4 host with IP-in-IP tunnel
 
 	const F_STICKY uint8 = 0x01
@@ -119,7 +120,8 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	tunnel := F_LAYER3_FOU4
 
 	if ipip {
-		tunnel = F_LAYER3_IPIP4
+		//tunnel = F_LAYER3_IPIP4
+		tunnel = F_LAYER3_GRE
 	}
 
 	all := []netip.Addr{vip, vip2}
@@ -146,7 +148,10 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 			val.flag[0] |= F_STICKY
 		}
 
+		saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
+
 		copy(val.saddr[12:], saddr[:])
+		val.saddr6 = saddr6.As16()
 		val.h_dest = h_dest
 		val.vlanid = uint16(vlanid)
 

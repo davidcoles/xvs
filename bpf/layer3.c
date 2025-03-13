@@ -24,8 +24,38 @@ https://datatracker.ietf.org/doc/html/draft-herbert-gue-01
 
 bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
 
+ip a add fd6e:eec8:76ac:ac1d:100::2/64 dev ens160
+
+
 modprobe ipip
 modprobe fou
+
+ip6_gre
+gre
+
+modprobe ip6_gre:
+ip6tnl0
+ip6gre0
+
+ip l set dev ip6gre0 up:
+ip a add 192.168.101.201 dev ip6gre0 # WORKS
+ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev ip6gre0 # WORKS
+
+# ip l add gre0 type gre
+RTNETLINK answers: File exists (odd - gre0 then exists)
+
+# ip l set dev gre0 up
+6in4 gre then works
+# ip a add 192.168.101.201 dev gre0
+4in4 gre then works
+
+
+
+ip l set dev gre0 up
+ip a add 192.168.101.1 dev gre0
+
+ip l add gre6 type ip6gre
+ip a add 192.168.101.201 dev ip6gre0
 
 /etc/networkd-dispatcher/routable.d/50-ifup-hooks:
 #!/bin/sh
@@ -66,12 +96,13 @@ const __u8 F_STICKY = 0x01;
 
 const __u8 F_LAYER2_DSR  = 0x00;
 const __u8 F_LAYER3_FOU = 0x01;
-//const __u8 F_LAYER3_FOU6 = 0x02;
+const __u8 F_LAYER3_GRE = 0x02;
 const __u8 F_LAYER3_IPIP = 0x03;
 
 enum lookup_result {
 		    NOT_FOUND = 0,
 		    LAYER2_DSR,
+		    LAYER3_GRE,
 		    LAYER3_FOU,  // FOU + IP-in-IP and 6in4
 		    LAYER3_IPIP, // IP-in-IP and 6in4
 };
@@ -89,9 +120,6 @@ struct info {
 
 struct addr4 {
     __u8 pad[12];
-    //__u16 vid;   // L2DSR only
-    //__u8 mac[6]; // L2DSR only
-    //__u8 pad[4];
     __be32 addr;
 };
 
@@ -127,6 +155,7 @@ struct destinations {
     __u16 dport[256];  // port[0] - high byte leastconns score, low byte destination index to use
     struct addr daddr[256];
     struct addr saddr; // source address to use with tunnels
+    struct addr saddr6; // source address to use with tunnels    
     __u8 h_dest[6];    // router MAC address to send encapsulated packets to
     __u16 vlanid;      // VLAN ID on which encapsulated packets should be received/sent
     //struct addr icmp; // optional address to send ICMP UNREACH/FRAG from?
@@ -175,11 +204,11 @@ struct {
 static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    return fou4_push2(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
+    return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
-//static __always_inline
+static __always_inline
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
     bpf_printk("send_fou6\n");
@@ -187,25 +216,24 @@ int send_fou6(struct xdp_md *ctx, struct destination *dest)
 	XDP_ABORTED : XDP_TX;
 }
 
-//static __always_inline
-int send_ip6ip6(struct xdp_md *ctx, struct destination *dest)
+static __always_inline
+int send_6in6(struct xdp_md *ctx, struct destination *dest)
 {
-    bpf_printk("send_ip6ip6\n");
-    return ip6ip6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
+    return push_6in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
 	XDP_ABORTED : XDP_TX;
 }
 
 int send_ip4in6(struct xdp_md *ctx, struct destination *dest)
 {
     bpf_printk("send_ip4ip6\n");
-    return ip4in6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
+    return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
-int send_sit(struct xdp_md *ctx, struct destination *dest)
+int send_6in4(struct xdp_md *ctx, struct destination *dest)
 {
-    return sit_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+    return push_6in4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
 	XDP_ABORTED : XDP_TX;
 }
 
@@ -213,6 +241,35 @@ static __always_inline
 int send_ipip(struct xdp_md *ctx, struct destination *dest)
 {
     return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+	XDP_ABORTED : XDP_TX;
+}
+
+
+static __always_inline
+int send_gre4(struct xdp_md *ctx, struct destination *dest)
+{
+    return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, ETH_P_IP) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_gre_6in4(struct xdp_md *ctx, struct destination *dest)
+{
+    return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, ETH_P_IPV6) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_gre_6in6(struct xdp_md *ctx, struct destination *dest)
+{
+    return push_gre6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, ETH_P_IPV6) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_gre_4in6(struct xdp_md *ctx, struct destination *dest)
+{
+    return push_gre6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, ETH_P_IP) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
@@ -246,6 +303,19 @@ __u16 l4_hash(struct addr saddr, struct addr daddr, void *l4)
     }
     return sdbm((unsigned char *)&h, sizeof(h));
 }
+
+static __always_inline
+int is_ipv4_addr(struct addr addr) {
+    char *p = addr.addr4.pad;
+
+    if (!p[0] && !p[1] && !p[2] && !p[3] &&
+	!p[4] && !p[5] && !p[6] && !p[7] &&
+	!p[8] && !p[9] && !p[10] && !p[11])
+	return 1;
+    
+    return 0;
+}
+
 
 static __always_inline
 enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
@@ -283,11 +353,12 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 	return NOT_FOUND;
     
     r->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
-    r->saddr = service->saddr;             // source address to send L3 tunnel traffic from
     r->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
     r->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
     memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel - may be better in vips
     r->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may bebetter in vips
+
+    r->saddr = is_ipv4_addr(r->daddr) ? service->saddr : service->saddr6;
     
     __u8 flag = service->flag[index];
 
@@ -296,6 +367,7 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     switch (flag) {
     case F_LAYER2_DSR:  return LAYER2_DSR;
     case F_LAYER3_FOU:  return LAYER3_FOU;
+    case F_LAYER3_GRE:  return LAYER3_GRE;
     case F_LAYER3_IPIP: return LAYER3_IPIP;	
     }
     
@@ -336,18 +408,6 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 
 static __always_inline
-int is_ipv4_addr(struct addr addr) {
-    char *p = addr.addr4.pad;
-
-    if (!p[0] && !p[1] && !p[2] && !p[3] &&
-	!p[4] && !p[5] && !p[6] && !p[7] &&
-	!p[8] && !p[9] && !p[10] && !p[11])
-	return 1;
-    
-    return 0;
-}
-
-static __always_inline
 int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan, struct ip6_hdr *ip6)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -380,21 +440,21 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     enum lookup_result result = lookup6(ip6, tcp, &dest);
 
     if (!is_ipv4_addr(dest.daddr)) {
-	// I can't see how to do FOU over IPv6
 	switch (result) {
-	case LAYER3_IPIP: return send_ip6ip6(ctx, &dest);
-	default:
-	    break;
+	case LAYER3_FOU:  return send_fou6(ctx, &dest); // IPv6 in FOU in IPv6 - can't see how to decap this
+	case LAYER3_IPIP: return send_6in6(ctx, &dest); // IPv6 in IPv6 - works
+	case LAYER3_GRE:  return send_gre_6in6(ctx, &dest);
+	default: break;
 	}
 	bpf_printk("IPv6 destinations not supported yet");
 	return XDP_ABORTED;
     }
     
     switch (result) {
-    case LAYER3_FOU:
-	return send_fou4(ctx, &dest);
-    case LAYER3_IPIP:
-	return send_sit(ctx, &dest);
+    case LAYER3_FOU:  return send_fou4(ctx, &dest); // IPv6 in FOU in IPv4 - works
+    case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
+    case LAYER3_GRE:  return send_gre_6in4(ctx, &dest);
+
     case LAYER2_DSR:
     case NOT_FOUND:
 	break;
@@ -495,6 +555,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
     switch (result) {
+    case LAYER3_GRE:
     case LAYER3_FOU:
     case LAYER3_IPIP:
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
@@ -509,6 +570,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (!is_ipv4_addr(dest.daddr)) {
 	switch(result) {
 	case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
+	case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
 	default:
 	    break;
 	}
@@ -530,6 +592,12 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - IPIP_OVERHEAD);
 	
 	return send_ipip(ctx, &dest);
+
+    case LAYER3_GRE:
+	if ((data_end - ((void *) ip)) + GRE4_OVERHEAD > mtu)
+            return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - GRE4_OVERHEAD);
+	 
+	return send_gre4(ctx, &dest);
 	
 	
     case LAYER2_DSR:  /* not implemented yet */
