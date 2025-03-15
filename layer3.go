@@ -120,8 +120,8 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	tunnel := F_LAYER3_FOU4
 
 	if ipip {
-		//tunnel = F_LAYER3_IPIP4
-		tunnel = F_LAYER3_GRE
+		tunnel = F_LAYER3_IPIP4
+		//tunnel = F_LAYER3_GRE
 	}
 
 	all := []netip.Addr{vip, vip2}

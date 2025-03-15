@@ -12,6 +12,14 @@ struct gre_hdr {
     //__be16 reserved;
 };
 
+static __always_inline
+int nul6(struct in6_addr *a) {
+    struct in6_addr nul;
+    __u64 *x = (void *) a;
+    __u64 *y = (void *) (&nul);
+    return *(x++) == *(y++) && *(x) == *(y);
+}
+
 #define CRV 0x0080 // NBO
 
 
@@ -450,16 +458,16 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
 
 
 
-
+/*
 static __always_inline
 int xin6_push(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr, __u8 inner)
 {
     struct pointers p = {};
 
-    //if (!saddr || !daddr)
-    //return -1;
+    if (nul6(&saddr) || nul6(&daddr))
+	return -1;
     
-    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
+    // adjust the packet to add the FOU header - pointers to new header fields will be in p
     int orig_len = adjust_head_xin6(ctx, &p);
 
     if (orig_len < 0)
@@ -479,34 +487,22 @@ int xin6_push(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in
     new_ip6hdr(new, orig_len, inner, saddr, daddr);
     
     if (!nulmac(router)) {
-	/* If a router is explicitly indicated then direct the frame there */
+	// If a router is explicitly indicated then direct the frame there
 	memcpy(p.eth->h_source, p.eth->h_dest, 6);
 	memcpy(p.eth->h_dest, router, 6);
     } else {
-	/* Otherwise return it to the device that it came from */
+	// Otherwise return it to the device that it came from
 	reverse_ethhdr(p.eth);
     }
     
-    /* some final sanity checks on ethernet addresses */
+    // some final sanity checks on ethernet addresses
     if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
 	return -1;
-
-    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
     return 0;
 }
-
-static __always_inline
-int push_6in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr)
-{
-    return xin6_push(ctx, router, saddr, daddr, IPPROTO_IPV6);
-}
-
-static __always_inline
-int push_4in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr)
-{
-    return xin6_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
-}
-
+*/
 
 
 static __always_inline
@@ -603,15 +599,11 @@ int push_6in4(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 
 
 
-
-
 static __always_inline
 int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u8 protocol, int overhead)
 {
-    //if (in6_addr_isnul(saddr))
-    //	return -1;
-    //if (in6_addr_isnul(saddr) || in6_addr_isnul(daddr))
-    //	return -1;
+    if (nul6(&saddr) || nul6(&daddr))
+	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
     int orig_len = adjust_head(ctx, p, sizeof(struct ip6_hdr) + overhead);
@@ -650,6 +642,24 @@ int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, str
     // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
     return orig_len;
 }
+
+static __always_inline
+int push_6in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr)
+{
+    struct pointers p = {};
+    //return xin6_push(ctx, router, saddr, daddr, IPPROTO_IPV6);
+    return push_xin6(ctx, &p, router, saddr, daddr, IPPROTO_IPV6, 0);
+}
+
+static __always_inline
+int push_4in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr)
+{
+    struct pointers p = {};
+    //return xin6_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
+    return push_xin6(ctx, &p, router, saddr, daddr, IPPROTO_IPIP, 0);
+}
+
+
 
 static __always_inline
 int push_gre6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 protocol)

@@ -68,9 +68,11 @@ ip l set dev sit0 up
 
 # 6in6
 modprobe ip6_tunnel
+ip -6 tunnel change ip6tnl0 mode ip6ip6
 ip l set dev ip6tnl0 up
 
 # 4in6 
+modprobe ip6_tunnel
 ip -6 tunnel change ip6tnl0 mode ip4ip6
 ip l set dev ip6tnl0 up
 sysctl -w net.ipv4.conf.ip6tnl0.rp_filter=0
@@ -121,7 +123,9 @@ ipip
 #include <netinet/ip6.h>
 
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
-#define memcpy(d, s, n) __builtin_memcpy((d), (s), (n));
+#define memcpy(d, s, n) __builtin_memcpy((d), (s), (n))
+//#define memcmp(d, s, n) __builtin_memcmp((d), (s), (n))
+//#define memcmp(d, s, n) (1)
 
 #define VERSION 1
 #define SECOND_NS 1000000000l
