@@ -678,3 +678,51 @@ int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
 }
 */
 
+
+
+/*
+static __always_inline
+int xin6_push(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr, __u8 inner)
+{
+    struct pointers p = {};
+
+    if (nul6(&saddr) || nul6(&daddr))
+	return -1;
+    
+    // adjust the packet to add the FOU header - pointers to new header fields will be in p
+    int orig_len = adjust_head_xin6(ctx, &p);
+
+    if (orig_len < 0)
+	return -1;
+
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IPV6);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IPV6);
+    }
+
+    struct ip6_hdr *new = (void *) p.ip;
+
+    if (new + 1 > (void *)(long)ctx->data_end)
+	return -1;
+    
+    new_ip6hdr(new, orig_len, inner, saddr, daddr);
+    
+    if (!nulmac(router)) {
+	// If a router is explicitly indicated then direct the frame there
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	// Otherwise return it to the device that it came from
+	reverse_ethhdr(p.eth);
+    }
+    
+    // some final sanity checks on ethernet addresses
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+    
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
+    return 0;
+}
+*/
+
