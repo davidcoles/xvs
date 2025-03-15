@@ -356,7 +356,7 @@ int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
 }
 
 static __always_inline
-int adjust_head2(struct xdp_md *ctx, struct pointers *p, int overhead)
+int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead)
 //int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead, int payload_header_len)
 {
     if (preserve_l2_headers(ctx, p) < 0)
@@ -382,27 +382,27 @@ int adjust_head2(struct xdp_md *ctx, struct pointers *p, int overhead)
 static __always_inline
 int adjust_head2_fou4(struct xdp_md *ctx, struct pointers *p)
 {
-    return adjust_head2(ctx, p, FOU4_OVERHEAD);
+    return adjust_head(ctx, p, FOU4_OVERHEAD);
 }
 
 static __always_inline
 int adjust_head2_fou6(struct xdp_md *ctx, struct pointers *p)
 {
-    return adjust_head2(ctx, p, FOU6_OVERHEAD);
+    return adjust_head(ctx, p, FOU6_OVERHEAD);
 }
 
 static __always_inline
 int adjust_head2_ipip4(struct xdp_md *ctx, struct pointers *p)
 {
     //return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
-    return adjust_head2(ctx, p, IPIP_OVERHEAD);
+    return adjust_head(ctx, p, IPIP_OVERHEAD);
 }
 
 static __always_inline
 int adjust_head_xin6(struct xdp_md *ctx, struct pointers *p)
 {
     //return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
-    return adjust_head2(ctx, p, sizeof(struct ip6_hdr));
+    return adjust_head(ctx, p, sizeof(struct ip6_hdr));
 }
 
 
@@ -661,7 +661,7 @@ int push_4in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in
 static __always_inline
 int adjust_head_gre4(struct xdp_md *ctx, struct pointers *p)
 {
-    return adjust_head2(ctx, p, GRE4_OVERHEAD);
+    return adjust_head(ctx, p, GRE4_OVERHEAD);
 }
 
 
@@ -675,7 +675,7 @@ int push_xin4(struct xdp_md *ctx, struct pointers *p, unsigned char *router, __b
 	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
-    int orig_len = adjust_head2(ctx, p, sizeof(struct iphdr) + overhead);
+    int orig_len = adjust_head(ctx, p, sizeof(struct iphdr) + overhead);
     
     if (orig_len < 0)
 	return -1;
@@ -788,7 +788,7 @@ int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, str
     //	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
-    int orig_len = adjust_head2(ctx, p, sizeof(struct ip6_hdr) + overhead);
+    int orig_len = adjust_head(ctx, p, sizeof(struct ip6_hdr) + overhead);
     
     if (orig_len < 0)
 	return -1;
