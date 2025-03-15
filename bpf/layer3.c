@@ -198,6 +198,9 @@ enum lookup_result {
 		    LAYER3_IPIP, // IP-in-IP and 6in4
 };
 
+#include "vlan.h"
+#include "new.h"
+
 const int BUFFLEN = 4096;
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -206,51 +209,6 @@ struct {
     __uint(max_entries, 1);
 } buffers SEC(".maps");
 
-
-
-// https://stackoverflow.com/questions/30858973/udp-checksum-calculation-for-ipv6-packet
-#define HDRTESTL 36
-#define UDPTESTLXX 52
-#define UDPTESTL 12
-#define ALLTESTL HDRTESTL+ALLTESTL
-
-__u8 HDRTEST[HDRTESTL] = {
-		    0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
-		    0xFD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x60, // Dest   IP
-		    0x00, 0x11, // Protocol (UDP)
-		    0x00, 0x0C,  // Proto Len: (UDP Header + Body)
-		    };
-
-//			  0x60, 0x00, 0x00, 0x00, 0x00, 0x34, 0x11, 0x01, 0x21, 0x00, 0x00, 0x00,
-//			  0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-//			  0xFD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-//			  0x00, 0x00, 0x01, 0x60,
-__u8 UDPTEST[UDPTESTL] = {
-			  0x26, 0x92,
-			  0x26, 0x92,
-			  0x00, 0x0C,
-			  // 0x7E, 0xD5,
-			  0x00, 0x00,
-			  0x12, 0x34,
-			  0x56, 0x78,
-};
-
-__u8 ALLTEST[HDRTESTL+UDPTESTL] = {
-				   0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
-				   0xFD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x60, // Dest   IP
-				   0x00, 0x11, // Protocol (UDP)
-				   0x00, 0x0C,  // Proto Len: (UDP Header + Body)
-				   0x26, 0x92,
-                          0x26, 0x92,
-                          0x00, 0x0C,
-                          // 0x7E, 0xD5,
-                          0x00, 0x00,
-                          0x12, 0x34,
-                          0x56, 0x78,
-};
-
-#include "vlan.h"
-#include "new.h"
 
 
 
@@ -349,11 +307,8 @@ int send_fou4(struct xdp_md *ctx, struct destination *dest)
 static __always_inline
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
-    bpf_printk("send_fou6\n");
     return fou6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
     XDP_ABORTED : XDP_TX;
-    //return push_fou6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
-    //	XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
@@ -688,45 +643,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
-
-
-    // 0x1CB4C
-    __u32 size = HDRTESTL>>1;//+UDPTESTL;
-    //__u32 size = UDPTESTL>>1;//+UDPTESTL;
-    //__u32 size = (HDRTESTL+UDPTESTL)>>1;
-    //__u32 csum = bpf_csum_diff((__be32 *) HDRTEST, 0, (__be32 *) HDRTEST, size, 0);
-    //csum = csum_fold_helper(csum);
-    //bpf_printk("csum %x\n", csum);
-    __u32 csum = 0;
-    __u16 *hdr = (void *) HDRTEST;
-    for (int n = 0; n < size; n++) {
-	csum += bpf_ntohs(hdr[n]);
-    }
-    bpf_printk("csum %x %d\n", csum, size);
-    
-    size = UDPTESTL>>1;
-    csum = 0;
-    hdr = (void *) UDPTEST;
-    for (int n = 0; n < size; n++) {
-	csum += bpf_ntohs(hdr[n]);
-    }
-    bpf_printk("csum %x %d\n", csum, size);
-
-
-    size = (HDRTESTL+UDPTESTL)>>1;
-    csum = 0;
-    hdr = (void *) ALLTEST;
-    for (int n = 0; n < size; n++) {
-	csum += bpf_ntohs(hdr[n]);
-    }
-    csum = csum_fold_helper(csum);
-    bpf_printk("csum %x %d\n", csum, size);
-
-    size = (HDRTESTL+UDPTESTL);
-    csum = bpf_csum_diff((__be32 *) ALLTEST, 0, (__be32 *) ALLTEST, size, 0);
-    csum = csum_fold_helper(csum);
-    bpf_printk("csum! %x\n", htons(csum));
-
     
     int mtu = MTU;
 
@@ -749,6 +665,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     if (!is_ipv4_addr(dest.daddr)) {
 	switch(result) {
+	    //case LAYER3_FOU:  return send_fou6(ctx, &dest); // tips the verifier over the edge
 	case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
 	case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
 	default:
