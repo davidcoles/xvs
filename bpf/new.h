@@ -658,15 +658,14 @@ int push_gre6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
     
     if (push_xin6(ctx, &p, router, saddr, daddr, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)
 	return -1;
-    
-    struct gre_hdr gre_new = { .crv = 0, .protocol = bpf_htons(protocol) };
+
     struct gre_hdr *gre = (void *) ((struct ip6_hdr *) p.ip + 1);
 
     if (gre + 1 > (void *)(long)ctx->data_end)
 	return -1;
 
-    *gre = gre_new;
-    bpf_printk("push_gre6 %x\n", protocol);
+    gre->crv = 0;
+    gre->protocol = bpf_htons(protocol);
     
     return 0;
 }
