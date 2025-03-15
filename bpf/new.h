@@ -521,12 +521,73 @@ int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 
 
 
+static __always_inline
+__u16 internet_checksum(void *data, void *data_end, __u32 csum)
+{
+    __u16 *p = data;
+    
+    for (int n = 0; n < 1500; n += 2) {
+	if (p + 1 > data_end)
+	    break;
+	csum += *p;
+	p++;
+    }
 
+    if (((void *) p) + 1 <= data_end) {
+	csum += *((__u8 *) p);
+    }
 
+    return csum_fold_helper(csum);
+}
 
+static __always_inline
+__u16 udp4_checksum(struct iphdr *ip, struct udphdr *udp, void *data_end)
+{
+    __u32 csum = 0;
+    struct {
+	__be32 saddr;
+	__be32 daddr;
+	__u8 pad;
+	__u8 protocol;
+	__be16 len;
+    } ph = { .saddr = ip->saddr, .daddr = ip->daddr, .protocol = IPPROTO_UDP, .len = udp->len};
 
+    __u16 *p = (void *) &ph;
+    for (int n = 0; n < 6; n++) {
+        csum += *(p++);
+    }
+    
+    return internet_checksum(udp, data_end, csum);
+}
 
+static __always_inline
+__u16 udp6_checksum(struct ip6_hdr *ip6, struct udphdr *udp, __u16 udp_len, void *data_end) {
+    __u32 csum = 0;
+    __u16 *p = (void *) &(ip6->ip6_src);
 
+    struct ph {
+        struct in6_addr ip6_src;
+        struct in6_addr ip6_dst;
+        __be16 pad1;
+        __be16 length;
+        __be16 pad2;
+        __be16 protocol;
+
+    };
+
+    struct ph ph = { .ip6_src = ip6->ip6_src, .ip6_dst = ip6->ip6_dst, .protocol = bpf_htons(IPPROTO_UDP), .length = bpf_htons(udp_len)};
+
+    p = (void *) &ph;
+    
+    for (int n = 0; n < 20; n++) {
+	csum += *(p++);
+    }
+
+    csum = internet_checksum(udp, data_end, csum);
+
+    // https://www.ietf.org/rfc/rfc2460.txt 8.1 - if csum is 0 then 0xffff must be used
+    return csum ? csum : 0xffff;
+}
 
 
 static __always_inline
@@ -535,7 +596,7 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
     struct ip6_hdr i = {};
     *ip = i;
 
-    //ip->ip6_ctlun.ip6_un2_vfc = bpf_htonl(0x40000000); // epty TC and flow label for now
+    //ip->ip6_ctlun.ip6_un2_vfc = bpf_htonl(0x40000000); // empty TC and flow label for now
     ip->ip6_ctlun.ip6_un2_vfc = 0x6 << 4;
     ip->ip6_ctlun.ip6_un1.ip6_un1_plen =  bpf_htons(payload_len);
     ip->ip6_ctlun.ip6_un1.ip6_un1_nxt = protocol;
@@ -576,7 +637,7 @@ int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
 
     int udp_len = sizeof(struct udphdr) + orig_len;
     
-    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len), .check = 0 };
     struct udphdr *udp = (void *) (new + 1);
     
     if (udp + 1 > (void *)(long)ctx->data_end)
@@ -587,6 +648,8 @@ int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
     /* Update the outer IP header to send to the FOU target */
     //int tot_len = sizeof(struct ip6_hdr) + udp_len;
     new_ip6hdr(new, udp_len, IPPROTO_UDP, saddr, daddr);
+    
+    udp->check = udp6_checksum(new, udp, udp_len, (void *)(long)ctx->data_end);
 
     bpf_printk("fou6 %d\n", udp_len);
     
@@ -662,7 +725,7 @@ int push_6in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in
 static __always_inline
 int push_4in6(struct xdp_md *ctx, char *router, struct in6_addr saddr, struct in6_addr daddr)
 {
-    return xin6_push(ctx, router, saddr, daddr, IPPROTO_IP);
+    return xin6_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
 }
 
 
@@ -673,57 +736,6 @@ int adjust_head_gre4(struct xdp_md *ctx, struct pointers *p)
     return adjust_head2(ctx, p, GRE4_OVERHEAD);
 }
 
-
-static __always_inline
-int xxpush_gre4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 protocol)
-{
-    struct pointers p = {};
-    
-    if (!saddr || !daddr)
-	return -1;
-    
-    /* adjust the packet to add the FOU header - pointers to new header fields will be in p */
-    int orig_len = adjust_head_gre4(ctx, &p);
-
-    if (orig_len < 0)
-	return -1;
-
-    if (p.vlan) {
-	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
-    } else {
-	p.eth->h_proto = bpf_htons(ETH_P_IP);
-    }
-
-    int gre_len = sizeof(struct gre_hdr) + orig_len;
-    
-    struct gre_hdr gre_new = { .crv = 0, .protocol = bpf_htons(protocol) };
-    struct gre_hdr *gre = (void *) (p.ip + 1);
-    
-    if (gre + 1 > (void *)(long)ctx->data_end)
-	return -1;
-
-    *gre = gre_new;
-
-    /* Update the outer IP header to send to the FOU target */
-    int tot_len = sizeof(struct iphdr) + gre_len;
-    new_iphdr(p.ip, tot_len, IPPROTO_GRE, saddr, daddr);
-
-    if (!nulmac(router)) {
-	/* If a router is explicitly indicated then direct the frame there */
-	memcpy(p.eth->h_source, p.eth->h_dest, 6);
-	memcpy(p.eth->h_dest, router, 6);
-    } else {
-	/* Otherwise return it to the device that it came from */
-	reverse_ethhdr(p.eth);
-    }
-
-    /* some final sanity checks on ethernet addresses */
-    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
-	return -1;
-
-    /* Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
-    return 0;
-}
 
 
 
@@ -769,7 +781,7 @@ int push_xin4(struct xdp_md *ctx, struct pointers *p, unsigned char *router, __b
 	return -1;
 
     // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
-    return 0;
+    return orig_len;
 }
 
 //     return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, ETH_P_IP) < 0 ?
@@ -793,6 +805,34 @@ int push_gre4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 da
     return 0;
 }
 
+
+static __always_inline
+int push_fou4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+{
+
+    struct pointers p = {};
+    int orig_len = push_xin4(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr));
+
+    if (orig_len < 0)
+	return -1;
+
+    int udp_len = sizeof(struct udphdr) + orig_len;
+    
+    struct udphdr fou = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr *udp = (void *) (p.ip + 1);
+    *udp = fou;
+
+    __u64 start = bpf_ktime_get_ns();
+    udp->check = udp4_checksum(p.ip, udp, (void *)(long)ctx->data_end);
+    __u64 end = bpf_ktime_get_ns();
+    __u32 dur = end-start;
+    
+    bpf_printk("push_fou4 %d %d\n", sport, dur);
+
+    return 0;
+
+
+}
 
 
 
@@ -843,20 +883,23 @@ int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, str
 	return -1;
 
     // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
-    return 0;
+    return orig_len;
 }
 
 static __always_inline
 int push_gre6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 protocol)
 {
     struct pointers p = {};
+
+    //char *c = (void *) &saddr;
+    //if (!c[0])
+    //	return -1;
     
     if (push_xin6(ctx, &p, router, saddr, daddr, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)
 	return -1;
     
     struct gre_hdr gre_new = { .crv = 0, .protocol = bpf_htons(protocol) };
-    struct ip6_hdr *ip6 = (void *) p.ip;
-    struct gre_hdr *gre = (void *) (ip6 + 1);
+    struct gre_hdr *gre = (void *) ((struct ip6_hdr *) p.ip + 1);
 
     if (gre + 1 > (void *)(long)ctx->data_end)
 	return -1;
@@ -866,3 +909,24 @@ int push_gre6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
     
     return 0;
 }
+
+static __always_inline
+int push_fou6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 sport, __u16 dport)
+{
+    struct pointers p = {};
+    
+    int orig_len = push_xin6(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr));
+    
+    if (orig_len < 0)
+        return -1;
+
+    int udp_len = sizeof(struct udphdr) + orig_len;
+
+    struct udphdr fou = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr *udp = (void *) (p.ip + 1);
+    *udp = fou;
+
+    return 0;
+}
+
+
