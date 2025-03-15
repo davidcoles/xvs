@@ -57,7 +57,6 @@ ip l set dev ip6tnl0 up
 **********************************************************************
 
 # IPIP
-ip a add 192.168.101.201 dev lo
 modprobe ipip
 ip l set dev tunl0 up
 tcpdump tunl0
@@ -246,8 +245,6 @@ struct {
 //static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    //return fou4_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
-    // 	XDP_ABORTED : XDP_TX;
     return push_fou4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
@@ -255,7 +252,8 @@ int send_fou4(struct xdp_md *ctx, struct destination *dest)
 //static __always_inline
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
-    return fou6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
+    //return fou6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
+    return push_fou6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
 
@@ -284,7 +282,8 @@ int send_6in4(struct xdp_md *ctx, struct destination *dest)
 //static __always_inline
 int send_ipip(struct xdp_md *ctx, struct destination *dest)
 {
-    return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
+    //return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
+    return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?		
 	XDP_ABORTED : XDP_TX;
 }
 
