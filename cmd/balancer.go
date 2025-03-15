@@ -32,6 +32,7 @@ func main() {
 
 	sticky := flag.Bool("s", false, "Sticky")
 	ipip := flag.Bool("i", false, "IP-in-IP")
+	gre := flag.Bool("g", false, "GRE")
 	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
 	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
 	ip6 := flag.String("6", "", "IPv6 VIP")
@@ -64,7 +65,18 @@ func main() {
 	}
 
 	fmt.Println("Starting ...")
-	err := xvs.Layer3(*ipip, 2, h_dest, saddr.As4(), vip, vip2, uint16(*l3port4), uint16(*l3port6), *sticky, addrs...)
+
+	tun := xvs.FOU
+
+	if *gre {
+		tun = xvs.GRE
+	}
+
+	if *ipip {
+		tun = xvs.IPIP
+	}
+
+	err := xvs.Layer3(tun, 2, h_dest, saddr.As4(), vip, vip2, uint16(*l3port4), uint16(*l3port6), *sticky, addrs...)
 
 	if err != nil {
 		log.Fatal(err)

@@ -269,7 +269,6 @@ int send_6in6(struct xdp_md *ctx, struct destination *dest)
 //static __always_inline
 int send_ip4in6(struct xdp_md *ctx, struct destination *dest)
 {
-    bpf_printk("send_ip4ip6\n");
     return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
@@ -599,9 +598,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     if (!is_ipv4_addr(dest.daddr)) {
 	switch(result) {
-	    case LAYER3_FOU:  return send_fou6(ctx, &dest); // tips the verifier over the edge
-	    case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
-	    case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
+	case LAYER3_FOU:  return send_fou6(ctx, &dest);
+	case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
+	case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
 	default:
 	    break;
 	}

@@ -60,7 +60,11 @@ type bpf_servicekey struct {
 type addr4 = [4]byte
 type addr6 = [16]byte
 
-func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
+const FOU uint8 = 0
+const GRE uint8 = 1
+const IPIP uint8 = 2
+
+func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
 
 	const TCP uint16 = 6
 	const UDP uint16 = 17
@@ -119,9 +123,12 @@ func Layer3(ipip bool, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	tunnel := F_LAYER3_FOU4
 
-	if ipip {
+	switch tun {
+	case FOU:
+	case GRE:
+		tunnel = F_LAYER3_GRE
+	case IPIP:
 		tunnel = F_LAYER3_IPIP4
-		//tunnel = F_LAYER3_GRE
 	}
 
 	all := []netip.Addr{vip, vip2}
