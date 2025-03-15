@@ -572,14 +572,14 @@ int push_gre4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 da
     
     if (push_xin4(ctx, &p, router, saddr, daddr, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)
 	return -1;
-    
-    struct gre_hdr gre_new = { .crv = 0, .protocol = bpf_htons(protocol) };
+
     struct gre_hdr *gre = (void *) (p.ip + 1);
 
-    *gre = gre_new;
-
-
-    bpf_printk("push_gre4 %x\n", protocol);
+    if (gre + 1 > (void *)(long)ctx->data_end)
+        return -1;
+    
+    gre->crv = 0;
+    gre->protocol = bpf_htons(protocol);
         
     return 0;
 }
@@ -698,7 +698,6 @@ int push_fou6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
 static __always_inline
 int push_fou4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
 {
-
     struct pointers p = {};
     int orig_len = push_xin4(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr));
 
