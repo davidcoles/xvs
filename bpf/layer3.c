@@ -43,7 +43,6 @@ modprobe fou
 modprobe sit
 ip l set dev sit0 up
 ip fou add port 6666 ipproto 41
-ip -6 a add fd6e:eec8:76ac:ac1d:200::1/128 dev lo
 
 # IPv6 in FOU6
 modprobe fou
@@ -252,7 +251,6 @@ int send_fou4(struct xdp_md *ctx, struct destination *dest)
 //static __always_inline
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
-    //return fou6_push(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
     return push_fou6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
@@ -613,7 +611,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     if (!is_ipv4_addr(dest.daddr)) {
 	switch(result) {
-	    //case LAYER3_FOU:  return send_fou6(ctx, &dest); // tips the verifier over the edge
+	    case LAYER3_FOU:  return send_fou6(ctx, &dest); // tips the verifier over the edge
 	    case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
 	    case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
 	default:

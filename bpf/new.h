@@ -585,31 +585,6 @@ int push_gre4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 da
 }
 
 
-static __always_inline
-int push_fou4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
-{
-
-    struct pointers p = {};
-    int orig_len = push_xin4(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr));
-
-    if (orig_len < 0)
-	return -1;
-
-    int udp_len = sizeof(struct udphdr) + orig_len;
-    
-    struct udphdr fou = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
-    struct udphdr *udp = (void *) (p.ip + 1);
-    *udp = fou;
-
-    __u64 start = bpf_ktime_get_ns();
-    udp->check = udp4_checksum(p.ip, udp, (void *)(long)ctx->data_end);
-    __u64 end = bpf_ktime_get_ns();
-    __u32 dur = end-start;
-    
-    bpf_printk("push_fou4 %d %d\n", sport, dur);
-
-    return 0;
-}
 
 static __always_inline
 int push_ipip(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
@@ -672,7 +647,7 @@ int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, str
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
 
-    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX */
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
     return orig_len;
 }
 
@@ -706,18 +681,40 @@ int push_fou6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
     if (orig_len < 0)
         return -1;
 
-    int udp_len = sizeof(struct udphdr) + orig_len;
-
-    struct udphdr fou = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
     struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
 
     if (udp + 1 > (void *)(long)ctx->data_end)
         return -1;
 
-    *udp = fou;
-
+    udp->source = bpf_htons(sport);
+    udp->dest = bpf_htons(dport);
+    udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
+    udp->check = 0;
     udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
     
     return 0;
 }
 
+static __always_inline
+int push_fou4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+{
+
+    struct pointers p = {};
+    int orig_len = push_xin4(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr));
+
+    if (orig_len < 0)
+	return -1;
+
+    struct udphdr *udp = (void *) (p.ip + 1);
+
+    if (udp + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    udp->source = bpf_htons(sport);
+    udp->dest = bpf_htons(dport);
+    udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
+    udp->check = 0;
+    udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+
+    return 0;
+}
