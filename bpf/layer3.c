@@ -363,27 +363,11 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 {
     // lookup flow in state map?
     
-    __be16 sport = 0;
-    __be16 dport = 0;    
-    
-    if (l4) {
-	struct udphdr *udp = l4;
-	sport = udp->source;
-	dport = udp->dest;	
-	
-    } 
-
-    //int x = sport;
-    //int y = dport;
-    //bpf_printk("PORTS %d %d\n", x, y);
-    
-    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(dport), .proto = protocol };
+    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(((struct udphdr *) l4)->dest), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (!service)
 	return NOT_FOUND;
-
-    //bpf_printk("FOUND\n");
     
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l4_hash(saddr, daddr, NULL);
