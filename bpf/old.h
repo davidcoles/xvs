@@ -456,3 +456,225 @@ int xxpush_gre4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 
     return 0;
 }
 
+
+/*
+static __always_inline
+void sanitise_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol)
+{
+    ip->version = 4;
+    ip->ihl = 5;
+    ip->ttl = 64;
+    ip->tot_len = bpf_htons(tot_len);
+    ip->protocol = protocol;
+    ip->check = 0;
+    ip->check = ipv4_checksum(ip);
+}
+*/
+
+
+/*
+static __always_inline
+int xxxadjust_head_fou4(struct xdp_md *ctx, struct pointers *p)
+{
+    return adjust_head(ctx, p, FOU4_OVERHEAD);
+}
+*/
+/*
+static __always_inline
+int xxxadjust_head_fou6(struct xdp_md *ctx, struct pointers *p)
+{
+    return adjust_head(ctx, p, FOU6_OVERHEAD);
+}
+*/
+
+/*
+static __always_inline
+int xxxadjust_head_ipip4(struct xdp_md *ctx, struct pointers *p)
+{
+    //return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
+    return adjust_head(ctx, p, IPIP_OVERHEAD);
+}
+*/
+
+
+/*
+static __always_inline
+int xxxfou4_push(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport)
+{
+    struct pointers p = {};
+
+    if (!saddr || !daddr || !sport || !dport)
+	return -1;
+    
+    // adjust the packet to add the FOU header - pointers to new header fields will be in p
+    int orig_len = adjust_head_fou4(ctx, &p);
+
+    if (orig_len < 0)
+	return -1;
+
+
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IP);
+    }
+
+    int udp_len = sizeof(struct udphdr) + orig_len;
+    
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len) };
+    struct udphdr *udp = (void *) (p.ip + 1);
+    
+    if (udp + 1 > (void *)(long)ctx->data_end)
+	return -1;
+
+    *udp = udp_new;
+
+    // Update the outer IP header to send to the FOU target
+    int tot_len = sizeof(struct iphdr) + udp_len;
+    new_iphdr(p.ip, tot_len, IPPROTO_UDP, saddr, daddr);
+
+    if (!nulmac(router)) {
+	// If a router is explicitly indicated then direct the frame there
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	// Otherwise return it to the device that it came from
+	reverse_ethhdr(p.eth);
+    }
+
+    // some final sanity checks on ethernet addresses
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
+    return 0;
+}
+*/
+
+
+
+/*
+static __always_inline
+int xin4_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr, __u8 inner)
+{
+    struct pointers p = {};
+
+    if (!saddr || !daddr)
+	return -1;
+    
+    // adjust the packet to add the FOU header - pointers to new header fields will be in p
+    int orig_len = adjust_head2_ipip4(ctx, &p);
+
+    if (orig_len < 0)
+	return -1;
+
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IP);
+    }
+    
+    // Update the outer IP header to send to the IPIP target
+    int tot_len = sizeof(struct iphdr) + orig_len;
+    new_iphdr(p.ip, tot_len, inner, saddr, daddr);
+    
+    if (!nulmac(router)) {
+	// If a router is explicitly indicated then direct the frame there
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	// Otherwise return it to the device that it came from 
+	reverse_ethhdr(p.eth);
+    }
+    
+    // some final sanity checks on ethernet addresses
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
+    return 0;
+}
+*/
+
+/*
+static __always_inline
+int push_6in4(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+{
+    return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPV6);
+}
+*/
+
+/*
+static __always_inline
+int ipip_push(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
+{
+    return xin4_push(ctx, router, saddr, daddr, IPPROTO_IPIP);
+}
+*/
+
+/*
+
+// struct in6_addr
+static __always_inline
+int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 sport, __u16 dport)
+{
+    struct pointers p = {};
+
+    //if (!saddr || !daddr || !sport || !dport)
+    if (!sport || !dport) // FIXME
+	return -1;
+    
+    // adjust the packet to add the FOU header - pointers to new header fields will be in p
+    int orig_len = adjust_head2_fou6(ctx, &p);
+
+    if (orig_len < 0)
+	return -1;
+
+    struct ip6_hdr *new = (void *) p.ip;
+
+    if (new + 1 > (void *)(long)ctx->data_end)
+	return -1;
+    
+    
+    if (p.vlan) {
+	p.vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IPV6);
+    } else {
+	p.eth->h_proto = bpf_htons(ETH_P_IPV6);
+    }
+
+    int udp_len = sizeof(struct udphdr) + orig_len;
+    
+    struct udphdr udp_new = { .source = bpf_htons(sport), .dest = bpf_htons(dport), .len = bpf_htons(udp_len), .check = 0 };
+    struct udphdr *udp = (void *) (new + 1);
+    
+    if (udp + 1 > (void *)(long)ctx->data_end)
+	return -1;
+
+    *udp = udp_new;
+
+    // Update the outer IP header to send to the FOU target
+    //int tot_len = sizeof(struct ip6_hdr) + udp_len;
+    new_ip6hdr(new, udp_len, IPPROTO_UDP, saddr, daddr);
+    
+    udp->check = udp6_checksum(new, udp, (void *)(long)ctx->data_end);
+
+    bpf_printk("fou6 %d\n", udp_len);
+    
+    if (!nulmac(router)) {
+	// If a router is explicitly indicated then direct the frame there
+	memcpy(p.eth->h_source, p.eth->h_dest, 6);
+	memcpy(p.eth->h_dest, router, 6);
+    } else {
+	// Otherwise return it to the device that it came from
+	reverse_ethhdr(p.eth);
+    }
+
+    // some final sanity checks on ethernet addresses
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
+    return 0;
+}
+*/
+
