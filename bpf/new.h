@@ -561,29 +561,17 @@ __u16 udp4_checksum(struct iphdr *ip, struct udphdr *udp, void *data_end)
 }
 
 static __always_inline
-__u16 udp6_checksum(struct ip6_hdr *ip6, struct udphdr *udp, __u16 udp_len, void *data_end) {
+__u16 udp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
     __u32 csum = 0;
     __u16 *p = (void *) &(ip6->ip6_src);
 
-    struct ph {
-        struct in6_addr ip6_src;
-        struct in6_addr ip6_dst;
-        __be16 pad1;
-        __be16 length;
-        __be16 pad2;
-        __be16 protocol;
-
-    };
-
-    struct ph ph = { .ip6_src = ip6->ip6_src, .ip6_dst = ip6->ip6_dst, .protocol = bpf_htons(IPPROTO_UDP), .length = bpf_htons(udp_len)};
-
-    p = (void *) &ph;
-    
-    for (int n = 0; n < 20; n++) {
+    for (int n = 0; n < 16; n++) {
 	csum += *(p++);
     }
 
-    csum = internet_checksum(udp, data_end, csum);
+    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op
+    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // also a no-op
+    csum = internet_checksum(l4, data_end, csum);
 
     // https://www.ietf.org/rfc/rfc2460.txt 8.1 - if csum is 0 then 0xffff must be used
     return csum ? csum : 0xffff;
@@ -595,9 +583,8 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
 {
     struct ip6_hdr i = {};
     *ip = i;
-
-    //ip->ip6_ctlun.ip6_un2_vfc = bpf_htonl(0x40000000); // empty TC and flow label for now
-    ip->ip6_ctlun.ip6_un2_vfc = 0x6 << 4;
+    
+    ip->ip6_ctlun.ip6_un2_vfc = 0x6 << 4; // empty TC and flow label for now
     ip->ip6_ctlun.ip6_un1.ip6_un1_plen =  bpf_htons(payload_len);
     ip->ip6_ctlun.ip6_un1.ip6_un1_nxt = protocol;
     ip->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64;
@@ -649,7 +636,7 @@ int fou6_push(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
     //int tot_len = sizeof(struct ip6_hdr) + udp_len;
     new_ip6hdr(new, udp_len, IPPROTO_UDP, saddr, daddr);
     
-    udp->check = udp6_checksum(new, udp, udp_len, (void *)(long)ctx->data_end);
+    udp->check = udp6_checksum(new, udp, (void *)(long)ctx->data_end);
 
     bpf_printk("fou6 %d\n", udp_len);
     
