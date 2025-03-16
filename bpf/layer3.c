@@ -364,7 +364,7 @@ int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 
     
     // should probably rate limit sending frag_needed - calculating checksum is slow
-    // could have a token queue populated from userspace every second?
+    // could have a token queue refilled from userspace every second?
     return (frag_needed(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
 }
 
@@ -390,7 +390,7 @@ static __always_inline
 int is_ipv4_addr(struct addr addr) {
     
     __u32 *p = (void*) addr.addr4.pad;
-    __u32 n = 0;
+    __u64 n = 0;
     n += *(p++);
     n += *(p++);
     n += *(p++);

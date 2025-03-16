@@ -27,8 +27,10 @@ const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 static __always_inline
 int nul6(struct in6_addr *a) 
 {
-    __u64 *p = (void*) a;
+    __u32 *p = (void*) a;
     __u64 n = 0;
+    n += *(p++);
+    n += *(p++);
     n += *(p++);
     n += *(p++);
     return n == 0 ? 1 : 0;
@@ -194,10 +196,6 @@ int nulmac(unsigned char *mac)
 {
     return (!mac[0] && !mac[1] && !mac[2] && !mac[3] && !mac[4] && !mac[5]);
 }
-
-
-
-
 
 static __always_inline
 int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
