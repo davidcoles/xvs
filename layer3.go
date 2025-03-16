@@ -62,7 +62,8 @@ type addr6 = [16]byte
 
 const FOU uint8 = 0
 const GRE uint8 = 1
-const IPIP uint8 = 2
+const GUE uint8 = 2
+const IPIP uint8 = 3
 
 func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
 
@@ -114,10 +115,11 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	//infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
 
-	const F_LAYER2_DSR uint8 = 0x00
-	const F_LAYER3_FOU4 uint8 = 0x01  // IPv4 host with FOU tunnel
-	const F_LAYER3_GRE uint8 = 0x02   // IPv6 host with FOU tunnel
-	const F_LAYER3_IPIP4 uint8 = 0x03 // IPv4 host with IP-in-IP tunnel
+	const F_LAYER2_DSR uint8 = 0
+	const F_LAYER3_FOU4 uint8 = 1  // IPv4 host with FOU tunnel
+	const F_LAYER3_GRE uint8 = 2   // IPv6 host with FOU tunnel
+	const F_LAYER3_GUE uint8 = 3   // IPv4 host with IP-in-IP tunnel
+	const F_LAYER3_IPIP4 uint8 = 4 // IPv4 host with IP-in-IP tunnel
 
 	const F_STICKY uint8 = 0x01
 
@@ -127,6 +129,8 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	case FOU:
 	case GRE:
 		tunnel = F_LAYER3_GRE
+	case GUE:
+		tunnel = F_LAYER3_GUE
 	case IPIP:
 		tunnel = F_LAYER3_IPIP4
 	}

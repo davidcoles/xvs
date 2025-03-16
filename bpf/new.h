@@ -1,3 +1,4 @@
+
 struct pointers {
     struct ethhdr *eth, eth_copy;
     struct vlan_hdr *vlan, vlan_copy;
@@ -11,6 +12,22 @@ struct gre_hdr {
     //__be16 checksum;
     //__be16 reserved;
 };
+
+struct gue_hdr {
+    __u8 variant : 1;
+    __u8 control : 1;
+    __u8 hlen    : 6;
+    __u8 protocol;
+    __be16 flags;
+};
+
+const __u8 GRE4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct gre_hdr);
+const __u8 GRE6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct gre_hdr);
+const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
+const __u8 FOU6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct udphdr);
+const __u8 IPIP_OVERHEAD = sizeof(struct iphdr);
+const __u8 GUE4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct gue_hdr);
+
 
 static __always_inline
 int nul6(struct in6_addr *a) 
@@ -167,12 +184,6 @@ int nulmac(unsigned char *mac)
 }
 
 
-
-const __u8 GRE4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct gre_hdr);
-const __u8 GRE6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct gre_hdr);
-const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
-const __u8 FOU6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct udphdr);
-const __u8 IPIP_OVERHEAD = sizeof(struct iphdr);
 
 
 
@@ -676,5 +687,76 @@ int push_fou4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 da
     udp->check = 0;
     udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
 
+    return 0;
+}
+
+static __always_inline
+int push_gue4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport, __u8 protocol)
+{
+    struct pointers p = {};
+    int orig_len = push_xin4(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
+
+    if (orig_len < 0)
+	return -1;
+
+    struct udphdr *udp = (void *) (p.ip + 1);
+
+    if (udp + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    udp->source = bpf_htons(sport);
+    udp->dest = bpf_htons(dport);
+    udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
+    udp->check = 0;
+
+    struct gue_hdr *gue = (void *) (udp + 1);
+    
+    if (gue + 1 > (void *)(long)ctx->data_end)
+	return -1;
+
+    *((__be32 *) gue) = 0;
+
+    bpf_printk("GUE4 %d\n", protocol);
+    
+    gue->protocol = protocol;
+    
+    udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+
+    return 0;
+}
+
+static __always_inline
+int push_gue6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u16 sport, __u16 dport, __u8 protocol)
+{
+    struct pointers p = {};
+    
+    int orig_len = push_xin6(ctx, &p, router, saddr, daddr, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
+    
+    if (orig_len < 0)
+        return -1;
+
+    struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
+
+    if (udp + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    udp->source = bpf_htons(sport);
+    udp->dest = bpf_htons(dport);
+    udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
+    udp->check = 0;
+
+     struct gue_hdr *gue = (void *) (udp + 1);
+
+    if (gue + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    *((__be32 *) gue) = 0;
+
+    bpf_printk("GUE6 %d\n", protocol);
+
+    gue->protocol = protocol;
+    
+    udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+    
     return 0;
 }

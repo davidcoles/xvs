@@ -30,6 +30,24 @@ ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
 
 **********************************************************************
 
+# can use same port for IP and IPV6 in GOU as there is a protocol field
+
+# IPv4 in GUE4
+modprobe fou
+modprobe ipip
+ip fou add port 9999 gue
+ip link set dev tunl0 up
+sysctl -w net.ipv4.conf.tunl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+# IPv6 in GUE4
+modprobe fou
+modprobe sit
+ip l set dev sit0 up
+ip fou add port 9999 gue
+
+**********************************************************************
+
 # IPv4 in FOU4
 modprobe fou
 modprobe ipip
@@ -135,10 +153,11 @@ const __u16 MTU = 1500;
 
 const __u8 F_STICKY = 0x01;
 
-const __u8 F_LAYER2_DSR  = 0x00;
-const __u8 F_LAYER3_FOU = 0x01;
-const __u8 F_LAYER3_GRE = 0x02;
-const __u8 F_LAYER3_IPIP = 0x03;
+const __u8 F_LAYER2_DSR  = 0;
+const __u8 F_LAYER3_FOU  = 1;
+const __u8 F_LAYER3_GRE  = 2;
+const __u8 F_LAYER3_GUE  = 3;
+const __u8 F_LAYER3_IPIP = 4;
 
 enum lookup_result {
 		    NOT_FOUND = 0,
@@ -146,6 +165,7 @@ enum lookup_result {
 		    LAYER3_GRE,
 		    LAYER3_FOU,  // FOU + IP-in-IP and 6in4
 		    LAYER3_IPIP, // IP-in-IP and 6in4
+		    LAYER3_GUE,
 };
 
 #include "vlan.h"
@@ -244,6 +264,21 @@ struct {
 } redirect_map SEC(".maps");
 
 /**********************************************************************/
+
+//static __always_inline
+int send_gue4(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
+{
+    return push_gue4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, protocol) < 0 ?
+    XDP_ABORTED : XDP_TX;
+}
+
+//static __always_inline
+int send_gue6(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
+{
+    return push_gue6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, protocol) < 0 ?
+    XDP_ABORTED : XDP_TX;
+}
+
 
 //static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
@@ -396,7 +431,8 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     case F_LAYER2_DSR:  return LAYER2_DSR;
     case F_LAYER3_FOU:  return LAYER3_FOU;
     case F_LAYER3_GRE:  return LAYER3_GRE;
-    case F_LAYER3_IPIP: return LAYER3_IPIP;	
+    case F_LAYER3_IPIP: return LAYER3_IPIP;
+    case F_LAYER3_GUE:  return LAYER3_GUE;
     }
     
    return NOT_FOUND;
@@ -473,6 +509,7 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
 	case LAYER3_FOU:  return send_fou6(ctx, &dest); // IPv6 in FOU in IPv6 - can't see how to decap this
 	case LAYER3_IPIP: return send_6in6(ctx, &dest); // IPv6 in IPv6 - works
 	case LAYER3_GRE:  return send_gre_6in6(ctx, &dest);
+	case LAYER3_GUE:  return send_gue6(ctx, &dest, IPPROTO_IPV6);	    
 	default: break;
 	}
 	bpf_printk("IPv6 destinations not supported yet");
@@ -483,7 +520,9 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     case LAYER3_FOU:  return send_fou4(ctx, &dest); // IPv6 in FOU in IPv4 - works
     case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
     case LAYER3_GRE:  return send_gre_6in4(ctx, &dest);
+    case LAYER3_GUE:  return send_gue4(ctx, &dest, IPPROTO_IPV6);
 
+	//case LAYER3_GUE:
     case LAYER2_DSR:
     case NOT_FOUND:
 	break;
@@ -586,6 +625,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     switch (result) {
     case LAYER3_GRE:
     case LAYER3_FOU:
+    case LAYER3_GUE:
     case LAYER3_IPIP:
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
             return XDP_DROP;
@@ -601,6 +641,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	case LAYER3_FOU:  return send_fou6(ctx, &dest);
 	case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
 	case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
+	case LAYER3_GUE:  return send_gue6(ctx, &dest, IPPROTO_IPIP);
 	default:
 	    break;
 	}
@@ -608,7 +649,11 @@ int xdp_fwd_func(struct xdp_md *ctx)
     	return XDP_ABORTED;
     }
     
+    bpf_printk("HERE %d\n", result);
     switch (result) {
+    case LAYER3_GUE:
+	return send_gue4(ctx, &dest, IPPROTO_IPIP);
+	
     case LAYER3_FOU:	
 	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
 	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)

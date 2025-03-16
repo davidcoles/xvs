@@ -33,6 +33,7 @@ func main() {
 	sticky := flag.Bool("s", false, "Sticky")
 	ipip := flag.Bool("i", false, "IP-in-IP")
 	gre := flag.Bool("g", false, "GRE")
+	gue := flag.Bool("G", false, "GUE")
 	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
 	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
 	ip6 := flag.String("6", "", "IPv6 VIP")
@@ -70,6 +71,10 @@ func main() {
 
 	if *gre {
 		tun = xvs.GRE
+	}
+
+	if *gue {
+		tun = xvs.GUE
 	}
 
 	if *ipip {
