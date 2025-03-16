@@ -195,7 +195,9 @@ struct info {
 };
 
 struct addr4 {
-    __u8 pad[12];
+    __be32 pad1;
+    __be32 pad2;
+    __be32 pad3;
     __be32 addr;
 };
 
@@ -351,9 +353,8 @@ int send_gre6(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
 	XDP_ABORTED : XDP_TX;
 }
 static __always_inline
-int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
+int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
-    bpf_printk("FRAG_NEEDED\n");
     /*
     __u8 *buffer = NULL;
     if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
@@ -365,7 +366,7 @@ int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     
     // should probably rate limit sending frag_needed - calculating checksum is slow
     // could have a token queue refilled from userspace every second?
-    return (frag_needed(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
+    return (frag_needed4(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
 }
 
 static __always_inline
@@ -387,25 +388,8 @@ __u16 l4_hash(struct addr saddr, struct addr daddr, void *l4)
 }
 
 static __always_inline
-int is_ipv4_addr(struct addr addr) {
-    
-    __u32 *p = (void*) addr.addr4.pad;
-    __u64 n = 0;
-    n += *(p++);
-    n += *(p++);
-    n += *(p++);
-    return n == 0 ? 1 : 0;
-
-    /*
-    char *p = addr.addr4.pad;
-
-    if (!p[0] && !p[1] && !p[2] && !p[3] &&
-	!p[4] && !p[5] && !p[6] && !p[7] &&
-	!p[8] && !p[9] && !p[10] && !p[11])
-	return 1;
-    
-    return 0;
-    */
+int is_ipv4_addr(struct addr a) {
+    return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
 
@@ -640,10 +624,16 @@ int xdp_fwd_func_(struct xdp_md *ctx)
 	
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
             return XDP_DROP;
-	
-	if ((data_end - next_header) + overhead > mtu)
-            return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - overhead);
-	
+
+	if ((data_end - next_header) + overhead > mtu) {
+	    if (is_ipv6) {
+		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
+	    } else {
+		bpf_printk("IPv4 FRAG_NEEDED\n");
+		return send_frag_needed4(ctx, dest.saddr.addr4.addr, mtu - overhead);
+	    }
+	}
+	    
 	break;
 
     default:

@@ -28,12 +28,11 @@ static __always_inline
 int nul6(struct in6_addr *a) 
 {
     __u32 *p = (void*) a;
-    __u64 n = 0;
-    n += *(p++);
-    n += *(p++);
-    n += *(p++);
-    n += *(p++);
-    return n == 0 ? 1 : 0;
+    if (*(p++) != 0) return 0;
+    if (*(p++) != 0) return 0;
+    if (*(p++) != 0) return 0;
+    if (*(p++) != 0) return 0;
+    return 1;
 }
 
 #define CRV 0x0080 // NBO
@@ -236,7 +235,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
 
 
 static __always_inline
-int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
+int frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
 {
     struct pointers p = {};
     int iplen;
