@@ -274,7 +274,7 @@ struct {
 int send_l2(struct xdp_md *ctx, struct destination *dest)
 {
     return redirect_eth(ctx, dest->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
-
+    
 }
     
 //static __always_inline
@@ -422,15 +422,20 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     __u8 flag = service->flag[index];
 
     // store flow?
+
+    // for layer 2 the destination hwaddr is that of the backend, not a router
+    if (F_LAYER2_DSR == flag)
+	memcpy(r->h_dest, service->hwaddr[index], 6);
+
+    if (nulmac(r->h_dest))
+	return NOT_FOUND;
     
     switch (flag) {
     case F_LAYER3_FOU:  return LAYER3_FOU;
     case F_LAYER3_GRE:  return LAYER3_GRE;
     case F_LAYER3_IPIP: return LAYER3_IPIP;
     case F_LAYER3_GUE:  return LAYER3_GUE;
-    case F_LAYER2_DSR:
-	memcpy(r->h_dest, service->hwaddr[index], 6);
-	return LAYER2_DSR;	     
+    case F_LAYER2_DSR:  return LAYER2_DSR;
     }
     
    return NOT_FOUND;
@@ -495,6 +500,46 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
     return lookup(saddr, daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest);
 }
 
+enum lookup_result lookup4_(struct xdp_md *ctx, struct iphdr *ip, struct destination *dest)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    if (ip + 1 > data_end)
+	return NOT_FOUND;
+    
+    struct addr daddr = { .addr4.addr = ip->daddr };
+    
+    if (!bpf_map_lookup_elem(&vips, &daddr))
+    	return NOT_A_VIP;
+
+    if (ip->version != 4)
+	return NOT_FOUND;
+    
+    if (ip->ihl != 5)
+        return NOT_FOUND;
+
+    if (ip->ttl <= 1)
+	return NOT_FOUND; // FIXME - new enum
+    
+    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
+    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
+        return NOT_FOUND; // FIXME - new enum;
+    
+    if (ip->protocol != IPPROTO_TCP)
+	return NOT_FOUND;
+    
+    struct tcphdr *tcp = (void *)(ip + 1);
+
+    if (tcp + 1 > data_end)
+      return NOT_FOUND;
+    
+    
+    /* We're going to forward the packet, so we should decrement the time to live */
+    ip_decrease_ttl(ip);    
+    
+    return lookup4(ip, tcp, dest);
+}
+
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
 
     if (vlan) {
@@ -545,33 +590,36 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (eth + 1 > data_end)
         return XDP_PASS;
 
-    __be16 next_proto = eth->h_proto;
+    __be16 next_proto = bpf_ntohs(eth->h_proto);
     void *next_header = eth + 1;
     
     struct vlan_hdr *vlan = NULL;
     
-    if (next_proto == bpf_htons(ETH_P_8021Q)) {
+    if (next_proto == ETH_P_8021Q) {
 	return XDP_PASS; // not yet fully implmented
 	vlan = next_header;
 	
 	if (vlan + 1 > data_end)
 	    return XDP_PASS;
 	
-	next_proto = vlan->h_vlan_encapsulated_proto;
+	next_proto = bpf_ntohs(vlan->h_vlan_encapsulated_proto);
 	next_header = vlan + 1;
     }
-    
-    if (next_proto == bpf_htons(ETH_P_IPV6)) {
+
+    switch(next_proto) {
+    case ETH_P_IPV6:
 	is_ipv6 = 1;
 	result = lookup6_(ctx, next_header, &dest);
-	goto send;
-	//return XDP_DROP;
-	//return xdp_fwd_func6(ctx, eth, vlan, next_header);
+	break;
+    case ETH_P_IP:
+	result = lookup4_(ctx, next_header, &dest);
+	break;
+    default:
+	return XDP_PASS;
     }
     
-    if (next_proto != bpf_htons(ETH_P_IP))
-	return XDP_PASS;
-    
+
+    /*
     struct iphdr *ip = next_header;
 
     if (ip + 1 > data_end)
@@ -604,40 +652,35 @@ int xdp_fwd_func(struct xdp_md *ctx)
       return XDP_DROP;
     
 
-    /* We're going to forward the packet, so we should decrement the time to live */
+      // We're going to forward the packet, so we should decrement the time to live
     ip_decrease_ttl(ip);    
     
     result = lookup4(ip, tcp, &dest);
-
+*/
     goto send;
 
  send:
 
-    bpf_printk("SEND %d\n", result);
-    
     overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
+    if(LAYER2_DSR == result) {
+	bpf_printk("HWADDR0  %x\n", dest.h_dest[0]);
+	bpf_printk("HWADDR1  %x\n", dest.h_dest[1]);
+	bpf_printk("HWADDR2  %x\n", dest.h_dest[2]);
+	bpf_printk("HWADDR3  %x\n", dest.h_dest[3]);
+	bpf_printk("HWADDR4  %x\n", dest.h_dest[4]);
+	bpf_printk("HWADDR5  %x\n", dest.h_dest[5]);
+    }
 
-    bpf_printk("HWADDR0  %x\n", dest.h_dest[0]);
-    bpf_printk("HWADDR1  %x\n", dest.h_dest[1]);
-    bpf_printk("HWADDR2  %x\n", dest.h_dest[2]);
-    bpf_printk("HWADDR3  %x\n", dest.h_dest[3]);
-    bpf_printk("HWADDR4  %x\n", dest.h_dest[4]);
-    bpf_printk("HWADDR5  %x\n", dest.h_dest[5]);
-    
+    // no default here - handle all cases explicitly
     switch (result) {
+    case LAYER2_DSR: return send_l2(ctx, &dest);
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    case LAYER3_IPIP:
-	break;
-    case LAYER2_DSR:
-	//return XDP_DROP;
-	return send_l2(ctx, &dest);
-    case NOT_A_VIP:
-	return XDP_PASS;
-    case NOT_FOUND:
-        return XDP_DROP;
+    case LAYER3_IPIP: break;
+    case NOT_A_VIP: return XDP_PASS;
+    case NOT_FOUND: return XDP_DROP;
     }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
@@ -652,7 +695,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
             return XDP_DROP;
 	
-	if ((data_end - ((void *) ip)) + overhead > mtu)
+	if ((data_end - next_header) + overhead > mtu)
             return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - overhead);
 	
 	break;
