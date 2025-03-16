@@ -468,6 +468,8 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
     bpf_printk("IPv6 TCP %d\n", x);
 
     // FIXME - decrement hop count
+
+    bpf_printk("HERE\n");
     
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
@@ -524,12 +526,10 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     bpf_printk("IPv6 TCP %d\n", x);
     
     result = lookup6(ip6, tcp, &dest);
+    bpf_printk("HERE %d\n", result);
     */
-
-
     result = lookup6_(ctx, ip6, &dest);
     
-    bpf_printk("HERE %d\n", result);
     
     int overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
     
@@ -594,6 +594,11 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
+    struct destination dest = {};
+    int mtu = MTU;
+    int overhead = 0;
+    enum lookup_result result = NOT_A_VIP;
+
     //__u64 start = bpf_ktime_get_ns();
     //__u64 start_s = start / SECOND_NS;
 
@@ -669,15 +674,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (tcp + 1 > data_end)
       return XDP_DROP;
     
-    struct destination dest = {};
 
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
     
-    enum lookup_result result = lookup4(ip, tcp, &dest);
+    result = lookup4(ip, tcp, &dest);
+
+    goto send;
+
+ send:
     
-    int mtu = MTU;
-    int overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
     switch (result) {
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
