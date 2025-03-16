@@ -281,6 +281,7 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
     //if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
     //return -1;
 
+    /*
     for (__u16 n = 0; n < sizeof(struct icmphdr) + iplen; n++) {
 	if (((void *) icmp) + n >= data_end)
             break;
@@ -289,8 +290,9 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
 
     // calulate checksum over the entire icmp packet + payload (copied to buffer)
     icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);
-    
-    //icmp->checksum = internet_checksum(icmp, data_end, 0);
+    */
+
+    icmp->checksum = internet_checksum(icmp, data_end, 0);
 
     return 0;
 }

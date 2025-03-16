@@ -175,6 +175,7 @@ enum lookup_result {
 		    LAYER3_GUE,
 };
 
+/*
 const int BUFFLEN = 4096;
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -182,7 +183,7 @@ struct {
     __type(value, __u8[4096]);    
     __uint(max_entries, 1);
 } buffers SEC(".maps");
-
+*/
 
 
 
@@ -353,12 +354,18 @@ static __always_inline
 int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
     bpf_printk("FRAG_NEEDED\n");
-
+    /*
     __u8 *buffer = NULL;
     if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
 	return XDP_ABORTED;
      
     return (frag_needed(ctx, saddr, mtu, buffer) < 0) ? XDP_ABORTED : XDP_TX;
+    */
+
+    
+    // should probably rate limit sending frag_needed - calculating checksum is slow
+    // could have a token queue populated from userspace every second?
+    return (frag_needed(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
 }
 
 static __always_inline
