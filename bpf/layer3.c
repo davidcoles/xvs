@@ -318,22 +318,6 @@ int send_in6(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
 	XDP_ABORTED : XDP_TX;
 }
 
-/*
-//static __always_inline
-int send_6in6(struct xdp_md *ctx, struct destination *dest)
-{
-    return push_6in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
-	XDP_ABORTED : XDP_TX;
-}
-
-//static __always_inline
-int send_4in6(struct xdp_md *ctx, struct destination *dest)
-{
-    return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-*/
-
 //static __always_inline
 int send_in4(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
 {
@@ -346,23 +330,6 @@ int send_in4(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
     return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
         XDP_ABORTED : XDP_TX;
 }
-
-/*
-//static __always_inline
-int send_6in4(struct xdp_md *ctx, struct destination *dest)
-{
-    return push_6in4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?	
-	XDP_ABORTED : XDP_TX;
-}
-
-//static __always_inline
-int send_4in4(struct xdp_md *ctx, struct destination *dest)
-{
-    //return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
-    return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?		
-	XDP_ABORTED : XDP_TX;
-}
-*/
 
 //static __always_inline
 int send_gre4(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
@@ -670,7 +637,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (is_ipv4_addr(dest.daddr)) {
 	switch (result) {
 	case LAYER3_FOU:  return send_fou4(ctx, &dest);
-	    //case LAYER3_IPIP: return is_ipv6 ? send_6in4(ctx, &dest) : send_4in4(ctx, &dest);
 	case LAYER3_IPIP: return send_in4(ctx, &dest, is_ipv6);
 	case LAYER3_GRE:  return send_gre4(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	case LAYER3_GUE:  return send_gue4(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
@@ -680,7 +646,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     } else {
 	switch(result) {
 	case LAYER3_FOU:  return send_fou6(ctx, &dest);
-	    //case LAYER3_IPIP: return is_ipv6 ? send_6in6(ctx, &dest) : send_4in6(ctx, &dest);
 	case LAYER3_IPIP: return send_in6(ctx, &dest, is_ipv6);
 	case LAYER3_GRE:  return send_gre6(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	case LAYER3_GUE:  return send_gue6(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
