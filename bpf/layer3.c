@@ -164,8 +164,8 @@ enum lookup_result {
 		    NOT_A_VIP,
 		    LAYER2_DSR,
 		    LAYER3_GRE,
-		    LAYER3_FOU,  // FOU + IP-in-IP and 6in4
-		    LAYER3_IPIP, // IP-in-IP and 6in4
+		    LAYER3_FOU,
+		    LAYER3_IPIP,
 		    LAYER3_GUE,
 };
 
@@ -317,7 +317,7 @@ int send_6in4(struct xdp_md *ctx, struct destination *dest)
 }
 
 //static __always_inline
-int send_ipip(struct xdp_md *ctx, struct destination *dest)
+int send_4in4(struct xdp_md *ctx, struct destination *dest)
 {
     //return ipip_push(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
     return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?		
@@ -495,101 +495,6 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 
 
-//static __always_inline
-int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan, struct ip6_hdr *ip6)
-{
-    struct destination dest = {};
-    enum lookup_result result = NOT_A_VIP;
-
-    /*
-    void *data_end = (void *)(long)ctx->data_end;
-
-    if (ip6 + 1 > data_end)
-	return XDP_PASS;
-    
-    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
-	return XDP_PASS;
-
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
-	bpf_printk("IPv6 ICMP!\n");
-	return XDP_PASS;
-    }
-    
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
-	return XDP_PASS;
-
-    struct tcphdr *tcp = (void *) (ip6 + 1);
-
-    if (tcp + 1 > data_end)
-        return XDP_PASS;
-
-    int x = bpf_ntohs(tcp->dest);
-    
-    bpf_printk("IPv6 TCP %d\n", x);
-    
-    result = lookup6(ip6, tcp, &dest);
-    bpf_printk("HERE %d\n", result);
-    */
-    result = lookup6_(ctx, ip6, &dest);
-    
-    
-    int overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
-    
-    switch (result) {
-    case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
-    case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
-    case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    case LAYER3_IPIP:
-	break;
-    case LAYER2_DSR:
-	break;
-    case NOT_A_VIP:
-	return XDP_PASS;
-    case NOT_FOUND:
-        return XDP_DROP;
-    }
-
-    switch (result) {
-    case LAYER3_GRE:
-    case LAYER3_FOU:
-    case LAYER3_GUE:
-    case LAYER3_IPIP:
-	
-	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
-            return XDP_DROP;
-	
-	//if ((data_end - ((void *) ip)) + overhead > mtu)
-        //    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - overhead);
-	
-	break;
-
-    default:
-	break;
-    }
-    
-    if (is_ipv4_addr(dest.daddr)) {
-	switch (result) {
-	case LAYER3_FOU:  return send_fou4(ctx, &dest); // IPv6 in FOU in IPv4 - works
-	case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
-	case LAYER3_GRE:  return send_gre4(ctx, &dest, ETH_P_IPV6);
-	case LAYER3_GUE:  return send_gue4(ctx, &dest, IPPROTO_IPV6);
-	default:
-	    break;
-	}
-    } else {	
-	switch (result) {
-	case LAYER3_FOU:  return send_fou6(ctx, &dest); // IPv6 in FOU in IPv6 - can't see how to decap this
-	case LAYER3_IPIP: return send_6in6(ctx, &dest); // IPv6 in IPv6 - works
-	case LAYER3_GRE:  return send_gre6(ctx, &dest, ETH_P_IPV6);
-	case LAYER3_GUE:  return send_gue6(ctx, &dest, IPPROTO_IPV6);	    
-	default:
-	    break;
-	}
-    }
-    
-
-    return XDP_DROP;
-}
 
 
 
@@ -733,8 +638,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (is_ipv4_addr(dest.daddr)) {
 	switch (result) {
 	case LAYER3_FOU:  return send_fou4(ctx, &dest);
-	case LAYER3_IPIP: return is_ipv6 ? send_6in4(ctx, &dest) : send_ipip(ctx, &dest);
-	    //case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
+	case LAYER3_IPIP: return is_ipv6 ? send_6in4(ctx, &dest) : send_4in4(ctx, &dest);
 	case LAYER3_GRE:  return send_gre4(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	case LAYER3_GUE:  return send_gue4(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
@@ -744,7 +648,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	switch(result) {
 	case LAYER3_FOU:  return send_fou6(ctx, &dest);
 	case LAYER3_IPIP: return is_ipv6 ? send_6in6(ctx, &dest) : send_4in6(ctx, &dest);
-	    //case LAYER3_IPIP: return send_6in6(ctx, &dest); // IPv6 in IPv6 - works
 	case LAYER3_GRE:  return send_gre6(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	case LAYER3_GUE:  return send_gue6(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
