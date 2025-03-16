@@ -161,6 +161,7 @@ const __u8 F_LAYER3_IPIP = 4;
 
 enum lookup_result {
 		    NOT_FOUND = 0,
+		    NOT_A_VIP,
 		    LAYER2_DSR,
 		    LAYER3_GRE,
 		    LAYER3_FOU,  // FOU + IP-in-IP and 6in4
@@ -495,8 +496,14 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    default:
+    case LAYER3_IPIP:
 	break;
+    case LAYER2_DSR:
+	break;
+    case NOT_A_VIP:
+	return XDP_PASS;
+    case NOT_FOUND:
+        return XDP_DROP;
     }
 
     switch (result) {
@@ -513,9 +520,8 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
 	
 	break;
 
-    case LAYER2_DSR:
-    case NOT_FOUND:
-        return XDP_DROP;
+    default:
+	break;
     }
     
     if (is_ipv4_addr(dest.daddr)) {
@@ -636,8 +642,14 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    default:
+    case LAYER3_IPIP:
 	break;
+    case LAYER2_DSR:
+	return XDP_DROP;
+    case NOT_A_VIP:
+	return XDP_PASS;
+    case NOT_FOUND:
+        return XDP_DROP;
     }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
@@ -656,10 +668,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
             return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - overhead);
 	
 	break;
-	
-    case LAYER2_DSR:
-    case NOT_FOUND:
-	return XDP_DROP;
+
+    default:
+	break;
     }
     
     if (is_ipv4_addr(dest.daddr)) {
