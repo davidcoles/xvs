@@ -21,13 +21,9 @@ struct gue_hdr {
     __be16 flags;
 };
 
-const __u8 GRE4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct gre_hdr);
-const __u8 GRE6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct gre_hdr);
-const __u8 FOU4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr);
-const __u8 FOU6_OVERHEAD = sizeof(struct ip6_hdr) + sizeof(struct udphdr);
-const __u8 IPIP_OVERHEAD = sizeof(struct iphdr);
-const __u8 GUE4_OVERHEAD = sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct gue_hdr);
-
+const __u8 GRE_OVERHEAD = sizeof(struct gre_hdr);
+const __u8 FOU_OVERHEAD = sizeof(struct udphdr);
+const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 
 static __always_inline
 int nul6(struct in6_addr *a) 

@@ -302,7 +302,7 @@ int send_6in6(struct xdp_md *ctx, struct destination *dest)
 }
 
 //static __always_inline
-int send_ip4in6(struct xdp_md *ctx, struct destination *dest)
+int send_4in6(struct xdp_md *ctx, struct destination *dest)
 {
     return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
 	XDP_ABORTED : XDP_TX;
@@ -325,34 +325,18 @@ int send_ipip(struct xdp_md *ctx, struct destination *dest)
 
 
 //static __always_inline
-int send_gre4(struct xdp_md *ctx, struct destination *dest)
+int send_gre4(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
 {
-    return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, ETH_P_IP) < 0 ?
+    return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, protocol) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
 //static __always_inline
-int send_gre_6in4(struct xdp_md *ctx, struct destination *dest)
+int send_gre6(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
 {
-    return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, ETH_P_IPV6) < 0 ?
+    return push_gre6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, protocol) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
-
-//static __always_inline
-int send_gre_6in6(struct xdp_md *ctx, struct destination *dest)
-{
-    return push_gre6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, ETH_P_IPV6) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-
-//static __always_inline
-int send_gre_4in6(struct xdp_md *ctx, struct destination *dest)
-{
-    return push_gre6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, ETH_P_IP) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-
-
 static __always_inline
 int send_frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
@@ -504,29 +488,56 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
 
     enum lookup_result result = lookup6(ip6, tcp, &dest);
 
-    if (!is_ipv4_addr(dest.daddr)) {
+    //int mtu = MTU;
+    int overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    
+    switch (result) {
+    case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
+    case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
+    case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
+    default:
+	break;
+    }
+
+    switch (result) {
+    case LAYER3_GRE:
+    case LAYER3_FOU:
+    case LAYER3_GUE:
+    case LAYER3_IPIP:
+	
+	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
+            return XDP_DROP;
+	
+	//if ((data_end - ((void *) ip)) + overhead > mtu)
+        //    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - overhead);
+	
+	break;
+
+    case LAYER2_DSR:
+    case NOT_FOUND:
+        return XDP_DROP;
+    }
+    
+    if (is_ipv4_addr(dest.daddr)) {
+	switch (result) {
+	case LAYER3_FOU:  return send_fou4(ctx, &dest); // IPv6 in FOU in IPv4 - works
+	case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
+	case LAYER3_GRE:  return send_gre4(ctx, &dest, ETH_P_IPV6);
+	case LAYER3_GUE:  return send_gue4(ctx, &dest, IPPROTO_IPV6);
+	default:
+	    break;
+	}
+    } else {	
 	switch (result) {
 	case LAYER3_FOU:  return send_fou6(ctx, &dest); // IPv6 in FOU in IPv6 - can't see how to decap this
 	case LAYER3_IPIP: return send_6in6(ctx, &dest); // IPv6 in IPv6 - works
-	case LAYER3_GRE:  return send_gre_6in6(ctx, &dest);
+	case LAYER3_GRE:  return send_gre6(ctx, &dest, ETH_P_IPV6);
 	case LAYER3_GUE:  return send_gue6(ctx, &dest, IPPROTO_IPV6);	    
-	default: break;
+	default:
+	    break;
 	}
-	bpf_printk("IPv6 destinations not supported yet");
-	return XDP_ABORTED;
     }
     
-    switch (result) {
-    case LAYER3_FOU:  return send_fou4(ctx, &dest); // IPv6 in FOU in IPv4 - works
-    case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
-    case LAYER3_GRE:  return send_gre_6in4(ctx, &dest);
-    case LAYER3_GUE:  return send_gue4(ctx, &dest, IPPROTO_IPV6);
-
-	//case LAYER3_GUE:
-    case LAYER2_DSR:
-    case NOT_FOUND:
-	break;
-    }
 
     return XDP_DROP;
 }
@@ -616,66 +627,59 @@ int xdp_fwd_func(struct xdp_md *ctx)
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
     
-    int mtu = MTU;
-
     enum lookup_result result = lookup4(ip, tcp, &dest);
+    
+    int mtu = MTU;
+    int overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+
+    switch (result) {
+    case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
+    case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
+    case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
+    default:
+	break;
+    }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
+    // Also check if pckets is too large to encapsulate
     switch (result) {
     case LAYER3_GRE:
     case LAYER3_FOU:
     case LAYER3_GUE:
     case LAYER3_IPIP:
+	
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest.vlanid) < 0)
             return XDP_DROP;
+	
+	if ((data_end - ((void *) ip)) + overhead > mtu)
+            return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - overhead);
+	
 	break;
 	
     case LAYER2_DSR:
     case NOT_FOUND:
 	return XDP_DROP;
     }
-
-    if (!is_ipv4_addr(dest.daddr)) {
+    
+    if (is_ipv4_addr(dest.daddr)) {
+	switch (result) {
+	case LAYER3_FOU:  return send_fou4(ctx, &dest);
+	case LAYER3_IPIP: return send_ipip(ctx, &dest);
+	case LAYER3_GRE:  return send_gre4(ctx, &dest, ETH_P_IP);
+	case LAYER3_GUE:  return send_gue4(ctx, &dest, IPPROTO_IPIP);
+	default:
+	    break;
+	}
+    } else {
 	switch(result) {
 	case LAYER3_FOU:  return send_fou6(ctx, &dest);
-	case LAYER3_IPIP: return send_ip4in6(ctx, &dest);
-	case LAYER3_GRE:  return send_gre_4in6(ctx, &dest);
+	case LAYER3_IPIP: return send_4in6(ctx, &dest);
+	case LAYER3_GRE:  return send_gre6(ctx, &dest, ETH_P_IP);
 	case LAYER3_GUE:  return send_gue6(ctx, &dest, IPPROTO_IPIP);
 	default:
 	    break;
 	}
-        bpf_printk("IPv6 destinations not supported yet\n");
-    	return XDP_ABORTED;
-    }
-    
-    bpf_printk("HERE %d\n", result);
-    switch (result) {
-    case LAYER3_GUE:
-	return send_gue4(ctx, &dest, IPPROTO_IPIP);
-	
-    case LAYER3_FOU:	
-	/* Will the packet and FOU headers exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
-	if ((data_end - ((void *) ip)) + FOU4_OVERHEAD > mtu)
-	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - FOU4_OVERHEAD);
-
-	return send_fou4(ctx, &dest);
-
-    case LAYER3_IPIP:
-	/* Will the packet and extra IP header exceed the MTU? Send ICMP ICMP_UNREACH/FRAG_NEEDED */
-	if ((data_end - ((void *) ip)) + IPIP_OVERHEAD > mtu)
-	    return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - IPIP_OVERHEAD);
-	return send_ipip(ctx, &dest);
-
-    case LAYER3_GRE:
-	if ((data_end - ((void *) ip)) + GRE4_OVERHEAD > mtu)
-	     return send_frag_needed(ctx, dest.saddr.addr4.addr, mtu - GRE4_OVERHEAD);
-	return send_gre4(ctx, &dest);
-	
-	
-    case LAYER2_DSR:  /* not implemented yet */
-    case NOT_FOUND:
-	break;
     }
     
     return XDP_DROP; 
