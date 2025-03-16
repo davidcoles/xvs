@@ -431,7 +431,7 @@ enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r)
     return lookup(saddr, daddr, l4, ip->protocol, r);
 }
 
-static __always_inline
+//static __always_inline
 enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) 
 {
     struct addr saddr = { .addr6 = ip6->ip6_src };
@@ -439,6 +439,38 @@ enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r)
     return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
 }
 
+//static __always_inline
+enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *r)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+
+    if (ip6 + 1 > data_end)
+        return NOT_FOUND;
+
+    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
+        return NOT_FOUND;
+
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
+        bpf_printk("IPv6 ICMP!\n");
+        return NOT_FOUND;
+    }
+
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
+        return NOT_FOUND;
+
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+
+    if (tcp + 1 > data_end)
+        return NOT_FOUND;
+
+    int x = bpf_ntohs(tcp->dest);
+
+    bpf_printk("IPv6 TCP %d\n", x);
+
+    struct addr saddr = { .addr6 = ip6->ip6_src };
+    struct addr daddr = { .addr6 = ip6->ip6_dst };
+    return lookup(saddr, daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
+}
 
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
 
