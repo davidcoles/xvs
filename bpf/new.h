@@ -1,4 +1,3 @@
-
 struct pointers {
     struct ethhdr *eth, eth_copy;
     struct vlan_hdr *vlan, vlan_copy;
@@ -28,12 +27,11 @@ const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 static __always_inline
 int nul6(struct in6_addr *a) 
 {
-    __u64 *x = (void *) a;
-    for (int n = 0; n < 2; n++) {
-	if (*(x++) != 0)
-	    return 0;
-    }
-    return 1;
+    __u64 *p = (void*) a;
+    __u64 n = 0;
+    n += *(p++);
+    n += *(p++);
+    return n == 0 ? 1 : 0;
 }
 
 #define CRV 0x0080 // NBO
@@ -357,6 +355,25 @@ int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
     return 0;
 }
 
+
+static __always_inline
+int redirect_eth(struct xdp_md *ctx, __u8 *dest)
+{
+    struct pointers p = {};
+    
+    if (preserve_l2_headers(ctx, &p) < 0)
+	return -1;
+    
+    memcpy(p.eth->h_source, p.eth->h_dest, 6);
+    memcpy(p.eth->h_dest, dest, 6);
+
+    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+	return -1;
+
+    return 0;
+}
+
+
 static __always_inline
 int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead)
 {
@@ -561,8 +578,8 @@ int push_6in4(struct xdp_md *ctx, char *router, __be32 saddr, __be32 daddr)
 static __always_inline
 int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u8 protocol, unsigned int overhead)
 {
-    //if (nul6(&saddr) || nul6(&daddr))
-    //	return -1;
+    if (nul6(&saddr) || nul6(&daddr))
+    	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
     int orig_len = adjust_head(ctx, p, sizeof(struct ip6_hdr) + overhead);

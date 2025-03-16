@@ -39,16 +39,15 @@ type bpf_dest4 struct {
 type bpf_dest [16]byte
 
 type bpf_destinations struct {
-	hash  [8192]uint8
-	flag  [256]uint8
-	sport [256]uint16
-	//daddr  [256]bpf_dest4
-	daddr [256]bpf_dest
-	//saddr  bpf_dest4
+	hash   [8192]uint8
+	flag   [256]uint8
+	sport  [256]uint16
+	daddr  [256]bpf_dest
 	saddr  bpf_dest
 	saddr6 addr6
 	h_dest [6]byte
 	vlanid uint16
+	hwaddr [256]mac
 }
 
 type bpf_servicekey struct {
@@ -64,6 +63,7 @@ const FOU uint8 = 0
 const GRE uint8 = 1
 const GUE uint8 = 2
 const IPIP uint8 = 3
+const LAYER2 uint8 = 4
 
 func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
 
@@ -133,7 +133,11 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		tunnel = F_LAYER3_GUE
 	case IPIP:
 		tunnel = F_LAYER3_IPIP4
+	case LAYER2:
+		tunnel = F_LAYER2_DSR
 	}
+
+	hwaddr, _ := arp()
 
 	all := []netip.Addr{vip, vip2}
 
@@ -167,6 +171,7 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		val.vlanid = uint16(vlanid)
 
 		for i, d := range dests {
+
 			val.flag[i+1] = tunnel
 			val.sport[i+1] = port
 
@@ -177,6 +182,9 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 			} else {
 				ip := d.As4()
 				copy(daddr[12:], ip[:])
+
+				val.hwaddr[i+1] = hwaddr[ip]
+
 			}
 
 			val.daddr[i+1] = daddr

@@ -221,6 +221,8 @@ struct destination {
     __u16 vlanid;
 };
 
+typedef __u8 mac[6];
+
 struct destinations {
     __u8 hash[8192];
     __u8 flag[256];    // flag[0] - global flags for service; sticky, leastconns
@@ -232,6 +234,7 @@ struct destinations {
     __u16 vlanid;      // VLAN ID on which encapsulated packets should be received/sent
     //struct addr icmp; // optional address to send ICMP UNREACH/FRAG from?
     // maybe seperate vlan/mac records if IPv6 is to support L2
+    mac hwaddr[256];
 };
 
 /**********************************************************************/
@@ -266,6 +269,14 @@ struct {
 
 /**********************************************************************/
 
+
+//static __always_inline
+int send_l2(struct xdp_md *ctx, struct destination *dest)
+{
+    return redirect_eth(ctx, dest->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
+
+}
+    
 //static __always_inline
 int send_gue4(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
 {
@@ -403,7 +414,7 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     r->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
     r->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
     r->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
-    memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel - may be better in vips
+    memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel - may be better in vips    
     r->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may bebetter in vips
 
     r->saddr = is_ipv4_addr(r->daddr) ? service->saddr : service->saddr6;
@@ -413,11 +424,13 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     // store flow?
     
     switch (flag) {
-    case F_LAYER2_DSR:  return LAYER2_DSR;
     case F_LAYER3_FOU:  return LAYER3_FOU;
     case F_LAYER3_GRE:  return LAYER3_GRE;
     case F_LAYER3_IPIP: return LAYER3_IPIP;
     case F_LAYER3_GUE:  return LAYER3_GUE;
+    case F_LAYER2_DSR:
+	memcpy(r->h_dest, service->hwaddr[index], 6);
+	return LAYER2_DSR;	     
     }
     
    return NOT_FOUND;
@@ -470,6 +483,10 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
     bpf_printk("IPv6 TCP %d\n", x);
 
     // FIXME - decrement hop count
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
+	return NOT_FOUND; // FIXME - new enum
+
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
 
     bpf_printk("HERE\n");
     
@@ -599,6 +616,14 @@ int xdp_fwd_func(struct xdp_md *ctx)
     bpf_printk("SEND %d\n", result);
     
     overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+
+
+    bpf_printk("HWADDR0  %x\n", dest.h_dest[0]);
+    bpf_printk("HWADDR1  %x\n", dest.h_dest[1]);
+    bpf_printk("HWADDR2  %x\n", dest.h_dest[2]);
+    bpf_printk("HWADDR3  %x\n", dest.h_dest[3]);
+    bpf_printk("HWADDR4  %x\n", dest.h_dest[4]);
+    bpf_printk("HWADDR5  %x\n", dest.h_dest[5]);
     
     switch (result) {
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
@@ -607,7 +632,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case LAYER3_IPIP:
 	break;
     case LAYER2_DSR:
-	return XDP_DROP;
+	//return XDP_DROP;
+	return send_l2(ctx, &dest);
     case NOT_A_VIP:
 	return XDP_PASS;
     case NOT_FOUND:

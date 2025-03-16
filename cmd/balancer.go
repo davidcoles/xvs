@@ -34,6 +34,7 @@ func main() {
 	ipip := flag.Bool("i", false, "IP-in-IP")
 	gre := flag.Bool("g", false, "GRE")
 	gue := flag.Bool("G", false, "GUE")
+	layer2 := flag.Bool("2", false, "Layer 2")
 	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
 	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
 	ip6 := flag.String("6", "", "IPv6 VIP")
@@ -68,6 +69,10 @@ func main() {
 	fmt.Println("Starting ...")
 
 	tun := xvs.FOU
+
+	if *layer2 {
+		tun = xvs.LAYER2
+	}
 
 	if *gre {
 		tun = xvs.GRE
