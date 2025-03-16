@@ -307,6 +307,19 @@ int send_fou6(struct xdp_md *ctx, struct destination *dest)
 }
 
 //static __always_inline
+int send_in6(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
+{
+    if (is_ipv6) {
+	return push_6in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
+	    XDP_ABORTED : XDP_TX;
+    }
+
+    return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
+	XDP_ABORTED : XDP_TX;
+}
+
+/*
+//static __always_inline
 int send_6in6(struct xdp_md *ctx, struct destination *dest)
 {
     return push_6in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
@@ -319,7 +332,22 @@ int send_4in6(struct xdp_md *ctx, struct destination *dest)
     return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
+*/
 
+//static __always_inline
+int send_in4(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
+{
+
+    if (is_ipv6) {
+	return push_6in4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
+	    XDP_ABORTED : XDP_TX;
+    }
+    
+    return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
+        XDP_ABORTED : XDP_TX;
+}
+
+/*
 //static __always_inline
 int send_6in4(struct xdp_md *ctx, struct destination *dest)
 {
@@ -334,7 +362,7 @@ int send_4in4(struct xdp_md *ctx, struct destination *dest)
     return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?		
 	XDP_ABORTED : XDP_TX;
 }
-
+*/
 
 //static __always_inline
 int send_gre4(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
@@ -442,34 +470,22 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 }
 
 //static __always_inline
-//enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r)
-//{
-//    struct addr saddr = { .addr4.addr = ip->saddr };
-//    struct addr daddr = { .addr4.addr = ip->daddr };
-//    return lookup(saddr, daddr, l4, ip->protocol, r);
-//}
-
-//static __always_inline
-//enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) 
-//{
-//    struct addr saddr = { .addr6 = ip6->ip6_src };
-//    struct addr daddr = { .addr6 = ip6->ip6_dst };
-//    return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
-//}
-
-//static __always_inline
-enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest)
+enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest)
 {
     void *data_end = (void *)(long)ctx->data_end;
 
-    bpf_printk("lookup6_\n");
-    
     if (ip6 + 1 > data_end)
         return NOT_FOUND;
 
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return NOT_FOUND;
 
+    struct addr saddr = { .addr6 = ip6->ip6_src };
+    struct addr daddr = { .addr6 = ip6->ip6_dst };
+
+    if (!bpf_map_lookup_elem(&vips, &daddr))
+        return NOT_A_VIP;
+    
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
         bpf_printk("IPv6 ICMP!\n");
         return NOT_A_VIP;
@@ -494,12 +510,10 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
 
     bpf_printk("HERE\n");
     
-    struct addr saddr = { .addr6 = ip6->ip6_src };
-    struct addr daddr = { .addr6 = ip6->ip6_dst };
     return lookup(saddr, daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest);
 }
 
-enum lookup_result lookup4_(struct xdp_md *ctx, struct iphdr *ip, struct destination *dest)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, struct destination *dest)
 {
     void *data_end = (void *)(long)ctx->data_end;
     
@@ -582,7 +596,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (eth + 1 > data_end)
         return XDP_PASS; // or drop?
     
-    __be16 next_proto = bpf_ntohs(eth->h_proto);
+    __be16 next_proto = eth->h_proto;
     void *next_header = eth + 1;
     
     struct vlan_hdr *vlan = NULL;
@@ -594,17 +608,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	if (vlan + 1 > data_end)
 	    return XDP_PASS;
 	
-	next_proto = bpf_ntohs(vlan->h_vlan_encapsulated_proto);
+	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
 
     switch(next_proto) {
-    case ETH_P_IPV6:
+    case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
-	result = lookup6_(ctx, next_header, &dest);
+	result = lookup6(ctx, next_header, &dest);
 	break;
-    case ETH_P_IP:
-	result = lookup4_(ctx, next_header, &dest);
+    case bpf_htons(ETH_P_IP):
+	result = lookup4(ctx, next_header, &dest);
 	break;
     default:
 	return XDP_PASS;
@@ -656,7 +670,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (is_ipv4_addr(dest.daddr)) {
 	switch (result) {
 	case LAYER3_FOU:  return send_fou4(ctx, &dest);
-	case LAYER3_IPIP: return is_ipv6 ? send_6in4(ctx, &dest) : send_4in4(ctx, &dest);
+	    //case LAYER3_IPIP: return is_ipv6 ? send_6in4(ctx, &dest) : send_4in4(ctx, &dest);
+	case LAYER3_IPIP: return send_in4(ctx, &dest, is_ipv6);
 	case LAYER3_GRE:  return send_gre4(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	case LAYER3_GUE:  return send_gue4(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
@@ -665,7 +680,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
     } else {
 	switch(result) {
 	case LAYER3_FOU:  return send_fou6(ctx, &dest);
-	case LAYER3_IPIP: return is_ipv6 ? send_6in6(ctx, &dest) : send_4in6(ctx, &dest);
+	    //case LAYER3_IPIP: return is_ipv6 ? send_6in6(ctx, &dest) : send_4in6(ctx, &dest);
+	case LAYER3_IPIP: return send_in6(ctx, &dest, is_ipv6);
 	case LAYER3_GRE:  return send_gre6(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	case LAYER3_GUE:  return send_gue6(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
