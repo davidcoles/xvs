@@ -240,12 +240,9 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
 static __always_inline
 int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
 {
-    // FIXME: checksum doesn't work for much larger packets, unsure why - keep the size down for now
-    // maybe the csum_diff helper has a bounded loop and needs to be invoked mutiple times?
     struct pointers p = {};
     int iplen;
     
-    //if ((iplen = frag_needed_trim(ctx, &p, max)) < 0)
     if ((iplen = frag_needed_trim(ctx, &p)) < 0)	
 	return -1;
 
@@ -257,40 +254,18 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
 
     reverse_ethhdr(p.eth);
 
+    int tot_len = sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen;
+    new_iphdr(p.ip, tot_len, IPPROTO_ICMP, saddr, p.ip->saddr); // source becomes LB's IP, destination is the client
+
     // reply to client with LB's address
-    // FIXME - how will the above work behind NAT?
-    // 1) 2nd address stored only used for replying to client
-    // 2) static NAT entry for LB -> outside world
-    // 3) dynamic NAT pool
-    // 4) larger internal MTU
     // ensure DEST_UNREACH/FRAG_NEEDED is allowed out
     // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
     // respond to every occurence or keep a record of recent notifications?
-
-    //p.ip->daddr = p.ip->saddr;
-    //p.ip->saddr = saddr;
-    //sanitise_iphdr(p.ip, sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen, IPPROTO_ICMP);
-    int tot_len = sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen;
-    new_iphdr(p.ip, tot_len, IPPROTO_ICMP, saddr, p.ip->saddr); // source becomes LB's IP, destination is theclient
-
+    
     struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0, .un.frag.mtu = bpf_htons(mtu) };
     *icmp = fou;
 
     ((__u8 *) icmp)[5] = ((__u8)(iplen >> 2)); // struct icmphdr lacks a length field
-
-    //if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
-    //return -1;
-
-    /*
-    for (__u16 n = 0; n < sizeof(struct icmphdr) + iplen; n++) {
-	if (((void *) icmp) + n >= data_end)
-            break;
-	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
-    }
-
-    // calulate checksum over the entire icmp packet + payload (copied to buffer)
-    icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);
-    */
 
     icmp->checksum = internet_checksum(icmp, data_end, 0);
 
@@ -342,7 +317,6 @@ int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
 
     p->eth_copy = *(p->eth);
     if (p->vlan) p->vlan_copy = *(p->vlan);
-    //p->ip_copy = *(p->ip);
     
      return 0;
 }
@@ -405,30 +379,16 @@ int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead)
     void *data_end = (void *)(long)ctx->data_end;
     int orig_len = data_end - (void *) p->ip;
     
-    //if (sizeof(struct iphdr) > overhead)
-    //return -1;
-    
-    /* Insert space for new headers at the start of the packet */
+    // Insert space for new headers before the start of the packet
     if (bpf_xdp_adjust_head(ctx, 0 - overhead))
 	return -1;
     
-    /* After bpf_xdp_adjust_head we need to re-calculate all of the header pointers  and restore contents */
+    // After bpf_xdp_adjust_head we need to re-calculate the header pointers and restore contents
     if (restore_l2_headers(ctx, p) < 0)
 	return -1;
 
     return orig_len;
 }
-
-static __always_inline
-int adjust_head_xin6(struct xdp_md *ctx, struct pointers *p)
-{
-    //return adjust_head(ctx, p, IPIP_OVERHEAD, 0);
-    return adjust_head(ctx, p, sizeof(struct ip6_hdr));
-}
-
-
-
-
 
 static __always_inline
 __u16 udp4_checksum(struct iphdr *ip, struct udphdr *udp, void *data_end)
@@ -482,20 +442,6 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
     ip->ip6_src = saddr;
     ip->ip6_dst = daddr;
 }
-
-
-
-
-/*/
-static __always_inline
-int xxadjust_head_gre4(struct xdp_md *ctx, struct pointers *p)
-{
-    return adjust_head(ctx, p, GRE4_OVERHEAD);
-}
-*/
-
-
-
 
 static __always_inline
 int push_xin4(struct xdp_md *ctx, struct pointers *p, unsigned char *router, __be32 saddr, __be32 daddr, __u8 protocol, int overhead)
