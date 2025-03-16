@@ -444,6 +444,8 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
 {
     void *data_end = (void *)(long)ctx->data_end;
 
+    bpf_printk("lookup6_\n");
+    
     if (ip6 + 1 > data_end)
         return NOT_FOUND;
 
@@ -452,7 +454,7 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
 
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
         bpf_printk("IPv6 ICMP!\n");
-        return NOT_FOUND;
+        return NOT_A_VIP;
     }
 
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
@@ -493,7 +495,7 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 
 
-static __always_inline
+//static __always_inline
 int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan, struct ip6_hdr *ip6)
 {
     struct destination dest = {};
@@ -598,6 +600,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     int mtu = MTU;
     int overhead = 0;
     enum lookup_result result = NOT_A_VIP;
+    int is_ipv6 = 0;
 
     //__u64 start = bpf_ktime_get_ns();
     //__u64 start_s = start / SECOND_NS;
@@ -635,9 +638,13 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
-
+    
     if (next_proto == bpf_htons(ETH_P_IPV6)) {
-	return xdp_fwd_func6(ctx, eth, vlan, next_header);
+	is_ipv6 = 1;
+	result = lookup6_(ctx, next_header, &dest);
+	goto send;
+	//return XDP_DROP;
+	//return xdp_fwd_func6(ctx, eth, vlan, next_header);
     }
     
     if (next_proto != bpf_htons(ETH_P_IP))
@@ -683,9 +690,11 @@ int xdp_fwd_func(struct xdp_md *ctx)
     goto send;
 
  send:
+
+    bpf_printk("SEND %d\n", result);
     
     overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
-
+    
     switch (result) {
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
@@ -724,18 +733,20 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (is_ipv4_addr(dest.daddr)) {
 	switch (result) {
 	case LAYER3_FOU:  return send_fou4(ctx, &dest);
-	case LAYER3_IPIP: return send_ipip(ctx, &dest);
-	case LAYER3_GRE:  return send_gre4(ctx, &dest, ETH_P_IP);
-	case LAYER3_GUE:  return send_gue4(ctx, &dest, IPPROTO_IPIP);
+	case LAYER3_IPIP: return is_ipv6 ? send_6in4(ctx, &dest) : send_ipip(ctx, &dest);
+	    //case LAYER3_IPIP: return send_6in4(ctx, &dest); // IPv6 in IPv4 - works
+	case LAYER3_GRE:  return send_gre4(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
+	case LAYER3_GUE:  return send_gue4(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
 	    break;
 	}
     } else {
 	switch(result) {
 	case LAYER3_FOU:  return send_fou6(ctx, &dest);
-	case LAYER3_IPIP: return send_4in6(ctx, &dest);
-	case LAYER3_GRE:  return send_gre6(ctx, &dest, ETH_P_IP);
-	case LAYER3_GUE:  return send_gue6(ctx, &dest, IPPROTO_IPIP);
+	case LAYER3_IPIP: return is_ipv6 ? send_6in6(ctx, &dest) : send_4in6(ctx, &dest);
+	    //case LAYER3_IPIP: return send_6in6(ctx, &dest); // IPv6 in IPv6 - works
+	case LAYER3_GRE:  return send_gre6(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
+	case LAYER3_GUE:  return send_gue6(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
 	    break;
 	}
