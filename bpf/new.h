@@ -36,6 +36,33 @@ int nul6(struct in6_addr *a)
 
 #define CRV 0x0080 // NBO
 
+static __always_inline
+__u16 csum_fold_helper(__u32 csum)
+{
+    __u32 sum;
+    sum = (csum >> 16) + (csum & 0xffff);
+    sum += (sum >> 16);
+    return ~sum;
+}
+
+static __always_inline
+__u16 internet_checksum(void *data, void *data_end, __u32 csum)
+{
+    __u16 *p = data;
+    
+    for (int n = 0; n < 1500; n += 2) {
+	if (p + 1 > data_end)
+	    break;
+	csum += *p;
+	p++;
+    }
+
+    if (((void *) p) + 1 <= data_end) {
+	csum += *((__u8 *) p);
+    }
+
+    return csum_fold_helper(csum);
+}
 
 int preserve_headers(struct xdp_md *ctx, struct pointers *p)
 {
@@ -102,15 +129,6 @@ int restore_headers(struct xdp_md *ctx, struct pointers *p)
     return 0;
 }
 
-
-static __always_inline
-__u16 csum_fold_helper(__u32 csum)
-{
-    __u32 sum;
-    sum = (csum >> 16) + (csum & 0xffff);
-    sum += (sum >> 16);
-    return ~sum;
-}
 
 static __always_inline
 int ip_decrease_ttl(struct iphdr *ip)
@@ -262,15 +280,17 @@ int frag_needed(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
 
     //if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
     //return -1;
-    
+
     for (__u16 n = 0; n < sizeof(struct icmphdr) + iplen; n++) {
 	if (((void *) icmp) + n >= data_end)
             break;
 	((__u8 *) buffer)[n] = ((__u8 *) icmp)[n]; // copy original IP packet to buffer
     }
 
-    /* calulate checksum over the entire icmp packet + payload (copied to buffer) */
+    // calulate checksum over the entire icmp packet + payload (copied to buffer)
     icmp->checksum = icmp_checksum((struct icmphdr *) buffer, sizeof(struct icmphdr) + iplen);
+    
+    //icmp->checksum = internet_checksum(icmp, data_end, 0);
 
     return 0;
 }
@@ -407,24 +427,6 @@ int adjust_head_xin6(struct xdp_md *ctx, struct pointers *p)
 
 
 
-static __always_inline
-__u16 internet_checksum(void *data, void *data_end, __u32 csum)
-{
-    __u16 *p = data;
-    
-    for (int n = 0; n < 1500; n += 2) {
-	if (p + 1 > data_end)
-	    break;
-	csum += *p;
-	p++;
-    }
-
-    if (((void *) p) + 1 <= data_end) {
-	csum += *((__u8 *) p);
-    }
-
-    return csum_fold_helper(csum);
-}
 
 static __always_inline
 __u16 udp4_checksum(struct iphdr *ip, struct udphdr *udp, void *data_end)

@@ -145,6 +145,12 @@ ipip
 //#define memcmp(d, s, n) __builtin_memcmp((d), (s), (n))
 //#define memcmp(d, s, n) (1)
 
+const __u8 F_CALCULATE_CHECKSUM = 1;
+
+#include "vlan.h"
+#include "new.h"
+
+
 #define VERSION 1
 #define SECOND_NS 1000000000l
 
@@ -159,8 +165,6 @@ const __u8 F_LAYER3_GRE  = 2;
 const __u8 F_LAYER3_GUE  = 3;
 const __u8 F_LAYER3_IPIP = 4;
 
-const __u8 F_CALCULATE_CHECKSUM = 1;
-
 enum lookup_result {
 		    NOT_FOUND = 0,
 		    NOT_A_VIP,
@@ -170,9 +174,6 @@ enum lookup_result {
 		    LAYER3_IPIP,
 		    LAYER3_GUE,
 };
-
-#include "vlan.h"
-#include "new.h"
 
 const int BUFFLEN = 4096;
 struct {
@@ -219,7 +220,7 @@ struct destination {
     struct addr saddr;
     __u16 sport; // FOU
     __u16 dport; // FOU
-    __u8 h_dest[6]; // MAC of router for L3 or backend for L2
+    __u8 hwaddr[6]; // MAC of router for L3 or backend for L2
     __u16 vlanid;
 };
 
@@ -232,7 +233,7 @@ struct destinations {
     struct addr daddr[256];
     struct addr saddr; // source address to use with tunnels
     struct addr saddr6; // source address to use with tunnels    
-    __u8 h_dest[6];    // router MAC address to send encapsulated packets to
+    __u8 router[6];    // router MAC address to send encapsulated packets to
     __u16 vlanid;      // VLAN ID on which encapsulated packets should be received/sent
     //struct addr icmp; // optional address to send ICMP UNREACH/FRAG from?
     // maybe seperate vlan/mac records if IPv6 is to support L2
@@ -277,21 +278,21 @@ struct {
 //static __always_inline
 int send_l2(struct xdp_md *ctx, struct destination *dest)
 {
-    return redirect_eth(ctx, dest->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
+    return redirect_eth(ctx, dest->hwaddr) < 0 ? XDP_ABORTED : XDP_TX;
     
 }
     
 //static __always_inline
 int send_gue4(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
 {
-    return push_gue4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, protocol, FLAGS) < 0 ?
+    return push_gue4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, protocol, FLAGS) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
 
 //static __always_inline
 int send_gue6(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
 {
-    return push_gue6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, protocol, FLAGS) < 0 ?
+    return push_gue6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, protocol, FLAGS) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
 
@@ -299,14 +300,14 @@ int send_gue6(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
 //static __always_inline
 int send_fou4(struct xdp_md *ctx, struct destination *dest)
 {
-    return push_fou4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, FLAGS) < 0 ?
+    return push_fou4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, FLAGS) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
 
 //static __always_inline
 int send_fou6(struct xdp_md *ctx, struct destination *dest)
 {
-    return push_fou6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, FLAGS) < 0 ?
+    return push_fou6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, FLAGS) < 0 ?
     XDP_ABORTED : XDP_TX;
 }
 
@@ -314,11 +315,11 @@ int send_fou6(struct xdp_md *ctx, struct destination *dest)
 int send_in6(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
 {
     if (is_ipv6) {
-	return push_6in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
+	return push_6in6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
 	    XDP_ABORTED : XDP_TX;
     }
 
-    return push_4in6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
+    return push_4in6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
@@ -327,25 +328,25 @@ int send_in4(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
 {
 
     if (is_ipv6) {
-	return push_6in4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
+	return push_6in4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
 	    XDP_ABORTED : XDP_TX;
     }
     
-    return push_ipip(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
+    return push_ipip(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr) < 0 ?
         XDP_ABORTED : XDP_TX;
 }
 
 //static __always_inline
 int send_gre4(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
 {
-    return push_gre4(ctx, dest->h_dest, dest->saddr.addr4.addr, dest->daddr.addr4.addr, protocol) < 0 ?
+    return push_gre4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, protocol) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 
 //static __always_inline
 int send_gre6(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
 {
-    return push_gre6(ctx, dest->h_dest, dest->saddr.addr6, dest->daddr.addr6, protocol) < 0 ?
+    return push_gre6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, protocol) < 0 ?
 	XDP_ABORTED : XDP_TX;
 }
 static __always_inline
@@ -375,11 +376,20 @@ __u16 l4_hash(struct addr saddr, struct addr daddr, void *l4)
 	h.sport = udp->source;
 	h.dport = udp->dest;
     }
-    return sdbm((unsigned char *)&h, sizeof(h));
+    return sdbm((unsigned char *) &h, sizeof(h));
 }
 
 static __always_inline
 int is_ipv4_addr(struct addr addr) {
+    
+    __u32 *p = (void*) addr.addr4.pad;
+    __u32 n = 0;
+    n += *(p++);
+    n += *(p++);
+    n += *(p++);
+    return n == 0 ? 1 : 0;
+
+    /*
     char *p = addr.addr4.pad;
 
     if (!p[0] && !p[1] && !p[2] && !p[3] &&
@@ -388,11 +398,12 @@ int is_ipv4_addr(struct addr addr) {
 	return 1;
     
     return 0;
+    */
 }
 
 
 static __always_inline
-enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *r) // flags arg?    
+enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *d) // flags arg?    
 {
     // lookup flow in state map?
     
@@ -410,13 +421,13 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     if (!index)
 	return NOT_FOUND;
     
-    r->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
-    r->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
-    r->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
-    memcpy(r->h_dest, service->h_dest, 6); // router MAC for L3 tunnel - may be better in vips    
-    r->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may bebetter in vips
+    d->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
+    d->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
+    d->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
+    memcpy(d->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips    
+    d->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may be better in vips
 
-    r->saddr = is_ipv4_addr(r->daddr) ? service->saddr : service->saddr6;
+    d->saddr = is_ipv4_addr(d->daddr) ? service->saddr : service->saddr6;
     
     __u8 flag = service->flag[index];
 
@@ -424,9 +435,9 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 
     // for layer 2 the destination hwaddr is that of the backend, not a router
     if (F_LAYER2_DSR == flag)
-	memcpy(r->h_dest, service->hwaddr[index], 6);
+	memcpy(d->hwaddr, service->hwaddr[index], 6);
 
-    if (nulmac(r->h_dest))
+    if (nulmac(d->hwaddr))
 	return NOT_FOUND;
     
     switch (flag) {
@@ -591,16 +602,14 @@ int xdp_fwd_func_(struct xdp_md *ctx)
 
     overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
-    /*
-    if (LAYER2_DSR == result) {
-	bpf_printk("HWADDR0  %x\n", dest.h_dest[0]);
-	bpf_printk("HWADDR1  %x\n", dest.h_dest[1]);
-	bpf_printk("HWADDR2  %x\n", dest.h_dest[2]);
-	bpf_printk("HWADDR3  %x\n", dest.h_dest[3]);
-	bpf_printk("HWADDR4  %x\n", dest.h_dest[4]);
-	bpf_printk("HWADDR5  %x\n", dest.h_dest[5]);
+    if (0 && LAYER2_DSR == result) {
+	bpf_printk("HWADDR0  %x\n", dest.hwaddr[0]);
+	bpf_printk("HWADDR1  %x\n", dest.hwaddr[1]);
+	bpf_printk("HWADDR2  %x\n", dest.hwaddr[2]);
+	bpf_printk("HWADDR3  %x\n", dest.hwaddr[3]);
+	bpf_printk("HWADDR4  %x\n", dest.hwaddr[4]);
+	bpf_printk("HWADDR5  %x\n", dest.hwaddr[5]);
     }
-    */
 
     // no default here - handle all cases explicitly
     switch (result) {
@@ -615,7 +624,7 @@ int xdp_fwd_func_(struct xdp_md *ctx)
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
-    // Also check if pckets is too large to encapsulate
+    // Also check if packet is too large to encapsulate
     switch (result) {
     case LAYER3_GRE:
     case LAYER3_FOU:
