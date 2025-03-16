@@ -440,7 +440,7 @@ enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r)
 }
 
 //static __always_inline
-enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *r)
+enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest)
 {
     void *data_end = (void *)(long)ctx->data_end;
 
@@ -467,9 +467,11 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
 
     bpf_printk("IPv6 TCP %d\n", x);
 
+    // FIXME - decrement hop count
+    
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
-    return lookup(saddr, daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
+    return lookup(saddr, daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest);
 }
 
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
@@ -492,6 +494,10 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 static __always_inline
 int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan, struct ip6_hdr *ip6)
 {
+    struct destination dest = {};
+    enum lookup_result result = NOT_A_VIP;
+
+    /*
     void *data_end = (void *)(long)ctx->data_end;
 
     if (ip6 + 1 > data_end)
@@ -516,12 +522,15 @@ int xdp_fwd_func6(struct xdp_md *ctx, struct ethhdr *eth, struct vlan_hdr *vlan,
     int x = bpf_ntohs(tcp->dest);
     
     bpf_printk("IPv6 TCP %d\n", x);
+    
+    result = lookup6(ip6, tcp, &dest);
+    */
 
-    struct destination dest = {};
 
-    enum lookup_result result = lookup6(ip6, tcp, &dest);
-
-    //int mtu = MTU;
+    result = lookup6_(ctx, ip6, &dest);
+    
+    bpf_printk("HERE %d\n", result);
+    
     int overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
     
     switch (result) {
