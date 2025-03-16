@@ -458,13 +458,13 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
 
 
 
-
+/*/
 static __always_inline
-int adjust_head_gre4(struct xdp_md *ctx, struct pointers *p)
+int xxadjust_head_gre4(struct xdp_md *ctx, struct pointers *p)
 {
     return adjust_head(ctx, p, GRE4_OVERHEAD);
 }
-
+*/
 
 
 
