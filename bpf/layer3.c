@@ -441,21 +441,21 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
    return NOT_FOUND;
 }
 
-static __always_inline
-enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r)
-{
-    struct addr saddr = { .addr4.addr = ip->saddr };
-    struct addr daddr = { .addr4.addr = ip->daddr };
-    return lookup(saddr, daddr, l4, ip->protocol, r);
-}
+//static __always_inline
+//enum lookup_result lookup4(struct iphdr *ip, void *l4, struct destination *r)
+//{
+//    struct addr saddr = { .addr4.addr = ip->saddr };
+//    struct addr daddr = { .addr4.addr = ip->daddr };
+//    return lookup(saddr, daddr, l4, ip->protocol, r);
+//}
 
 //static __always_inline
-enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) 
-{
-    struct addr saddr = { .addr6 = ip6->ip6_src };
-    struct addr daddr = { .addr6 = ip6->ip6_dst };
-    return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
-}
+//enum lookup_result lookup6(struct ip6_hdr *ip6, void *l4, struct destination *r) 
+//{
+//    struct addr saddr = { .addr6 = ip6->ip6_src };
+//    struct addr daddr = { .addr6 = ip6->ip6_dst };
+//    return lookup(saddr, daddr, l4, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, r);
+//}
 
 //static __always_inline
 enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest)
@@ -482,12 +482,11 @@ enum lookup_result lookup6_(struct xdp_md *ctx, struct ip6_hdr *ip6, struct dest
 
     if (tcp + 1 > data_end)
         return NOT_FOUND;
-
+    
     int x = bpf_ntohs(tcp->dest);
-
+    
     bpf_printk("IPv6 TCP %d\n", x);
 
-    // FIXME - decrement hop count
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return NOT_FOUND; // FIXME - new enum
 
@@ -507,6 +506,7 @@ enum lookup_result lookup4_(struct xdp_md *ctx, struct iphdr *ip, struct destina
     if (ip + 1 > data_end)
 	return NOT_FOUND;
     
+    struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
     
     if (!bpf_map_lookup_elem(&vips, &daddr))
@@ -537,7 +537,7 @@ enum lookup_result lookup4_(struct xdp_md *ctx, struct iphdr *ip, struct destina
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
     
-    return lookup4(ip, tcp, dest);
+    return lookup(saddr, daddr, tcp, ip->protocol, dest);
 }
 
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
@@ -577,19 +577,11 @@ int xdp_fwd_func(struct xdp_md *ctx)
     //int ingress    = ctx->ingress_ifindex;
     //int octets = data_end - data;
 
-    //struct info *info = bpf_map_lookup_elem(&infos, &ZERO);
-    //if (!info)
-    //return XDP_PASS;
-
     struct ethhdr *eth = data;
-    //__u32 nh_off = sizeof(struct ethhdr);
-    
-    //if (data + nh_off > data_end)
-    //  return XDP_PASS;
     
     if (eth + 1 > data_end)
-        return XDP_PASS;
-
+        return XDP_PASS; // or drop?
+    
     __be16 next_proto = bpf_ntohs(eth->h_proto);
     void *next_header = eth + 1;
     
@@ -617,49 +609,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     default:
 	return XDP_PASS;
     }
-    
-
-    /*
-    struct iphdr *ip = next_header;
-
-    if (ip + 1 > data_end)
-	return XDP_PASS;
-
-    struct addr daddr = { .addr4.addr = ip->daddr };
-    
-    if (!bpf_map_lookup_elem(&vips, &daddr))
-    	return XDP_PASS;
-
-    if (ip->version != 4)
-	return XDP_DROP;
-    
-    if (ip->ihl != 5)
-        return XDP_DROP;
-
-    if (ip->ttl <= 1)
-	return XDP_DROP;
-    
-    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
-    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-        return XDP_DROP;
-    
-    if (ip->protocol != IPPROTO_TCP)
-	return XDP_DROP;
-    
-    struct tcphdr *tcp = (void *)(ip + 1);
-
-    if (tcp + 1 > data_end)
-      return XDP_DROP;
-    
-
-      // We're going to forward the packet, so we should decrement the time to live
-    ip_decrease_ttl(ip);    
-    
-    result = lookup4(ip, tcp, &dest);
-*/
-    goto send;
-
- send:
 
     overhead = is_ipv4_addr(dest.daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
