@@ -584,7 +584,7 @@ int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, str
 static __always_inline
 int push_xin6_(struct xdp_md *ctx, struct pointers *p, unsigned char *router, struct in6_addr *saddr, struct in6_addr *daddr, __u8 protocol, unsigned int overhead)
 {
-    if (nul6(&saddr) || nul6(&daddr))
+    if (nul6(saddr) || nul6(daddr))
     	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
@@ -606,7 +606,7 @@ int push_xin6_(struct xdp_md *ctx, struct pointers *p, unsigned char *router, st
     
     // Update the outer IP header to send to the FOU target
     int payload_len = overhead + orig_len;
-    new_ip6hdr(new, payload_len, protocol, saddr, daddr);
+    new_ip6hdr_(new, payload_len, protocol, saddr, daddr);
 
     if (!nulmac(router)) {
 	// If a router is explicitly indicated then direct the frame there

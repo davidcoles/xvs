@@ -219,6 +219,7 @@ struct addr {
     union {
         struct addr4 addr4;
         struct in6_addr addr6;
+	__u8 ptr[16];
     };
 };
 
