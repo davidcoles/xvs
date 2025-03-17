@@ -403,8 +403,11 @@ static __always_inline
 int send_gre4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u16 protocol)
 {
     //return push_gre4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, protocol) < 0 ?
-    return push_gre4(ctx, dest->hwaddr, t, protocol) < 0 ?	
-	XDP_ABORTED : XDP_TX;
+
+    if (is_addr4(&(t->daddr)))
+	return push_gre4(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+
+    return XDP_ABORTED;
 }
 /*
 //static __always_inline
@@ -808,7 +811,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 	break;
     }
     
-    if (is_ipv4_addr(dest->daddr)) {
+    //if (is_ipv4_addr(dest->daddr)) {
 	switch (result) {
 	case LAYER3_FOU:  return send_fou4(ctx, dest, t);
 	case LAYER3_IPIP: return send_in4(ctx, dest, t, is_ipv6);
@@ -817,16 +820,16 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 	default:
 	    break;
 	}
-    } else {
-	switch(result) {
+	//} else {
+	//	switch(result) {
 	    //case LAYER3_FOU:  return send_fou6(ctx, dest);
 	    //case LAYER3_IPIP: return send_in6(ctx, &dest, is_ipv6);
 	    //case LAYER3_GRE:  return send_gre6(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	    //case LAYER3_GUE:  return send_gue6(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
-	default:
-	    break;
+	//default:
+	//   break;
 	}
-    }
+// }
     
     return XDP_DROP; 
 }
