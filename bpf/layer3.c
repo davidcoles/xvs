@@ -351,15 +351,16 @@ int send_l2(struct xdp_md *ctx, struct destination *dest)
 {
     return redirect_eth(ctx, dest->hwaddr) < 0 ? XDP_ABORTED : XDP_TX;
 }
-
+*/
 //static __always_inline
-int send_gue4(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
+int send_gue4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u8 protocol)
 {
+    //bpf_printk("GUE4\n");
     //return push_gue4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, protocol, FLAGS) < 0 ?
-    return push_gue4_(ctx, dest->hwaddr, dest, protocol, FLAGS) < 0 ?	
+    return push_gue4_(ctx, dest->hwaddr, t, protocol) < 0 ?	
 	XDP_ABORTED : XDP_TX;
 }
-
+/*
 //static __always_inline
 int send_gue6(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
 {
@@ -574,7 +575,7 @@ enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d
     t->daddr = d->daddr;
     t->sport = d->sport;
     t->dport = d->dport;
-
+    t->noencap = 1;
     
     __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
 
@@ -591,8 +592,6 @@ enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d
     //if (F_LAYER2_DSR == flag)
     if (F_LAYER2_DSR == type)	
 	memcpy(d->hwaddr, service->hwaddr[index], 6);
-
-
     
     if (nulmac(d->hwaddr))
 	return NOT_FOUND;
@@ -816,7 +815,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 	case LAYER3_FOU:  return send_fou4(ctx, dest, t);
 	    //case LAYER3_IPIP: return send_in4(ctx, &dest, is_ipv6);
 	    //case LAYER3_GRE:  return send_gre4(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
-	    //case LAYER3_GUE:  return send_gue4(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+	case LAYER3_GUE:  return send_gue4(ctx, dest, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
 	default:
 	    break;
 	}
@@ -853,9 +852,9 @@ void update(fourtuple_t *key)
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
-    //__u64 start = bpf_ktime_get_ns();
-    //    __u32 took = 0;
-
+    __u64 start = bpf_ktime_get_ns();
+     __u32 took = 0;
+     
     struct destination dest = {};
     fourtuple_t ft = {};
     tunnel_t t = {};
@@ -870,10 +869,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_PASS: return XDP_PASS;
     case XDP_DROP: return XDP_DROP;
     case XDP_TX:
-	//took = bpf_ktime_get_ns() - start;
+	took = bpf_ktime_get_ns() - start;
 	//int ack = dest.flags.ack ? 1 : 0;	
 	//int syn = dest.flags.syn ? 1 : 0;	
-	//bpf_printk("TOOK: %d %d %d\n", took, ack, syn);
+	bpf_printk("TOOK: %d\n", took);
 	bpf_printk("FT %d %d\n", ft.sport, ft.dport);
 	update(&ft);
 	return XDP_TX;

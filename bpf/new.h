@@ -739,7 +739,7 @@ int push_fou4_(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
     udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
     udp->check = 0;
     
-    if (!t->noencap)
+    if (! t->noencap)
 	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
 
     return 0;
@@ -822,12 +822,12 @@ int push_gue6(struct xdp_md *ctx, unsigned char *router, struct in6_addr saddr, 
 
 */
 /**********************************************************************/
-/*
+
 static __always_inline
-int push_gue4_(struct xdp_md *ctx, unsigned char *router, struct destination *d, __u8 protocol, __u8 flags)
+int push_gue4_(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
-    int orig_len = push_xin4(ctx, &p, router, d->saddr.addr4.addr, d->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
+    int orig_len = push_xin4(ctx, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
 
     if (orig_len < 0)
 	return -1;
@@ -837,8 +837,8 @@ int push_gue4_(struct xdp_md *ctx, unsigned char *router, struct destination *d,
     if (udp + 1 > (void *)(long)ctx->data_end)
         return -1;
 
-    udp->source = bpf_htons(d->sport);
-    udp->dest = bpf_htons(d->dport);
+    udp->source = bpf_htons(t->sport);
+    udp->dest = bpf_htons(t->dport);
     udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
     udp->check = 0;
 
@@ -853,9 +853,8 @@ int push_gue4_(struct xdp_md *ctx, unsigned char *router, struct destination *d,
     
     gue->protocol = protocol;
     
-    if (flags & F_CALCULATE_CHECKSUM)
+    if (! t->noencap)
 	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
 
     return 0;
 }
-*/
