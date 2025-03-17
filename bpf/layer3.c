@@ -438,7 +438,7 @@ int is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
-static __always_inline
+//static __always_inline
 int lookupy(fourtuple_t *ft, __u8 protocol)
 {
     struct flow *flow = bpf_map_lookup_elem(&flows, ft);
