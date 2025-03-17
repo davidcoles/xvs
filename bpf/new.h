@@ -720,6 +720,31 @@ int push_fou4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 da
     return 0;
 }
 
+static __always_inline
+int push_fou4_(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
+{
+    struct pointers p = {};
+    int orig_len = push_xin4(ctx, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr));
+
+    if (orig_len < 0)
+	return -1;
+
+    struct udphdr *udp = (void *) (p.ip + 1);
+
+    if (udp + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    udp->source = bpf_htons(t->sport);
+    udp->dest = bpf_htons(t->dport);
+    udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
+    udp->check = 0;
+    
+    if (!t->noencap)
+	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+
+    return 0;
+}
+
 /*
 static __always_inline
 int push_gue4(struct xdp_md *ctx, unsigned char *router, __be32 saddr, __be32 daddr, __u16 sport, __u16 dport, __u8 protocol, __u8 flags)

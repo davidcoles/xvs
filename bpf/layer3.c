@@ -237,8 +237,8 @@ struct tunnel {
     addr_t daddr;
     __be16 sport;
     __be16 dport;
-    //__u16 noencap : 1;
-    //__u16 type : 3;    
+    __u16 noencap : 1;
+    __u16 type : 3;    
 };
 typedef struct tunnel tunnel_t;
 
@@ -330,15 +330,16 @@ struct {
 #define xFLAGS 0
 
 //static __always_inline
-int send_fou4(struct xdp_md *ctx, struct destination *dest)
+int send_fou4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t)
 {
-    return push_fou4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, FLAGS) < 0 ?
+    //return push_fou4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, FLAGS) < 0 ?
+    return push_fou4_(ctx, dest->hwaddr, t) < 0 ?	
 	XDP_ABORTED : XDP_TX;
 
 }
 
 //static __always_inline
-int send_fou6(struct xdp_md *ctx, struct destination *dest)
+int send_fou6(struct xdp_md *ctx, struct destination *dest, tunnel_t *t)
 {
     return push_fou6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, FLAGS) < 0 ?
 	XDP_ABORTED : XDP_TX;
@@ -723,7 +724,7 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 //SEC("XDP")
 static __always_inline
-int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple *ft)    
+int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple *ft, tunnel_t *t)    
 {
 
     //int mtu = MTU;
@@ -757,15 +758,13 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 	next_header = vlan + 1;
     }
 
-    tunnel_t t;
-    
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
-	result = lookup6(ctx, next_header, dest, ft, &t);
+	result = lookup6(ctx, next_header, dest, ft, t);
 	break;
     case bpf_htons(ETH_P_IP):
-	result = lookup4(ctx, next_header, dest, ft, &t);
+	result = lookup4(ctx, next_header, dest, ft, t);
 	break;
     default:
 	return XDP_PASS;
@@ -814,7 +813,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     
     if (is_ipv4_addr(dest->daddr)) {
 	switch (result) {
-	    case LAYER3_FOU:  return send_fou4(ctx, dest);
+	case LAYER3_FOU:  return send_fou4(ctx, dest, t);
 	    //case LAYER3_IPIP: return send_in4(ctx, &dest, is_ipv6);
 	    //case LAYER3_GRE:  return send_gre4(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	    //case LAYER3_GUE:  return send_gue4(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
@@ -858,9 +857,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
     //    __u32 took = 0;
 
     struct destination dest = {};
-    struct fourtuple ft = {};
+    fourtuple_t ft = {};
+    tunnel_t t = {};
     
-    int action = xdp_fwd_func_(ctx, &dest, &ft);
+    int action = xdp_fwd_func_(ctx, &dest, &ft, &t);
 
     //if (dest.flags.syn)	update(dest.sport, dest.dport);
     //update(dest.client, dest.vip, dest.sport, dest.dport);    
