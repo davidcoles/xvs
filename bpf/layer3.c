@@ -237,7 +237,7 @@ struct tunnel {
     addr_t daddr;
     __be16 sport;
     __be16 dport;
-    __u16 noencap : 1;
+    __u16 nochecksum : 1;
     __u16 type : 3;    
 };
 typedef struct tunnel tunnel_t;
@@ -333,91 +333,59 @@ int is_addr4(struct addr *a) {
     return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
 }
 
-
-//static __always_inline
-int send_fou4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t)
-{
-    //return push_fou4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, dest->sport, dest->dport, FLAGS) < 0 ?
-
-    if (is_addr4(&(t->daddr)))
-	return push_fou4_(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_fou6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;    
-
-}
-/*
-//static __always_inline
-int send_fou6(struct xdp_md *ctx, struct destination *dest, tunnel_t *t)
-{
-    return push_fou6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, FLAGS) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-
-//static __always_inline
+static __always_inline
 int send_l2(struct xdp_md *ctx, struct destination *dest)
 {
     return redirect_eth(ctx, dest->hwaddr) < 0 ? XDP_ABORTED : XDP_TX;
 }
-*/
-//static __always_inline
-int send_gue4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u8 protocol)
+
+static __always_inline
+int send_fou(struct xdp_md *ctx, struct destination *dest, tunnel_t *t)
 {
     if (is_addr4(&(t->daddr)))
-	return push_gue4_(ctx, dest->hwaddr, t, protocol) < 0 ?	XDP_ABORTED : XDP_TX;
-
-    return XDP_ABORTED;
-}
-/*
-//static __always_inline
-int send_gue6(struct xdp_md *ctx, struct destination *dest, __u8 protocol)
-{
-    return push_gue6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, dest->sport, dest->dport, protocol, FLAGS) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-
-
-
-//static __always_inline
-int send_in6(struct xdp_md *ctx, struct destination *dest, int is_ipv6)
-{
-    if (is_ipv6) {
-	return push_6in6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6) < 0 ?	
-	    XDP_ABORTED : XDP_TX;
-    }
+	return push_fou4(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_4in6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6) < 0 ?
-	XDP_ABORTED : XDP_TX;
+    return push_fou6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;    
 }
-*/
-//static __always_inline
+
+static __always_inline
+int send_gue(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u8 protocol)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_gue4(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    
+    return push_gue6(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
 int send_in4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, int is_ipv6)
 {
-    if (is_addr4(&(t->daddr)))
+
+    if (is_addr4(&(t->daddr))) {
+	
+	if (is_ipv6)
+	    return push_6in4(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	
 	return push_ipip(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_6in4(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+    }
+
+    if (is_ipv6)
+	return push_6in6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	
+    return push_4in6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 
 static __always_inline
-int send_gre4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u16 protocol)
+int send_gre(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u16 protocol)
 {
-    //return push_gre4(ctx, dest->hwaddr, dest->saddr.addr4.addr, dest->daddr.addr4.addr, protocol) < 0 ?
-
     if (is_addr4(&(t->daddr)))
 	return push_gre4(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
-
+    
+    return push_gre6(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    
     return XDP_ABORTED;
 }
-/*
-//static __always_inline
-int send_gre6(struct xdp_md *ctx, struct destination *dest, __u16 protocol)
-{
-    return push_gre6(ctx, dest->hwaddr, dest->saddr.addr6, dest->daddr.addr6, protocol) < 0 ?
-	XDP_ABORTED : XDP_TX;
-}
-
-*/
 
 //static __always_inline
 int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
@@ -470,92 +438,7 @@ int is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
-
-/*
 static __always_inline
-enum lookup_result lookup(struct addr *saddr, struct addr *daddr, void *l4, __u8 protocol, struct destination *d, tunnel_t *t) // flags arg?    
-{
-    // lookup flow in state map?
-
-    // will be needed to record flow
-    //d->client = saddr;
-    //d->vip = daddr;
-    //d->cport = ((struct udphdr *) l4)->source;
-    //d->vport = ((struct udphdr *) l4)->dest;
-
-    
-    struct servicekey key = { .addr = *daddr, .port = bpf_ntohs(((struct udphdr *) l4)->dest), .proto = protocol };
-    struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
-
-    if (!service)
-	return NOT_FOUND;
-    
-    __u8 sticky = service->flag[0] & F_STICKY;
-    __u16 hash3 = l4_hash(saddr, daddr, NULL);
-    __u16 hash4 = l4_hash(saddr, daddr, l4);
-    __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
-
-    if (!index)
-	return NOT_FOUND;
-
-    d->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
-    d->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
-    d->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
-    memcpy(d->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips    
-    d->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may be better in vips
-
-    d->saddr = is_ipv4_addr(d->daddr) ? service->saddr : service->saddr6;
-
-    t->saddr = d->saddr;
-    t->daddr = d->daddr;
-    t->sport = d->sport;
-    t->dport = d->dport;
-
-    
-    __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
-
-    struct myflags flags = {};
-
-    
-    flags.new = 1;
-
-    if (protocol == IPPROTO_TCP) {
-	flags.tcp = 1;
-	
-	struct tcphdr *tcp = l4;
-
-	flags.syn = tcp->syn;
-	flags.fin = tcp->fin;
-	flags.rst = tcp->rst;
-	flags.ack = tcp->ack;
-    }
-	
-    d->flags = flags;
-    
-    // store flow? - maybe better to mark as new flow and allow a later stage to do this
-
-    // for layer 2 the destination hwaddr is that of the backend, not a router
-    //if (F_LAYER2_DSR == flag)
-    if (F_LAYER2_DSR == type)	
-	memcpy(d->hwaddr, service->hwaddr[index], 6);
-
-
-    
-    if (nulmac(d->hwaddr))
-	return NOT_FOUND;
-    
-    switch (type) {
-    case F_LAYER3_FOU:  return LAYER3_FOU;
-    case F_LAYER3_GRE:  return LAYER3_GRE;
-    case F_LAYER3_IPIP: return LAYER3_IPIP;
-    case F_LAYER3_GUE:  return LAYER3_GUE;
-    case F_LAYER2_DSR:  return LAYER2_DSR;
-    }
-    
-   return NOT_FOUND;
-}
-*/
-//static __always_inline
 enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d, tunnel_t *t) // flags arg?    
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
@@ -584,7 +467,7 @@ enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d
     t->daddr = d->daddr;
     t->sport = d->sport;
     t->dport = d->dport;
-    t->noencap = 1;
+    t->nochecksum = 1;
     
     __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
 
@@ -764,9 +647,11 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
 	result = lookup6(ctx, next_header, dest, ft, t);
+	overhead = sizeof(struct ip6_hdr);
 	break;
     case bpf_htons(ETH_P_IP):
 	result = lookup4(ctx, next_header, dest, ft, t);
+	overhead = sizeof(struct iphdr);	
 	break;
     default:
 	return XDP_PASS;
@@ -776,7 +661,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 
     // no default here - handle all cases explicitly
     switch (result) {
-    case LAYER2_DSR: break;//return send_l2(ctx, &dest);
+    case LAYER2_DSR: return send_l2(ctx, dest);
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
@@ -789,13 +674,13 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
     // Also check if packet is too large to encapsulate
     switch (result) {
-    case LAYER3_GRE:
-    case LAYER3_FOU:
-    case LAYER3_GUE:
+    case LAYER3_GRE: // fallthough
+    case LAYER3_FOU: // fallthough
+    case LAYER3_GUE: // fallthough
     case LAYER3_IPIP:
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest->vlanid) < 0)
             return XDP_DROP;
-
+	
 	if ((data_end - next_header) + overhead > mtu) {
 	    if (is_ipv6) {
 		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
@@ -811,26 +696,14 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 	break;
     }
     
-    //if (is_ipv4_addr(dest->daddr)) {
-	switch (result) {
-	case LAYER3_FOU:  return send_fou4(ctx, dest, t);
-	case LAYER3_IPIP: return send_in4(ctx, dest, t, is_ipv6);
-	case LAYER3_GRE:  return send_gre4(ctx, dest, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
-	case LAYER3_GUE:  return send_gue4(ctx, dest, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
-	default:
-	    break;
-	}
-	//} else {
-	//	switch(result) {
-	    //case LAYER3_FOU:  return send_fou6(ctx, dest);
-	    //case LAYER3_IPIP: return send_in6(ctx, &dest, is_ipv6);
-	    //case LAYER3_GRE:  return send_gre6(ctx, &dest, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
-	    //case LAYER3_GUE:  return send_gue6(ctx, &dest, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
-	//default:
-	//   break;
-	}
-// }
-    
+    switch (result) {
+    case LAYER3_FOU:  return send_fou(ctx, dest, t);
+    case LAYER3_IPIP: return send_in4(ctx, dest, t, is_ipv6);
+    case LAYER3_GRE:  return send_gre(ctx, dest, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
+    case LAYER3_GUE:  return send_gue(ctx, dest, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+    default:
+	break;
+    }
     return XDP_DROP; 
 }
 
