@@ -28,6 +28,22 @@ bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
 ip a add 192.168.101.201 dev lo
 ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
 
+* check VIP against know list
+* lookup flow in state table first
+* if not there then try shared flow table
+* if not found then lookup backend server/tunnel info
+* modify packet
+* if required then store new/updated flow record in state table
+* push to userland queue if necessary
+* update stats
+* TX/redirect_map packet as indicated in dest record
+
+# TODO
+* IPv6 ICMP - frag needed
+* ICMP replies
+* flow table
+* healthchecks
+
 **********************************************************************
 
 # can use same port for IP and IPV6 in GOU as there is a protocol field
@@ -390,46 +406,20 @@ int send_gre(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u16 pr
 //static __always_inline
 int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
-    /*
-    __u8 *buffer = NULL;
-    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
-	return XDP_ABORTED;
-     
-    return (frag_needed(ctx, saddr, mtu, buffer) < 0) ? XDP_ABORTED : XDP_TX;
-    */
-
-    
     // should probably rate limit sending frag_needed - calculating checksum is slow
     // could have a token queue refilled from userspace every second?
     return (frag_needed4(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
 }
 
-/*
-static __always_inline
-__u16 l4_hash(struct addr *saddr, struct addr *daddr, void *l4)
-{
-    // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
-    struct udphdr *udp = (struct udphdr *) l4;
-    struct {
-	struct addr src;
-	struct addr dst;
-	__be16 sport;
-	__be16 dport;
-    } h = { .src = *saddr, .dst = *daddr};
-    if (udp) {
-	h.sport = udp->source;
-	h.dport = udp->dest;
-    }
-    return sdbm((unsigned char *) &h, sizeof(h));
-}
-*/
 //static __always_inline
-__u16 l4_hash_(fourtuple_t *ft, int sticky)
+__u16 l3_hash(fourtuple_t *ft)
 {
-    // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
-    if (sticky)
-	return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
-	
+    return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
+}
+
+//static __always_inline
+__u16 l4_hash(fourtuple_t *ft)
+{
     return sdbm((unsigned char *) ft, sizeof(fourtuple_t));
 }
 
@@ -439,28 +429,33 @@ int is_ipv4_addr(struct addr a) {
 }
 
 //static __always_inline
-int lookupy(fourtuple_t *ft, __u8 protocol)
+int lookup_flow(fourtuple_t *ft, __u8 protocol)
 {
     struct flow *flow = bpf_map_lookup_elem(&flows, ft);
 
-    if (!flow)
-	return -1;
+    if (flow)
+	return 1;
     
     return 0;
 }
 
 static __always_inline
-enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d, tunnel_t *t) // flags arg?    
+enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d, tunnel_t *t)
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
+    if (IPPROTO_TCP == protocol) {
+	// lookup in flow table
+    }
+
+    
     if (!service)
 	return NOT_FOUND;
     
     __u8 sticky = service->flag[0] & F_STICKY;
-    __u16 hash3 = l4_hash_(ft, 1);
-    __u16 hash4 = l4_hash_(ft, 0);
+    __u16 hash3 = l3_hash(ft);
+    __u16 hash4 = l4_hash(ft);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
@@ -746,9 +741,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     
     int action = xdp_fwd_func_(ctx, &dest, &ft, &t);
 
-    //if (dest.flags.syn)	update(dest.sport, dest.dport);
-    //update(dest.client, dest.vip, dest.sport, dest.dport);    
-    
     // handle stats here
     switch (action) {
     case XDP_PASS: return XDP_PASS;

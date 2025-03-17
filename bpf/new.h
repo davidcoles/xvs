@@ -205,24 +205,24 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
     if (preserve_headers(ctx, p) < 0)
 	return -1;
 
-    /* if DF is not set then drop */
+    // if DF is not set then drop
     if (!IS_DF(p->ip->frag_off))
 	return -1;
     
     int iplen = data_end - (void *)(p->ip);
 
-    /* if a packet was smaller than "max" bytes then it should not have been too big - drop */
+    // if a packet was smaller than "max" bytes then it should not have been too big - drop
     if (iplen < max)
       return -1;
     
     // DELIBERATE BREAKAGE
     p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
     
-    /* truncate the packet if > max bytes (it could of course be exactly max bytes) */
+    // truncate the packet if > max bytes (it could of course be exactly max bytes)
     if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))
 	return -1;
     
-    /* extend header - extra ip and icmp needed*/
+    // extend header - extra ip and icmp needed
     if (bpf_xdp_adjust_head(ctx, 0 - (int)(sizeof(struct iphdr) + sizeof(struct icmphdr))))	
 	return -1;
 
@@ -439,23 +439,6 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
     ip->ip6_dst = daddr;
 }
 
-/*
-static __always_inline
-void new_ip6hdr_(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6_addr *saddr, struct in6_addr *daddr)
-{
-    struct ip6_hdr i = {};
-    *ip = i;
-    
-    ip->ip6_ctlun.ip6_un2_vfc = 0x6 << 4; // empty TC and flow label for now
-    ip->ip6_ctlun.ip6_un1.ip6_un1_plen =  bpf_htons(payload_len);
-    ip->ip6_ctlun.ip6_un1.ip6_un1_nxt = protocol;
-    ip->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64;
-    
-    ip->ip6_src = *saddr;
-    ip->ip6_dst = *daddr;
-}
-*/
-
 static __always_inline
 int push_xin4(struct xdp_md *ctx, struct pointers *p, unsigned char *router, __be32 saddr, __be32 daddr, __u8 protocol, int overhead)
 {
@@ -581,52 +564,6 @@ int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, str
     return orig_len;
 }
 
-/*
-static __always_inline
-int push_xin6_(struct xdp_md *ctx, struct pointers *p, unsigned char *router, struct in6_addr *saddr, struct in6_addr *daddr, __u8 protocol, unsigned int overhead)
-{
-    if (nul6(saddr) || nul6(daddr))
-    	return -1;
-    
-    // adjust the packet to add the FOU header - pointers to new header fields will be in p
-    int orig_len = adjust_head(ctx, p, sizeof(struct ip6_hdr) + overhead);
-    
-    if (orig_len < 0)
-	return -1;
-
-    if (p->vlan) {
-	p->vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IPV6);
-    } else {
-	p->eth->h_proto = bpf_htons(ETH_P_IPV6);
-    }
-
-    struct ip6_hdr *new = (void *) p->ip;
-    
-    if (new + 1 > (void *)(long)ctx->data_end)
-        return -1;
-    
-    // Update the outer IP header to send to the FOU target
-    int payload_len = overhead + orig_len;
-    new_ip6hdr_(new, payload_len, protocol, saddr, daddr);
-
-    if (!nulmac(router)) {
-	// If a router is explicitly indicated then direct the frame there
-	memcpy(p->eth->h_source, p->eth->h_dest, 6);
-	memcpy(p->eth->h_dest, router, 6);
-    } else {
-	// Otherwise return it to the device that it came from
-	reverse_ethhdr(p->eth);
-    }
-
-    // some final sanity checks on ethernet addresses
-    if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
-	return -1;
-
-    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
-    return orig_len;
-}
-*/
-
 
 //static __always_inline
 int push_6in6(struct xdp_md *ctx, char *router, tunnel_t *t)
@@ -664,28 +601,6 @@ int push_gre6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 prot
     
     return 0;
 }
-
-
-/*
-static __always_inline
-int push_gre6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 protocol)
-{
-    struct pointers p = {};
-
-    if (push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)
-	return -1;
-
-    struct gre_hdr *gre = (void *) (p.ip + 1);
-
-    if (gre + 1 > (void *)(long)ctx->data_end)
-        return -1;
-    
-    gre->crv = 0;
-    gre->protocol = bpf_htons(protocol);
-
-    return 0;
-}
-*/
 
 //static __always_inline
 int push_fou6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
