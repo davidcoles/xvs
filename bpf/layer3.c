@@ -222,6 +222,8 @@ struct addr {
     };
 };
 
+typedef struct addr addr_t;
+
 struct fourtuple {
     struct addr saddr;
     struct addr daddr;
@@ -230,20 +232,23 @@ struct fourtuple {
 };
 typedef struct fourtuple fourtuple_t;
 
+struct tunnel {
+    addr_t saddr;
+    addr_t daddr;
+    __be16 sport;
+    __be16 dport;
+    //__u16 noencap : 1;
+    //__u16 type : 3;    
+};
+typedef struct tunnel tunnel_t;
+
 struct servicekey {
-    struct addr addr;    
+    struct addr addr;
     __be16 port;
     __u16 proto;
 };
 
 struct destination {
-    //struct addr vip;
-    //struct addr client;
-    //__u16 cport; // client src port
-    //__u16 vport; // vip dst port
-
-    //struct fourtuple ft;
-    
     struct addr daddr;
     struct addr saddr;
     __u16 sport; // FOU / GUE
@@ -251,6 +256,7 @@ struct destination {
     __u8 hwaddr[6]; // MAC of router for L3 or backend for L2
     __u16 vlanid;
     struct myflags flags;
+    tunnel_t tunnel;
 };
 
 #include "new.h"
@@ -420,8 +426,9 @@ int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     return (frag_needed4(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
 }
 
+/*
 static __always_inline
-__u16 l4_hash(struct addr saddr, struct addr daddr, void *l4)
+__u16 l4_hash(struct addr *saddr, struct addr *daddr, void *l4)
 {
     // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
     struct udphdr *udp = (struct udphdr *) l4;
@@ -430,12 +437,22 @@ __u16 l4_hash(struct addr saddr, struct addr daddr, void *l4)
 	struct addr dst;
 	__be16 sport;
 	__be16 dport;
-    } h = { .src = saddr, .dst = daddr};
+    } h = { .src = *saddr, .dst = *daddr};
     if (udp) {
 	h.sport = udp->source;
 	h.dport = udp->dest;
     }
     return sdbm((unsigned char *) &h, sizeof(h));
+}
+*/
+//static __always_inline
+__u16 l4_hash_(fourtuple_t *ft, int sticky)
+{
+    // UDP, TCP and SCTP all have src and dst port in 1st 32 bits, so use shortest type (UDP)
+    if (sticky)
+	return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
+	
+    return sdbm((unsigned char *) ft, sizeof(fourtuple_t));
 }
 
 static __always_inline
@@ -443,9 +460,9 @@ int is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
-
+/*
 static __always_inline
-enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 protocol, struct destination *d) // flags arg?    
+enum lookup_result lookup(struct addr *saddr, struct addr *daddr, void *l4, __u8 protocol, struct destination *d, tunnel_t *t) // flags arg?    
 {
     // lookup flow in state map?
 
@@ -456,7 +473,7 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     //d->vport = ((struct udphdr *) l4)->dest;
 
     
-    struct servicekey key = { .addr = daddr, .port = bpf_ntohs(((struct udphdr *) l4)->dest), .proto = protocol };
+    struct servicekey key = { .addr = *daddr, .port = bpf_ntohs(((struct udphdr *) l4)->dest), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (!service)
@@ -469,7 +486,7 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 
     if (!index)
 	return NOT_FOUND;
-    
+
     d->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
     d->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
     d->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
@@ -478,12 +495,16 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
 
     d->saddr = is_ipv4_addr(d->daddr) ? service->saddr : service->saddr6;
 
+    t->saddr = d->saddr;
+    t->daddr = d->daddr;
+    t->sport = d->sport;
+    t->dport = d->dport;
 
     
     __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
 
     struct myflags flags = {};
-    
+
     
     flags.new = 1;
 
@@ -522,9 +543,72 @@ enum lookup_result lookup(struct addr saddr, struct addr daddr, void *l4, __u8 p
     
    return NOT_FOUND;
 }
+*/
+//static __always_inline
+enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d, tunnel_t *t) // flags arg?    
+{
+    struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
+    struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
+
+    if (!service)
+	return NOT_FOUND;
+    
+    __u8 sticky = service->flag[0] & F_STICKY;
+    __u16 hash3 = l4_hash_(ft, 1);
+    __u16 hash4 = l4_hash_(ft, 0);
+    __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
+
+    if (!index)
+	return NOT_FOUND;
+
+    d->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
+    d->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
+    d->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
+    memcpy(d->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips    
+    d->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may be better in vips
+
+    d->saddr = is_ipv4_addr(d->daddr) ? service->saddr : service->saddr6;
+
+    t->saddr = d->saddr;
+    t->daddr = d->daddr;
+    t->sport = d->sport;
+    t->dport = d->dport;
+
+    
+    __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
+
+    struct myflags flags = {};
+
+    
+    flags.new = 1;
+
+    d->flags = flags;
+    
+    // store flow? - maybe better to mark as new flow and allow a later stage to do this
+
+    // for layer 2 the destination hwaddr is that of the backend, not a router
+    //if (F_LAYER2_DSR == flag)
+    if (F_LAYER2_DSR == type)	
+	memcpy(d->hwaddr, service->hwaddr[index], 6);
+
+
+    
+    if (nulmac(d->hwaddr))
+	return NOT_FOUND;
+    
+    switch (type) {
+    case F_LAYER3_FOU:  return LAYER3_FOU;
+    case F_LAYER3_GRE:  return LAYER3_GRE;
+    case F_LAYER3_IPIP: return LAYER3_IPIP;
+    case F_LAYER3_GUE:  return LAYER3_GUE;
+    case F_LAYER2_DSR:  return LAYER2_DSR;
+    }
+    
+   return NOT_FOUND;
+}
 
 //static __always_inline
-enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest, fourtuple_t *ft)
+enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
 
@@ -567,11 +651,12 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, struct desti
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
-    return lookup(saddr, daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest);
+    //return lookup(&saddr, &daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest, t);
+    return lookupx(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest, t);
 }
 
 //static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, struct destination *dest, fourtuple_t *ft)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, struct destination *dest, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
     
@@ -614,7 +699,8 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, struct destinat
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
     
-    return lookup(saddr, daddr, tcp, ip->protocol, dest);
+    //return lookup(&saddr, &daddr, tcp, ip->protocol, dest, t);
+    return lookupx(ft, ip->protocol, dest, t);
 }
 
 //static __always_inline
@@ -634,18 +720,6 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 }
 
 
-//static __always_inline
-void update(__u16 sport, __u16 dport)
-{
-    //struct fourtuple key = { .saddr = client, .daddr = vip, .sport = sport, .dport = dport };
-    struct fourtuple key = { .sport = sport, .dport = dport };
-    struct flow val = {};
-    
-    bpf_map_update_elem(&flows, &key, &val, BPF_ANY);
-
-    //bpf_printk("FOO %d\n", ret);
-}
-
 
 //SEC("XDP")
 static __always_inline
@@ -662,8 +736,6 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     //int ingress    = ctx->ingress_ifindex;
     //int octets = data_end - data;
 
-    update(0, 0);
-    
     struct ethhdr *eth = data;
     
     if (eth + 1 > data_end)
@@ -685,13 +757,15 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 	next_header = vlan + 1;
     }
 
+    tunnel_t t;
+    
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
-	result = lookup6(ctx, next_header, dest, ft);
+	result = lookup6(ctx, next_header, dest, ft, &t);
 	break;
     case bpf_htons(ETH_P_IP):
-	result = lookup4(ctx, next_header, dest, ft);
+	result = lookup4(ctx, next_header, dest, ft, &t);
 	break;
     default:
 	return XDP_PASS;
@@ -761,6 +835,21 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     return XDP_DROP; 
 }
 
+static __always_inline
+void update(fourtuple_t *key)
+{
+    //struct fourtuple key = { .sport = sport, .dport = dport };
+    struct flow val = {};
+    
+    if (bpf_map_update_elem(&flows, key, &val, BPF_ANY)) {
+	bpf_printk("ERR\n");
+    } else {
+	bpf_printk("OK\n");
+    }
+}
+
+
+
 
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
@@ -786,6 +875,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	//int syn = dest.flags.syn ? 1 : 0;	
 	//bpf_printk("TOOK: %d %d %d\n", took, ack, syn);
 	bpf_printk("FT %d %d\n", ft.sport, ft.dport);
+	update(&ft);
 	return XDP_TX;
     case XDP_ABORTED: return XDP_ABORTED;
     }
