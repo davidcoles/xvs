@@ -439,6 +439,17 @@ int is_ipv4_addr(struct addr a) {
 }
 
 static __always_inline
+int lookupy(fourtuple_t *ft, __u8 protocol)
+{
+    struct flow *flow = bpf_map_lookup_elem(&flows, ft);
+
+    if (!flow)
+	return -1;
+    
+    return 0;
+}
+
+static __always_inline
 enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d, tunnel_t *t) // flags arg?    
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
