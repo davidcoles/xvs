@@ -64,6 +64,7 @@ const GRE uint8 = 1
 const GUE uint8 = 2
 const IPIP uint8 = 3
 const LAYER2 uint8 = 4
+const GENEVE uint8 = 5
 
 func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
 
@@ -111,6 +112,16 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
+	ns, err := nat3(x, "inside", "outside")
+
+	if err != nil {
+		return err
+	}
+
+	ns.test()
+
+	/**********************************************************************/
+
 	redirect_map.UpdateElem(uP(&vlanid), uP(&nic), xdp.BPF_ANY)
 
 	//infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
@@ -120,6 +131,7 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	const F_LAYER3_GRE uint8 = 2   // IPv6 host with FOU tunnel
 	const F_LAYER3_GUE uint8 = 3   // IPv4 host with IP-in-IP tunnel
 	const F_LAYER3_IPIP4 uint8 = 4 // IPv4 host with IP-in-IP tunnel
+	const F_LAYER3_GENEVE uint8 = 5
 
 	const F_STICKY uint8 = 0x01
 
@@ -135,6 +147,8 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		tunnel = F_LAYER3_IPIP4
 	case LAYER2:
 		tunnel = F_LAYER2_DSR
+	case GENEVE:
+		tunnel = F_LAYER3_GENEVE
 	}
 
 	hwaddr, _ := arp()

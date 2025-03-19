@@ -128,6 +128,13 @@ sysctl -w net.ipv4.conf.all.rp_filter=0
 
 **********************************************************************
 
+ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
+
+ip link add name geneve0 type geneve id 666 remote 0.0.0.0
+ip l set dev geneve0 up
+sysctl -w net.ipv4.conf.geneve0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
 For a basic FOU4 backend:
 
 /etc/networkd-dispatcher/routable.d/50-ifup-hooks:
@@ -174,11 +181,15 @@ const __u16 MTU = 1500;
 
 const __u8 F_STICKY = 0x01;
 
-const __u8 F_LAYER2_DSR  = 0;
-const __u8 F_LAYER3_FOU  = 1;
-const __u8 F_LAYER3_GRE  = 2;
-const __u8 F_LAYER3_GUE  = 3;
-const __u8 F_LAYER3_IPIP = 4;
+const __u8 F_LAYER2_DSR    = 0;
+const __u8 F_LAYER3_FOU    = 1;
+const __u8 F_LAYER3_GRE    = 2;
+const __u8 F_LAYER3_GUE    = 3;
+const __u8 F_LAYER3_IPIP   = 4;
+const __u8 F_LAYER3_GENEVE = 5; // dport=6081
+const __u8 F_LAYER3_NAT    = 7; // unlikely
+
+// https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 enum lookup_result {
 		    NOT_FOUND = 0,
@@ -188,35 +199,7 @@ enum lookup_result {
 		    LAYER3_FOU,
 		    LAYER3_IPIP,
 		    LAYER3_GUE,
-};
-
-/*
-const int BUFFLEN = 4096;
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, unsigned int);
-    __type(value, __u8[4096]);    
-    __uint(max_entries, 1);
-} buffers SEC(".maps");
-*/
-
-
-/*
-struct info {
-    __be32 vip;
-    __be32 saddr;
-    char h_dest[6];
-    char pad[2];
-};
-*/
-
-struct myflags {
-    __u16 new : 1;
-    __u16 tcp : 1; 
-    __u16 syn : 1;
-    __u16 ack : 1;     
-    __u16 fin : 1;
-    __u16 rst : 1;
+		    LAYER3_GENEVE
 };
 
 struct addr4 {
@@ -234,7 +217,6 @@ struct addr {
     union {
         struct addr4 addr4;
         struct in6_addr addr6;
-	__u8 ptr[16];
     };
 };
 
@@ -254,27 +236,32 @@ struct tunnel {
     __be16 sport;
     __be16 dport;
     __u16 nochecksum : 1;
-    __u16 type : 3;    
+    __u16 type : 3;
+
+    __u8 hwaddr[6];
+    __u16 vlanid;
 };
 typedef struct tunnel tunnel_t;
+
+#include "new.h"
+
+
+struct info {
+    __u16 sticky : 1;
+    __u16 syn : 1;
+    __u16 ack : 1;
+    __u16 fin : 1;
+    __u16 rst : 1;
+
+};
+typedef struct info info_t;
+
 
 struct servicekey {
     struct addr addr;
     __be16 port;
     __u16 proto;
 };
-
-struct destination {
-    struct addr daddr;
-    struct addr saddr;
-    __u16 sport; // FOU / GUE
-    __u16 dport; // FOU / GUE
-    __u8 hwaddr[6]; // MAC of router for L3 or backend for L2
-    __u16 vlanid;
-    tunnel_t tunnel;
-};
-
-#include "new.h"
 
 
 typedef __u8 mac[6];
@@ -295,8 +282,95 @@ struct destinations {
 
 
 struct flow {
-    tunnel_t tunnel;
+    tunnel_t tunnel; // contains real IP of server, etc
+    
+    __u32 time;   // time of last update
+    __u16 vlanid; // either VLAN ID for ETH_P_8021Q of index to redirect map for untagged NICs
+    __u8 mac[6];
+
+    __u8 finrst;
+    __u8 era;
+    __u8 version;
 };
+
+
+/**********************************************************************/
+
+struct vrpp {
+    __be32 vaddr; // virtual service IP
+    __be32 raddr; // real server IP
+    __be16 vport; // virtual service port
+    __be16 protocol;
+};
+
+struct counters {
+    __u64 packets;
+    __u64 octets;
+    __u64 flows;
+    __u64 errors;
+
+    __be16 dport; // to terminate
+    __be16 type;  // old mappings
+    __be16 pad1;  // pad to 8-bytes alignment
+    __be16 pad2;  // pad to 8-bytes alignment
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, struct vrpp);
+    __type(value, struct counters);
+    __uint(max_entries, 4096);
+} stats SEC(".maps");
+
+
+/**********************************************************************/
+
+struct vlaninfo {
+    struct addr source_ipv4;
+    struct addr source_ipv6;
+    __u32 ifindex;
+    __u8 hwaddr[6]; // interface's MAC
+    __u8 router[6]; // router's MAC (peer's address in case of veth)
+};
+
+struct nat_info {
+    __u16 vlanid;
+    __u8 hwaddr[6]; // L2 MAC address of backend
+};
+
+// VLAN 0    - inside NIC detail
+// VLAN 4096 - ouside NIC details
+
+// to send a probe, need to map VIP/RIP to NAT addr and send to NAT addr from "outside"
+// when receiving on "inside" interface, map NAT addr to outgoing VLAN ID
+// From VLAN ID, look up source ID for probe
+
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32); // "VLAN" ID
+    __type(value, struct vlaninfo);
+    __uint(max_entries, 4096);
+} vlan_info SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32); // physical NIC
+    __type(value, __u32); // VLAN ID
+    __uint(max_entries, 4096);
+} nic_to_vlanid SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct addr); // NAT address
+    __type(value, struct nat_info); // has VLAN ID to use to send probe, dst MAC for L2
+    __uint(max_entries, 65536);
+} nat_info SEC(".maps");
+
+    
+
+    
+/**********************************************************************/
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -304,19 +378,6 @@ struct {
     __type(value, struct flow);
     __uint(max_entries, 100);
 } flows SEC(".maps");
-
-
-    
-/**********************************************************************/
-/*
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, unsigned int);
-    __type(value, struct info);
-    __uint(max_entries, 1);
-} infos SEC(".maps");
-*/
-
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -341,64 +402,68 @@ struct {
 
 /**********************************************************************/
 
-#define FLAGS F_CALCULATE_CHECKSUM
-#define xFLAGS 0
-
 static __always_inline
 int is_addr4(struct addr *a) {
-    return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
+    return (!(a->addr4.pad1) && !(a->addr4.pad2) && !(a->addr4.pad3)) ? 1 : 0;
 }
 
 static __always_inline
-int send_l2(struct xdp_md *ctx, struct destination *dest)
+int send_l2(struct xdp_md *ctx, tunnel_t *t)
 {
-    return redirect_eth(ctx, dest->hwaddr) < 0 ? XDP_ABORTED : XDP_TX;
+    return redirect_eth(ctx, t->hwaddr) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
-int send_fou(struct xdp_md *ctx, struct destination *dest, tunnel_t *t)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_fou6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;    
-}
-
-static __always_inline
-int send_gue(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u8 protocol)
+int send_fou(struct xdp_md *ctx, tunnel_t *t)
 {
     if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_fou4(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_gue6(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_fou6(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;    
 }
 
 static __always_inline
-int send_in4(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, int is_ipv6)
+int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_gue4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    
+    return push_gue6(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_in4(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
 
     if (is_addr4(&(t->daddr))) {
 	
 	if (is_ipv6)
-	    return push_6in4(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	    return push_6in4(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
 	
-	return push_ipip(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_ipip(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
     }
 
     if (is_ipv6)
-	return push_6in6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_6in6(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
 	
-    return push_4in6(ctx, dest->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_4in6(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 
 static __always_inline
-int send_gre(struct xdp_md *ctx, struct destination *dest, tunnel_t *t, __u16 protocol)
+int send_gre(struct xdp_md *ctx, tunnel_t *t, __u16 protocol)
 {
     if (is_addr4(&(t->daddr)))
-	return push_gre4(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_gre4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_gre6(ctx, dest->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_gre6(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_geneve(struct xdp_md *ctx, tunnel_t *t, __u16 protocol)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_geneve4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
     
     return XDP_ABORTED;
 }
@@ -439,8 +504,31 @@ int lookup_flow(fourtuple_t *ft, __u8 protocol)
     return 0;
 }
 
+
+//static __always_inline
+int store_tcp_flow(fourtuple_t *ft, tunnel_t *t, struct flow *f)
+{
+
+    if (f) {
+
+	// update existing record - just modify f->
+	// updating on a syn does leave open to tcp sniping, but will only affect long lived conns
+
+	// I shall treat this naively, iterating as I learn more - assume not an atta
+	
+	return 0;
+    }
+
+    
+    struct flow flow = { .tunnel = *t };
+    bpf_map_update_elem(&flows, ft, &flow, BPF_ANY);
+
+    return 0;
+}
+
+
 static __always_inline
-enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d, tunnel_t *t)
+enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
@@ -461,19 +549,15 @@ enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d
     if (!index)
 	return NOT_FOUND;
 
-    d->daddr = service->daddr[index];      // backend's address, inc. MAC and VLAN for L2
-    d->dport = service->dport[index];      // destination port for L3 tunnel (eg. FOU)
-    d->sport = 0x8000 | (hash4 & 0x7fff);  // source port for L3 tunnel (eg. FOU)
-    memcpy(d->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips    
-    d->vlanid = service->vlanid;           // VLAN ID that L3 services should use - may be better in vips
 
-    d->saddr = is_ipv4_addr(d->daddr) ? service->saddr : service->saddr6;
+    t->daddr = service->daddr[index];     // backend's address
+    t->saddr = is_ipv4_addr(t->daddr) ? service->saddr : service->saddr6;
+    t->sport = 0x8000 | (hash4 & 0x7fff); // source port for L3 tunnel (eg. FOU)
+    t->dport = service->dport[index];     // destination port for L3 tunnel (eg. FOU)
+    //t->nochecksum = 1;
 
-    t->saddr = d->saddr;
-    t->daddr = d->daddr;
-    t->sport = d->sport;
-    t->dport = d->dport;
-    t->nochecksum = 1;
+    memcpy(t->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips
+    t->vlanid = service->vlanid;           // VLAN ID that L3 services should use - maybe vips?
     
     __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
 
@@ -481,11 +565,10 @@ enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d
     // store flow? - maybe better to mark as new flow and allow a later stage to do this
 
     // for layer 2 the destination hwaddr is that of the backend, not a router
-    //if (F_LAYER2_DSR == flag)
     if (F_LAYER2_DSR == type)	
-	memcpy(d->hwaddr, service->hwaddr[index], 6);
+	memcpy(t->hwaddr, service->hwaddr[index], 6);
     
-    if (nulmac(d->hwaddr))
+    if (nulmac(t->hwaddr))
 	return NOT_FOUND;
     
     switch (type) {
@@ -494,13 +577,14 @@ enum lookup_result lookupx(fourtuple_t *ft, __u8 protocol, struct destination *d
     case F_LAYER3_IPIP: return LAYER3_IPIP;
     case F_LAYER3_GUE:  return LAYER3_GUE;
     case F_LAYER2_DSR:  return LAYER2_DSR;
+    case F_LAYER3_GENEVE:  return LAYER3_GENEVE;
     }
     
    return NOT_FOUND;
 }
 
 //static __always_inline
-enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, struct destination *dest, fourtuple_t *ft, tunnel_t *t)
+enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
 
@@ -543,12 +627,11 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, struct desti
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
-    //return lookup(&saddr, &daddr, tcp, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest, t);
-    return lookupx(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, dest, t);
+    return lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
 }
 
 //static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, struct destination *dest, fourtuple_t *ft, tunnel_t *t)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
     
@@ -591,8 +674,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, struct destinat
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
     
-    //return lookup(&saddr, &daddr, tcp, ip->protocol, dest, t);
-    return lookupx(ft, ip->protocol, dest, t);
+    return lookup(ft, ip->protocol, t);
 }
 
 static __always_inline
@@ -615,7 +697,7 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 //SEC("XDP")
 static __always_inline
-int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple *ft, tunnel_t *t)    
+int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)    
 {
 
     int mtu = MTU;
@@ -652,25 +734,27 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
-	result = lookup6(ctx, next_header, dest, ft, t);
+	result = lookup6(ctx, next_header, ft, t);
 	overhead = sizeof(struct ip6_hdr);
 	break;
     case bpf_htons(ETH_P_IP):
-	result = lookup4(ctx, next_header, dest, ft, t);
+	result = lookup4(ctx, next_header, ft, t);
 	overhead = sizeof(struct iphdr);	
 	break;
     default:
 	return XDP_PASS;
     }
 
-    overhead = is_ipv4_addr(dest->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    //overhead = is_ipv4_addr(dest->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);    
 
     // no default here - handle all cases explicitly
     switch (result) {
-    case LAYER2_DSR: return send_l2(ctx, dest);
+    case LAYER2_DSR: return send_l2(ctx, t);
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
+    case LAYER3_GENEVE: overhead += GENEVE_OVERHEAD; break;	
     case LAYER3_IPIP: break;
     case NOT_A_VIP: return XDP_PASS;
     case NOT_FOUND: return XDP_DROP;
@@ -683,8 +767,9 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     case LAYER3_GRE: // fallthough
     case LAYER3_FOU: // fallthough
     case LAYER3_GUE: // fallthough
+    case LAYER3_GENEVE: // fallthough	
     case LAYER3_IPIP:
-	if (check_ingress_interface(ctx->ingress_ifindex, vlan, dest->vlanid) < 0)
+	if (check_ingress_interface(ctx->ingress_ifindex, vlan, t->vlanid) < 0)
             return XDP_DROP;
 	
 	if ((data_end - next_header) + overhead > mtu) {
@@ -692,7 +777,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
 	    } else {
 		bpf_printk("IPv4 FRAG_NEEDED\n");
-		return send_frag_needed4(ctx, dest->saddr.addr4.addr, mtu - overhead);
+		//return send_frag_needed4(ctx, dest->saddr.addr4.addr, mtu - overhead);
+		return send_frag_needed4(ctx, ft->saddr.addr4.addr, mtu - overhead);		
 	    }
 	}
 	
@@ -703,10 +789,11 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
     }
     
     switch (result) {
-    case LAYER3_FOU:  return send_fou(ctx, dest, t);
-    case LAYER3_IPIP: return send_in4(ctx, dest, t, is_ipv6);
-    case LAYER3_GRE:  return send_gre(ctx, dest, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
-    case LAYER3_GUE:  return send_gue(ctx, dest, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+    case LAYER3_FOU:    return send_fou(ctx, t);
+    case LAYER3_IPIP:   return send_in4(ctx, t, is_ipv6);
+    case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
+    case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+    case LAYER3_GENEVE: return send_geneve(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
     default:
 	break;
     }
@@ -716,6 +803,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct destination *dest, struct fourtuple
 static __always_inline
 void update(fourtuple_t *key, tunnel_t *t)
 {
+    /*
     //struct fourtuple key = { .sport = sport, .dport = dport };
     struct flow val = { .tunnel = *t };
     
@@ -724,6 +812,7 @@ void update(fourtuple_t *key, tunnel_t *t)
     } else {
 	bpf_printk("OK\n");
     }
+    */
 }
 
 
@@ -733,13 +822,12 @@ SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
-     __u32 took = 0;
+    __u32 took = 0;
      
-    struct destination dest = {};
     fourtuple_t ft = {};
     tunnel_t t = {};
     
-    int action = xdp_fwd_func_(ctx, &dest, &ft, &t);
+    int action = xdp_fwd_func_(ctx, &ft, &t);
 
     // handle stats here
     switch (action) {
@@ -761,9 +849,28 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 
 SEC("xdp")
-int  xdp_pass_func(struct xdp_md *ctx)
+int xdp_pass_func(struct xdp_md *ctx)
 {
   return XDP_PASS;
+}
+
+SEC("xdp")
+int inside(struct xdp_md *ctx)
+{
+    // needs mapping from a NAT address to a tunnel address with VIP inside
+    // use some counter to track port on external address to use
+    //bpf_printk("inside\n");    
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int outside(struct xdp_md *ctx)
+{
+    // will get passed here from external is source was a VIP
+    // lookup VIP/dest port in table and will map to internal NAT address
+    // to use to replace source, src-port and dport - daddr will be netns's IP
+    //bpf_printk("outside\n");
+    return XDP_PASS;
 }
 
 char _license[] SEC("license") = "GPL";

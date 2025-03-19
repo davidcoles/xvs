@@ -20,9 +20,25 @@ struct gue_hdr {
     __be16 flags;
 };
 
+
+struct geneve_hdr {
+    __u8 ver : 2;
+    __u8 opt_len : 6;
+    
+    __u8 oam : 1;
+    __u8 critical : 1;
+    __u8 resvd : 6;
+
+    __be16 protocol;
+
+    __be32 vni;// : 24;
+    //__be32 reserved : 8;
+};
+
 const __u8 GRE_OVERHEAD = sizeof(struct gre_hdr);
 const __u8 FOU_OVERHEAD = sizeof(struct udphdr);
 const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
+const __u8 GENEVE_OVERHEAD = sizeof(struct ethhdr) + sizeof(struct udphdr) + sizeof(struct geneve_hdr);
 
 static __always_inline
 int nul6(struct in6_addr *a) 
@@ -65,6 +81,67 @@ __u16 internet_checksum(void *data, void *data_end, __u32 csum)
     return csum_fold_helper(csum);
 }
 
+int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    p->vlan = NULL;
+    p->eth = data;
+    
+    if (p->eth + 1 > data_end)
+        return -1;
+    
+    if (p->eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+        p->vlan = (void *)(p->eth + 1);
+	
+	if (p->vlan + 1 > data_end)
+	    return -1;
+	
+	p->ip = (void *)(p->vlan + 1);
+    } else {
+        p->ip = (void *)(p->eth + 1);
+    }
+
+    if (p->ip + 1 > data_end)
+	return -1;
+
+    p->eth_copy = *(p->eth);
+    if (p->vlan) p->vlan_copy = *(p->vlan);
+    
+     return 0;
+}
+
+int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    p->eth = data;
+    
+    if (p->eth + 1 > data_end)
+        return -1;
+    
+    if(p->vlan) {
+        p->vlan = (void *)(p->eth + 1);
+
+	if (p->vlan + 1 > data_end)
+            return -1;
+	
+	p->ip = (void *)(p->vlan + 1);
+    } else {
+	p->ip = (void *)(p->eth + 1);
+    }
+    
+    if (p->ip + 1 > data_end)
+    return -1;
+
+    *(p->eth) = p->eth_copy;
+    if (p->vlan) *(p->vlan) = p->vlan_copy;
+    
+    return 0;
+}
+/*
 int preserve_headers(struct xdp_md *ctx, struct pointers *p)
 {
     void *data     = (void *)(long)ctx->data;
@@ -129,7 +206,7 @@ int restore_headers(struct xdp_md *ctx, struct pointers *p)
     
     return 0;
 }
-
+*/
 
 static __always_inline
 int ip_decrease_ttl(struct iphdr *ip)
@@ -149,13 +226,14 @@ __u16 ipv4_checksum(struct iphdr *ip)
 }
 
 
+/*
 static __always_inline
 __u16 icmp_checksum(struct icmphdr *icmp, __u16 size)
 {
     __u32 csum = bpf_csum_diff((__be32 *) icmp, 0, (__be32 *) icmp, size, 0);
     return csum_fold_helper(csum);
 }
-
+*/
 
 static __always_inline
 void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __be32 daddr)
@@ -202,7 +280,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
     const int max = 128;
     void *data_end = (void *)(long)ctx->data_end;
         
-    if (preserve_headers(ctx, p) < 0)
+    if (preserve_l2_headers(ctx, p) < 0)
 	return -1;
 
     // if DF is not set then drop
@@ -226,7 +304,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
     if (bpf_xdp_adjust_head(ctx, 0 - (int)(sizeof(struct iphdr) + sizeof(struct icmphdr))))	
 	return -1;
 
-    if (restore_headers(ctx, p) < 0)	
+    if (restore_l2_headers(ctx, p) < 0)	
         return -1;
 
     return max;
@@ -287,66 +365,6 @@ __u16 sdbm(unsigned char *ptr, __u8 len)
 
 
 
-int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
-{
-    void *data     = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-
-    p->vlan = NULL;
-    p->eth = data;
-    
-    if (p->eth + 1 > data_end)
-        return -1;
-    
-    if (p->eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-        p->vlan = (void *)(p->eth + 1);
-	
-	if (p->vlan + 1 > data_end)
-	    return -1;
-	
-	p->ip = (void *)(p->vlan + 1);
-    } else {
-        p->ip = (void *)(p->eth + 1);
-    }
-
-    if (p->ip + 1 > data_end)
-	return -1;
-
-    p->eth_copy = *(p->eth);
-    if (p->vlan) p->vlan_copy = *(p->vlan);
-    
-     return 0;
-}
-
-int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
-{
-    void *data     = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    
-    p->eth = data;
-    
-    if (p->eth + 1 > data_end)
-        return -1;
-    
-    if(p->vlan) {
-        p->vlan = (void *)(p->eth + 1);
-
-	if (p->vlan + 1 > data_end)
-            return -1;
-	
-	p->ip = (void *)(p->vlan + 1);
-    } else {
-	p->ip = (void *)(p->eth + 1);
-    }
-    
-    if (p->ip + 1 > data_end)
-    return -1;
-
-    *(p->eth) = p->eth_copy;
-    if (p->vlan) *(p->vlan) = p->vlan_copy;
-    
-    return 0;
-}
 
 
 static __always_inline
@@ -442,6 +460,54 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
 static __always_inline
 int push_xin4(struct xdp_md *ctx, struct pointers *p, unsigned char *router, __be32 saddr, __be32 daddr, __u8 protocol, int overhead)
 {
+    if (!saddr || !daddr)
+	return -1;
+    
+    // adjust the packet to add the FOU header - pointers to new header fields will be in p
+    int orig_len = adjust_head(ctx, p, sizeof(struct iphdr) + overhead);
+    
+    if (orig_len < 0)
+	return -1;
+
+    if (p->vlan) {
+	p->vlan->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+    } else {
+	p->eth->h_proto = bpf_htons(ETH_P_IP);
+    }
+
+    void *payload = (void *) (p->ip + 1);
+    
+    if (payload + overhead > (void *)(long)ctx->data_end)
+	return -1;
+    
+    // Update the outer IP header to send to the FOU target
+    int tot_len = sizeof(struct iphdr) + overhead + orig_len;
+    new_iphdr(p->ip, tot_len, protocol, saddr, daddr);
+
+    if (!nulmac(router)) {
+	// If a router is explicitly indicated then direct the frame there
+	memcpy(p->eth->h_source, p->eth->h_dest, 6);
+	memcpy(p->eth->h_dest, router, 6);
+    } else {
+	// Otherwise return it to the device that it came from
+	reverse_ethhdr(p->eth);
+    }
+
+    // some final sanity checks on ethernet addresses
+    if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
+	return -1;
+
+    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
+    return orig_len;
+}
+
+static __always_inline
+int push_xin4_(struct xdp_md *ctx, struct pointers *p, unsigned char *router, addr_t saddr_, addr_t daddr_, __u8 protocol, int overhead)
+{
+
+    __be32 saddr = saddr_.addr4.addr;
+    __be32 daddr = daddr_.addr4.addr;
+    
     if (!saddr || !daddr)
 	return -1;
     
@@ -692,8 +758,6 @@ int push_gue6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 proto
 }
 
 
-/**********************************************************************/
-
 //static __always_inline
 int push_gue4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 protocol)
 {
@@ -723,6 +787,81 @@ int push_gue4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 proto
     //bpf_printk("GUE4 %d\n", protocol);
     
     gue->protocol = protocol;
+    
+    if (! t->nochecksum)
+	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+
+    return 0;
+}
+
+
+/*
+https://datatracker.ietf.org/doc/html/draft-ietf-nvo3-geneve-08#section-3.1
+
+Basically everything can be zeo except for protocol and VNI
+
+https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels#geneve
+
+# ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
+
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      |Ver|  Opt Len  |O|C|    Rsvd.  |          Protocol Type        |
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      |        Virtual Network Identifier (VNI)       |    Reserved   |
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      |                    Variable Length Options                    |
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+inside UDP, followed payload described by Protocol Type
+
+   Protocol Type (16 bits):  The type of the protocol data unit
+      appearing after the Geneve header.  This follows the EtherType
+      [ETYPES] convention with Ethernet itself being represented by the
+      value 0x6558.
+
+*/
+
+
+// very experimental - likely not useful just yet
+//static __always_inline
+int push_geneve4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 protocol)
+{
+    struct pointers p = {};
+    //int orig_len = push_xin4(ctx, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, GENEVE_OVERHEAD);
+    int orig_len = push_xin4_(ctx, &p, router, t->saddr, t->daddr, IPPROTO_UDP, GENEVE_OVERHEAD);
+
+    if (orig_len < 0)
+	return -1;
+
+    struct udphdr *udp = (void *) (p.ip + 1);
+
+    if (udp + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    udp->source = bpf_htons(t->sport);
+    udp->dest = bpf_htons(t->dport); // registered port is 6801
+    udp->len = bpf_htons(GENEVE_OVERHEAD + orig_len);
+    udp->check = 0;
+
+    __u32 vni = 9999;
+    
+    struct geneve_hdr geneve = { .vni = bpf_htonl((vni & 0x00ffffff)<<8),  .protocol = bpf_htons(0x6558) };
+    struct geneve_hdr *g = (void *) (udp + 1);
+    
+    if (g + 1 > (void *)(long)ctx->data_end)
+	return -1;
+
+    *g = geneve;
+
+    struct ethhdr *eth = (void *) (g + 1);
+
+    if (eth + 1 > (void *)(long)ctx->data_end)
+        return -1;
+
+    // just copy the same hw addrs into the inner frame, bit of a fudge
+    memcpy(eth->h_dest, p.eth->h_dest, 6);
+    memcpy(eth->h_source, p.eth->h_source, 6);
+    eth->h_proto = bpf_htons(protocol);
     
     if (! t->nochecksum)
 	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
