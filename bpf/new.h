@@ -800,10 +800,6 @@ https://datatracker.ietf.org/doc/html/draft-ietf-nvo3-geneve-08#section-3.1
 
 Basically everything can be zeo except for protocol and VNI
 
-https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels#geneve
-
-# ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
-
       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
       |Ver|  Opt Len  |O|C|    Rsvd.  |          Protocol Type        |
       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -818,6 +814,10 @@ inside UDP, followed payload described by Protocol Type
       appearing after the Geneve header.  This follows the EtherType
       [ETYPES] convention with Ethernet itself being represented by the
       value 0x6558.
+
+https://www.redhat.com/en/blog/what-geneve
+https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels#geneve
+# ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
 
 */
 

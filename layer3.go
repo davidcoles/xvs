@@ -112,7 +112,7 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
-	ns, err := nat3(x, "inside", "outside")
+	ns, err := nat3(x, "hostns", "netns")
 
 	if err != nil {
 		return err
