@@ -896,7 +896,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     return XDP_DROP; 
 }
 
-static __always_inline
+//static __always_inline
 void update(fourtuple_t *key, tunnel_t *t)
 {
     /*
@@ -917,8 +917,8 @@ void update(fourtuple_t *key, tunnel_t *t)
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
-    __u64 start = bpf_ktime_get_ns();
-    __u32 took = 0;
+    //__u64 start = bpf_ktime_get_ns();
+    //__u32 took = 0;
      
     fourtuple_t ft = {};
     tunnel_t t = {};
@@ -930,12 +930,12 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_PASS: return XDP_PASS;
     case XDP_DROP: return XDP_DROP;
     case XDP_TX:
-	took = bpf_ktime_get_ns() - start;
+	//took = bpf_ktime_get_ns() - start;
 	//int ack = dest.flags.ack ? 1 : 0;	
 	//int syn = dest.flags.syn ? 1 : 0;	
-	bpf_printk("TOOK: %d\n", took);
-	bpf_printk("FT %d %d\n", bpf_ntohs(ft.sport), bpf_ntohs(ft.dport));
-	update(&ft, &t);
+	//bpf_printk("TOOK: %d\n", took);
+	//bpf_printk("FT %d %d\n", bpf_ntohs(ft.sport), bpf_ntohs(ft.dport));
+	//update(&ft, &t);
 	return XDP_TX;
     case XDP_ABORTED: return XDP_ABORTED;
     case XDP_REDIRECT: return XDP_REDIRECT;
@@ -1129,7 +1129,7 @@ int xdp_reply(struct xdp_md *ctx)
         return XDP_DROP;
     
     if (ip->protocol != IPPROTO_TCP)
-        return XDP_PASS;
+        return XDP_DROP;
     
     struct tcphdr *tcp = (void *)(ip + 1);
     
