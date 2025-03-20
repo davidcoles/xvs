@@ -1265,7 +1265,7 @@ int xdp_request(struct xdp_md *ctx)
 		  .sport = 0x6666,
 		  .dport = 9999,
 		  .nochecksum = 1,
-		  .type = F_LAYER3_GRE,
+		  .type = F_LAYER3_GUE,
 		  .vlanid = vip_info->vlanid,
     };
     
@@ -1293,6 +1293,7 @@ int xdp_request(struct xdp_md *ctx)
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
 
+    // TODO - handle all options
     if(push_gue4(ctx, vlaninfo->router, &t, IPPROTO_IPIP) < 0)
 	return XDP_DROP;
 
@@ -1415,10 +1416,6 @@ int xdp_reply(struct xdp_md *ctx)
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
 
-    // already done for us
-    //memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
-    //memcpy(eth->h_source, vlaninfo->router, 6);
-    
     return XDP_PASS;
 }
 
