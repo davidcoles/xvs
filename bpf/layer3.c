@@ -330,7 +330,6 @@ struct {
 /**********************************************************************/
 
 struct vlaninfo {
-    //struct addr source_ipv4;
     __u32 source_ipv4;
     struct addr source_ipv6;
     __u32 ifindex;
@@ -358,32 +357,6 @@ struct {
     __uint(max_entries, 4096);
 } vlan_info SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u32); // physical NIC
-    __type(value, __u32); // VLAN ID
-    __uint(max_entries, 4096);
-} nic_to_vlanid SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct addr); // NAT address
-    __type(value, struct nat_info); // has VLAN ID to use to send probe, dst MAC for L2
-    __uint(max_entries, 65536);
-} nat_info SEC(".maps");
-
-struct next_ports {
-    struct bpf_spin_lock semaphore;
-    uint64_t tcp;
-    uint64_t udp;
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct addr); // VIP
-    __type(value, struct next_ports); // ports
-    __uint(max_entries, 4096); // maximum number of VIPs
-} vip_port SEC(".maps");
 
 struct three_tuple {
     struct addr addr;
@@ -398,29 +371,7 @@ struct {
     __type(value, addr_t[2]); // vip/rip
     __uint(max_entries, 4096);
 } nat_to_vip_rip SEC(".maps");
-
-// netns: 10.255.255.254:12345:tcp -> 10.255.0.3:80 (for vip 192.168.0.3/10.1.2.3)
-// lookup vip: nat_to_vip(10.255.0.3) -> {  vip:192.168.0.3, rip:10.1.2.3 }
-// lookup vip_port(192.168.0.3)->{ tcp:8888, udp:3333 }
-// ext_port = lock_xadd(rec->tcp, 1) (8889)
-
-struct addrport_time {
-    struct bpf_spin_lock semaphore;
-    addr_t nat;
-    __be16 eph;
-    __u64 time;
-};
     
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct three_tuple);
-    __type(value, struct addrport_time);
-    __uint(max_entries, 4096);
-} request SEC(".maps");
-
-
-    // need ext ip, h_source, h_dest, vlanid
-
 struct vip_info {
     addr_t ext_ip;
     __u16 vlanid;
@@ -437,212 +388,21 @@ struct five_tuple {
     __u8 protocol;
 };
 
-struct addr_port {
+struct addr_port_time {
+    __u64 time;
     addr_t addr;
     __be16 port;
+    __be16 pad[3];
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct five_tuple);
-    __type(value, struct addr_port);
+    __type(value, struct addr_port_time);
     __uint(max_entries, 65556);
 } reply SEC(".maps");
 
 
-// lookup request(192.168.0.3, 8889, tcp) -> { nat:10.255.0.4, eph:23456, time: 5s }
-// does not match our nat addr/eph and is only 3s old - next
-// ext_port = lock_xadd(rec->tcp, 1) (8890)
-// lookup request(192.168.0.3, 8890, tcp) -> { nat:10.255.0.4, eph:23499, time: 65s }
-// old connection - reuse
-
-// lookup active(192.168.0.3, 8889, tcp) -> { nat:10.255.0.3, eph:12345, time: 3s }
-// matches our nat addr/eph and is relatively recent - probably our keepalive conn
-// ext_port = lock_xadd(rec->tcp, 1) (8890)
-
-// not found at all - port is free to use
-
-// write {192.168.0.3:80:tcp->a.b.c.d:8890} -> {10.255.0.4:80->10.255.255.254:12345 } to LRU reply map
-
-// reply from 192.168.0.3:80:tcp -> a.b.c.d:8890
-// reply(192.168.0.3:80:tcp->a.b.c.d:8890) -> { 10.255.0.4:80->10.255.255.254:12345 }
-
-static __always_inline
-int tunnel_request(addr_t ext_addr, __be16 ext_port, __u8 protocol, addr_t rip, __be16 service_port) {
-    return 0;
-}
-
-int netns_side(addr_t *veth_, __be16 eph_port, __u8 protocol, addr_t *nat_, __be16 service_port) {
-
-    //addr_t veth = *veth_;
-    addr_t nat = *nat_;
-    
-    // check that veth is what we expect amd that nat is in the correct range ...
-    
-    addr_t *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
-    
-    if (!vip_rip)
-	return -1;
-
-    addr_t vip = vip_rip[0];
-    addr_t rip = vip_rip[1];
-
-    addr_t ext_addr = {}; // look this up
-    __u64 ext_port = 0;
-
-    for (int n = 0; n < 10; n++) {
-    
-	struct next_ports *ports = bpf_map_lookup_elem(&vip_port, &vip);
-	
-	if (!ports)
-	    return -1;
-
-	bpf_spin_lock(&(ports->semaphore));
-	if((ext_port = ports->tcp++) < 2048)
-	    ext_port = ports->tcp = 2048;
-	bpf_spin_unlock(&(ports->semaphore));
-	
-	__u64 now = bpf_ktime_get_ns();
-
-	struct three_tuple req = { .addr = vip, .port = ext_port, .protocol = protocol };
-	struct addrport_time *foo = bpf_map_lookup_elem(&request, &req);
-
-	if (!foo) {
-	    // insert record - done
-	    struct addrport_time fizz = {
-					 .nat = nat,
-					 .eph = eph_port,
-					 .time = now,
-	    };
-
-	    if(bpf_map_update_elem(&request, &req, &fizz, BPF_NOEXIST) != 0)
-		continue; // try again 
-	    
-	    break;
-	}
-	
-	int ok = 0;
-	
-	{ 
-	    bpf_spin_lock(&(foo->semaphore)); // start of critical section
-	    
-	    
-	    if ((now - foo->time) > (60 * SECOND_NS)) {
-		// lease expired
-		ok = 1;
-		
-		foo->nat = nat;
-		foo->eph = eph_port;
-		foo->time = now;
-		
-	    } else if (0) { // if (nat == foo->nat && eph == foo->eph)
-		// our connection - update lease
-		ok = 1;
-		foo->time = now;
-	    } else {
-		// not today - try again
-	    }
-	    
-	    bpf_spin_unlock(&(foo->semaphore)); // end of critical section
-	}
-	
-	if (ok)
-	    break;
-    }
-
-    // store reply mapping
-
-    // write {192.168.0.3:80:tcp->a.b.c.d:8890} -> {10.255.0.4:80->10.255.255.254:12345 } to LRU reply m 
-    
-    struct five_tuple bar = {
-			     .saddr = vip,
-			     .sport = service_port,
-			     .protocol = protocol,
-			     .daddr = ext_addr,
-			     .dport = ext_port,
-    };
-
-    struct addr_port baz = {
-			    .addr = nat,
-			    .port = eph_port,
-    };
-
-    bpf_map_update_elem(&reply, &bar, &baz, BPF_ANY);
-
-    // send request
-    return tunnel_request(ext_addr, bpf_htons(ext_port), protocol, rip, service_port);
-}
-
-/*
-int netns_side3(addr_t *veth_, __be16 eph_port, __u8 protocol, addr_t *nat_, __be16 service_port) {
-
-    //addr_t veth = *veth_;
-    addr_t nat = *nat_;
-    
-    // check that veth is what we expect amd that nat is in the correct range ...
-    
-    addr_t *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
-    
-    if (!vip_rip)
-	return -1;
-
-    addr_t vip = vip_rip[0];
-    addr_t rip = vip_rip[1];
-
-    addr_t ext_addr = {}; // look this up
-    __u64 ext_port = eph_port;
-
-    
-    struct five_tuple bar = {
-			     .saddr = vip,
-			     .sport = service_port,
-			     .protocol = protocol,
-			     .daddr = ext_addr,
-			     .dport = ext_port,
-    };
-
-    struct addr_port baz = {
-			    .addr = nat,
-			    .port = eph_port,
-    };
-
-    bpf_map_update_elem(&reply, &bar, &baz, BPF_ANY);
-    
-}
-*/
-
-// nat:nport:vip:vport:protocol -> ext-port (external addr is fixed)
-
-/*
-  PROCEDURE:
-  
-  Outgoing:
-  * map from VIP/RIP to NAT address (userspace)
-  * open connection to NAT/service-port/protocol from 10.255.255.254/::0aff:fffe in netns("outside")
-  * "inside" XDP sees request from ns-addr:ephemeral-port:protocol to nat-addr:service-port:protocol
-  * lookup (ns-addr:ephemeral-port:nat-addr:service-port:protocol) -> (vip:ext-port)
-  *   not-found: * lookup vip_port(vip)->{ext-port}, lock, test vip:extport:protocol-> naddr:eph-port:vport:time match ephemeral-port
-  *              * increment proto-port try again, 100x, if fail then drop
-  *              * write vip:extport:protocol-> ephemeral-port:now
-  
-  Incoming:
-  * check vip matches our ext addr (dest of packet)
-  * lookup vip_port(vip:extport:protocol) if not found then drop, otheriwse:
-  * * ephemeral-port:vport:time -> rewrite as src-addr->nat-addr, src-port unchanged, dst-addr->ns-addr, dst-port->eph-port
-
-  */
-
-
-/* LLVM maps __sync_fetch_and_add() as a built-in function to the BPF atomic add
- * instruction (that is BPF_STX | BPF_XADD | BPF_W for word sizes)
-
-#ifndef lock_xadd
-#define lock_xadd(ptr, val)	((void) __sync_fetch_and_add(ptr, val))
-#endif
-
-lock_xadd(&rec->rx_packets, 1);
-
- */
 /**********************************************************************/
 
 struct {
@@ -1274,7 +1034,7 @@ int xdp_request(struct xdp_md *ctx)
     /**********************************************************************/
     // SAVE CHECKSUM INFO
     /**********************************************************************/
-    struct l4 o = {.saddr = ip->saddr, .daddr = ip->daddr};
+    struct l4 o = {.saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
     __u16 old_csum = ip->check;
     struct iphdr old = *ip;
     old.check = 0;
@@ -1282,14 +1042,17 @@ int xdp_request(struct xdp_md *ctx)
 
     ip->saddr = ext.addr4.addr;
     ip->daddr = vip.addr4.addr;
-    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+
+    __u16 tmp = htons(eph);
+    tcp->source = tmp;
 
     /**********************************************************************/
     // CHECKSUM DIFFS FROM OLD
     /**********************************************************************/
     ip->check = 0;
     ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
-    struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
+    //struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
+    struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };    
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
 
@@ -1315,14 +1078,16 @@ int xdp_request(struct xdp_md *ctx)
     struct five_tuple bar = {
                              .sport = svc,
                              .protocol = IPPROTO_TCP,
-                             .dport = eph, // could rewrite if necc
+                             //.dport = eph, // could rewrite if necc
+                             .dport = tmp, // could rewrite if necc
     };
     bar.saddr = vip; // ????
     bar.daddr = ext; // ????
     
-    struct addr_port baz = {
+    struct addr_port_time baz = {
                             //.addr = nat,
                             .port = eph,
+			    .time = bpf_ktime_get_ns(),
     };
     baz.addr = nat; // ???
     
@@ -1393,9 +1158,17 @@ int xdp_reply(struct xdp_md *ctx)
     rep.saddr = saddr;
     rep.daddr = daddr;
     
-    struct addr_port *match = bpf_map_lookup_elem(&reply, &rep);
+    struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
     if (!match)
+	return XDP_DROP;
+
+    __u64 time = bpf_ktime_get_ns();
+
+    if (time < match->time)
+	return XDP_DROP;
+
+    if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
     struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);

@@ -74,6 +74,8 @@ __u16 ipv4_checksum_diff(__u16 seed, struct iphdr *new, struct iphdr *old)
 struct l4 {
     __be32 saddr;
     __be32 daddr;
+    __be16 sport;
+    __be16 dport;
 };
 
 static __always_inline __u16
