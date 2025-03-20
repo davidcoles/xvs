@@ -189,21 +189,18 @@ const __u8 F_LAYER3_FOU    = 1;
 const __u8 F_LAYER3_GRE    = 2;
 const __u8 F_LAYER3_GUE    = 3;
 const __u8 F_LAYER3_IPIP   = 4;
-const __u8 F_LAYER3_GENEVE = 5; // dport=6081
-const __u8 F_LAYER3_NAT    = 7; // unlikely
 
 // https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 enum lookup_result {
 		    NOT_FOUND = 0,
 		    NOT_A_VIP,
-		    CHECK, 
+		    PROBE_REPLY,
 		    LAYER2_DSR,
 		    LAYER3_GRE,
 		    LAYER3_FOU,
 		    LAYER3_IPIP,
 		    LAYER3_GUE,
-		    LAYER3_GENEVE
 };
 
 struct addr4 {
@@ -341,14 +338,6 @@ struct nat_info {
     __u16 vlanid;
     __u8 hwaddr[6]; // L2 MAC address of backend
 };
-
-// VLAN 0    - inside NIC detail
-// VLAN 4096 - ouside NIC details
-
-// to send a probe, need to map VIP/RIP to NAT addr and send to NAT addr from "outside"
-// when receiving on "inside" interface, map NAT addr to outgoing VLAN ID
-// From VLAN ID, look up source ID for probe
-
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -493,15 +482,6 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, __u16 protocol)
     return push_gre6(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
-static __always_inline
-int send_geneve(struct xdp_md *ctx, tunnel_t *t, __u16 protocol)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_geneve4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return XDP_ABORTED;
-}
-
 //static __always_inline
 int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
@@ -611,7 +591,6 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     case F_LAYER3_IPIP: return LAYER3_IPIP;
     case F_LAYER3_GUE:  return LAYER3_GUE;
     case F_LAYER2_DSR:  return LAYER2_DSR;
-    case F_LAYER3_GENEVE:  return LAYER3_GENEVE;
     }
     
    return NOT_FOUND;
@@ -665,7 +644,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 }
 
 //static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t, __u32 *nic)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -692,7 +671,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	// set correct MAC address for veth pair
 	memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
 	memcpy(eth->h_source, vlaninfo->router, 6);	    
-	return CHECK;
+	return PROBE_REPLY;
     }
     
     ft->saddr = saddr;
@@ -785,62 +764,22 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	next_header = vlan + 1;
     }
 
-    __u32 nic;
-    
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
-	result = lookup6(ctx, next_header, ft, t);
 	overhead = sizeof(struct ip6_hdr);
+	result = lookup6(ctx, next_header, ft, t);
 	break;
     case bpf_htons(ETH_P_IP):
-
-	if (next_proto != bpf_htons(ETH_P_IP))
-	    return XDP_PASS;
-	
-	struct iphdr *ip = next_header;
-	
-	if (ip + 1 > data_end)
-	    return XDP_PASS;
-	
-	if (ip->version != 4)
-	    return XDP_PASS;
-
-	if (ip->ihl != 5)
-	    return XDP_PASS;
-	
-	if (ip->ttl <= 1)
-	    return XDP_PASS;
-	
-	// ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
-	if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-	    return XDP_PASS; // FIXME - new enum;
-	
-	if (ip->protocol != IPPROTO_TCP)
-	    return XDP_PASS;
-	
-	struct tcphdr *tcp = (void *)(ip + 1);
-
-	if (tcp + 1 > data_end)
-	    return XDP_PASS;
-	
-	if (tcp->dest == htons(9999))
-	    return bpf_redirect_map(&redirect_map, 100, XDP_PASS);
-	
-	result = lookup4(ctx, next_header, ft, t, &nic);
+	is_ipv6 = 0;
 	overhead = sizeof(struct iphdr);
-	
-	if (result == CHECK) {
-	    return bpf_redirect_map(&redirect_map, NETNS,  XDP_DROP);
-	}
-	
+	result = lookup4(ctx, next_header, ft, t);
 	break;
     default:
 	return XDP_PASS;
     }
 
-    //overhead = is_ipv4_addr(dest->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
-    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);    
+	    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);    
 
     // no default here - handle all cases explicitly
     switch (result) {
@@ -848,12 +787,10 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    case LAYER3_GENEVE: overhead += GENEVE_OVERHEAD; break;	
     case LAYER3_IPIP: break;
     case NOT_A_VIP: return XDP_PASS;
     case NOT_FOUND: return XDP_DROP;
-    case CHECK:
-	return XDP_DROP;
+    case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS,  XDP_DROP);
     }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
@@ -863,7 +800,6 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case LAYER3_GRE: // fallthough
     case LAYER3_FOU: // fallthough
     case LAYER3_GUE: // fallthough
-    case LAYER3_GENEVE: // fallthough	
     case LAYER3_IPIP:
 	if (check_ingress_interface(ctx->ingress_ifindex, vlan, t->vlanid) < 0)
             return XDP_DROP;
@@ -889,7 +825,6 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case LAYER3_IPIP:   return send_in4(ctx, t, is_ipv6);
     case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
     case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
-    case LAYER3_GENEVE: return send_geneve(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
     default:
 	break;
     }
@@ -944,12 +879,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     return XDP_DROP;
 }
 
-
-SEC("xdp")
-int xdp_pass_func(struct xdp_md *ctx)
-{
-  return XDP_PASS;
-}
 
 SEC("xdp")
 int xdp_request(struct xdp_md *ctx)
@@ -1075,23 +1004,21 @@ int xdp_request(struct xdp_md *ctx)
     
 
     // to match returning packet
-    struct five_tuple bar = {
+    struct five_tuple rep = {
                              .sport = svc,
+                             .dport = tmp, // might be modified
                              .protocol = IPPROTO_TCP,
-                             //.dport = eph, // could rewrite if necc
-                             .dport = tmp, // could rewrite if necc
     };
-    bar.saddr = vip; // ????
-    bar.daddr = ext; // ????
+    rep.saddr = vip; // ????
+    rep.daddr = ext; // ????
     
-    struct addr_port_time baz = {
-                            //.addr = nat,
+    struct addr_port_time map = {
                             .port = eph,
 			    .time = bpf_ktime_get_ns(),
     };
-    baz.addr = nat; // ???
+    map.addr = nat; // ???
     
-    bpf_map_update_elem(&reply, &bar, &baz, BPF_ANY);
+    bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
     return bpf_redirect(vlaninfo->ifindex, 0);
 }
@@ -1146,8 +1073,8 @@ int xdp_reply(struct xdp_md *ctx)
     old.check = 0;
     /**********************************************************************/
     
-    addr_t saddr = { .addr4.addr = ip->saddr};
-    addr_t daddr = { .addr4.addr = ip->daddr};    
+    addr_t saddr = { .addr4.addr = ip->saddr };
+    addr_t daddr = { .addr4.addr = ip->daddr };    
     
     struct five_tuple rep = {
                              .protocol = IPPROTO_TCP,

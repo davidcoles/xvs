@@ -91,7 +91,7 @@ __u16 internet_checksum(void *data, void *data_end, __u32 csum)
 {
     __u16 *p = data;
     
-    for (int n = 0; n < 1500; n += 2) {
+    for (int n = 0; n < MTU; n += 2) {
 	if (p + 1 > data_end)
 	    break;
 	csum += *p;
@@ -818,77 +818,3 @@ int push_gue4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 proto
     return 0;
 }
 
-
-/*
-https://datatracker.ietf.org/doc/html/draft-ietf-nvo3-geneve-08#section-3.1
-
-Basically everything can be zeo except for protocol and VNI
-
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      |Ver|  Opt Len  |O|C|    Rsvd.  |          Protocol Type        |
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      |        Virtual Network Identifier (VNI)       |    Reserved   |
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      |                    Variable Length Options                    |
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
-inside UDP, followed payload described by Protocol Type
-
-   Protocol Type (16 bits):  The type of the protocol data unit
-      appearing after the Geneve header.  This follows the EtherType
-      [ETYPES] convention with Ethernet itself being represented by the
-      value 0x6558.
-
-https://www.redhat.com/en/blog/what-geneve
-https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels#geneve
-# ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
-
-*/
-
-
-// very experimental - likely not useful just yet
-//static __always_inline
-int push_geneve4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 protocol)
-{
-    struct pointers p = {};
-    //int orig_len = push_xin4(ctx, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, GENEVE_OVERHEAD);
-    int orig_len = push_xin4_(ctx, &p, router, t->saddr, t->daddr, IPPROTO_UDP, GENEVE_OVERHEAD);
-
-    if (orig_len < 0)
-	return -1;
-
-    struct udphdr *udp = (void *) (p.ip + 1);
-
-    if (udp + 1 > (void *)(long)ctx->data_end)
-        return -1;
-
-    udp->source = bpf_htons(t->sport);
-    udp->dest = bpf_htons(t->dport); // registered port is 6801
-    udp->len = bpf_htons(GENEVE_OVERHEAD + orig_len);
-    udp->check = 0;
-
-    __u32 vni = 9999;
-    
-    struct geneve_hdr geneve = { .vni = bpf_htonl((vni & 0x00ffffff)<<8),  .protocol = bpf_htons(0x6558) };
-    struct geneve_hdr *g = (void *) (udp + 1);
-    
-    if (g + 1 > (void *)(long)ctx->data_end)
-	return -1;
-
-    *g = geneve;
-
-    struct ethhdr *eth = (void *) (g + 1);
-
-    if (eth + 1 > (void *)(long)ctx->data_end)
-        return -1;
-
-    // just copy the same hw addrs into the inner frame, bit of a fudge
-    memcpy(eth->h_dest, p.eth->h_dest, 6);
-    memcpy(eth->h_source, p.eth->h_source, 6);
-    eth->h_proto = bpf_htons(protocol);
-    
-    if (! t->nochecksum)
-	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
-
-    return 0;
-}
