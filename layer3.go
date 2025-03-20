@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	_ "embed"
-	//"fmt"
+	"fmt"
 	"io/ioutil"
 	"net/netip"
 	"unsafe"
@@ -27,6 +27,14 @@ type bpf_info struct {
 	saddr  [4]byte
 	h_dest [6]byte
 	pad    [2]byte
+}
+
+type bpf_vip_info struct {
+	ext_ip   [16]byte
+	vlanid   uint16
+	h_dest   [6]byte
+	h_source [6]byte
+	pad      [2]byte
 }
 
 type bpf_dest4 struct {
@@ -56,6 +64,14 @@ type bpf_servicekey struct {
 	proto uint16
 }
 
+type bpf_vlaninfo struct {
+	source_ipv4 [4]byte
+	source_ipv6 [16]byte
+	ifindex     uint32
+	hwaddr      [6]byte
+	router      [6]byte
+}
+
 type addr4 = [4]byte
 type addr6 = [16]byte
 
@@ -71,7 +87,7 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	const TCP uint16 = 6
 	const UDP uint16 = 17
 
-	var ZERO uint32 = 0
+	//var ZERO uint32 = 0
 	var vlanid uint32 = 100
 
 	var native bool
@@ -88,6 +104,8 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
+	x.LinkDetach(uint32(nic))
+
 	//	infos, err := x.FindMap("infos", 4, int(unsafe.Sizeof(bpf_info{})))
 
 	if err != nil {
@@ -100,7 +118,7 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
-	vips, err := x.FindMap("vips", 16, 4)
+	vips, err := x.FindMap("vips", 16, int(unsafe.Sizeof(bpf_vip_info{})))
 
 	if err != nil {
 		return err
@@ -112,7 +130,19 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
-	ns, err := nat3(x, "hostns", "netns")
+	nat_to_vip_rip, err := x.FindMap("nat_to_vip_rip", 16, 32)
+
+	if err != nil {
+		return err
+	}
+
+	vlan_info, err := x.FindMap("vlan_info", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
+
+	if err != nil {
+		return err
+	}
+
+	ns, err := nat3(x, "xdp_request", "xdp_reply") // checks
 
 	if err != nil {
 		return err
@@ -120,9 +150,62 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	ns.test()
 
+	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
+		return err
+	}
+
+	saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
+	saddr6as16 := saddr6.As16()
+
+	saddr4as4 := saddr
+	var saddr4as16 [16]byte
+	copy(saddr4as16[12:], saddr[:])
+
+	nat_ := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, 1}
+	vip_ := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 192, 168, 101, 201}
+	rip_ := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 73, 35, 156}
+
+	type bpf_vip_rip struct {
+		vip [16]byte
+		rip [16]byte
+	}
+
+	vip_rip := bpf_vip_rip{
+		vip: vip_,
+		rip: rip_,
+	}
+
+	vlaninfo := bpf_vlaninfo{
+		source_ipv4: saddr,
+		source_ipv6: saddr6as16,
+		ifindex:     nic,
+		hwaddr:      [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
+		router:      [6]byte{0x00, 0x0c, 0x29, 0x6a, 0x44, 0xaa},
+	}
+
+	fmt.Println(vlaninfo, vlan_info)
+
+	nat_to_vip_rip.UpdateElem(uP(&nat_), uP(&vip_rip), xdp.BPF_ANY)
+
+	vlan_info.UpdateElem(uP(&vlanid), uP(&vlaninfo), xdp.BPF_ANY)
+
+	internal := bpf_vlaninfo{
+		source_ipv4: ns.addr(),
+		ifindex:     uint32(ns.a.idx),
+		hwaddr:      ns.b.mac,
+		router:      ns.a.mac,
+	}
+
+	var ftanf = uint32(4095)
+	vlan_info.UpdateElem(uP(&ftanf), uP(&internal), xdp.BPF_ANY)
+
 	/**********************************************************************/
 
 	redirect_map.UpdateElem(uP(&vlanid), uP(&nic), xdp.BPF_ANY)
+
+	var ns_nic uint32 = uint32(ns.a.idx)
+
+	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
 
 	//infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
 
@@ -155,29 +238,39 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	all := []netip.Addr{vip, vip2}
 
+	//h_dest := hwaddr[vip] // use same for both ipv4 and ipv6 in lieu of arp for ipv6
+
 	for _, ip := range all {
 
 		var vip6 addr6
 		var port uint16 = l3port4
 
+		vip_info := bpf_vip_info{
+			vlanid:   uint16(vlanid),
+			h_dest:   h_dest,
+			h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
+		}
+
 		if ip.Is4() {
 			i := ip.As4()
 			copy(vip6[12:], i[:])
+			copy(vip_info.ext_ip[12:], saddr4as4[:])
 		} else {
 			i := ip.As16()
 			copy(vip6[:], i[:])
+			copy(vip_info.ext_ip[:], saddr6as16[:])
 			port = l3port6
 		}
 
-		vips.UpdateElem(uP(&vip6), uP(&ZERO), xdp.BPF_ANY)
+		fmt.Println(vip_info)
+
+		vips.UpdateElem(uP(&vip6), uP(&vip_info), xdp.BPF_ANY)
 
 		var val bpf_destinations
 
 		if sticky {
 			val.flag[0] |= F_STICKY
 		}
-
-		saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
 
 		copy(val.saddr[12:], saddr[:])
 		val.saddr6 = saddr6.As16()
@@ -217,10 +310,6 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 			}
 			destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
 		}
-	}
-
-	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
-		return err
 	}
 
 	return nil

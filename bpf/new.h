@@ -63,6 +63,28 @@ __u16 csum_fold_helper(__u32 csum)
 }
 
 static __always_inline
+__u16 ipv4_checksum_diff(__u16 seed, struct iphdr *new, struct iphdr *old)
+{
+    __u32 csum, size = sizeof(struct iphdr);   
+    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
+    return csum_fold_helper(csum);
+}
+
+
+struct l4 {
+    __be32 saddr;
+    __be32 daddr;
+};
+
+static __always_inline __u16
+l4_checksum_diff(__u16 seed, struct l4 *new, struct l4 *old) {
+    __u32 csum, size = sizeof(struct l4);
+    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
+    return csum_fold_helper(csum);
+}
+
+
+static __always_inline
 __u16 internet_checksum(void *data, void *data_end, __u32 csum)
 {
     __u16 *p = data;

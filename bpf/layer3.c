@@ -176,6 +176,9 @@ const __u8 F_CALCULATE_CHECKSUM = 1;
 #define VERSION 1
 #define SECOND_NS 1000000000l
 
+
+const __u32 NETNS = 4095;
+
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 
@@ -194,6 +197,7 @@ const __u8 F_LAYER3_NAT    = 7; // unlikely
 enum lookup_result {
 		    NOT_FOUND = 0,
 		    NOT_A_VIP,
+		    CHECK, 
 		    LAYER2_DSR,
 		    LAYER3_GRE,
 		    LAYER3_FOU,
@@ -326,7 +330,8 @@ struct {
 /**********************************************************************/
 
 struct vlaninfo {
-    struct addr source_ipv4;
+    //struct addr source_ipv4;
+    __u32 source_ipv4;
     struct addr source_ipv6;
     __u32 ifindex;
     __u8 hwaddr[6]; // interface's MAC
@@ -413,6 +418,17 @@ struct {
     __uint(max_entries, 4096);
 } request SEC(".maps");
 
+
+    // need ext ip, h_source, h_dest, vlanid
+
+struct vip_info {
+    addr_t ext_ip;
+    __u16 vlanid;
+    __u8 h_dest[6];   // router MAC
+    __u8 h_source[6]; // external interface AMC
+    __u8 pad[2];
+};
+
 struct five_tuple {
     addr_t saddr;
     addr_t daddr;
@@ -430,7 +446,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct five_tuple);
     __type(value, struct addr_port);
-    __uint(max_entries, 4096);
+    __uint(max_entries, 65556);
 } reply SEC(".maps");
 
 
@@ -456,8 +472,11 @@ int tunnel_request(addr_t ext_addr, __be16 ext_port, __u8 protocol, addr_t rip, 
     return 0;
 }
 
-int netns_side(addr_t veth, __be16 eph_port, __u8 protocol, addr_t nat, __be16 service_port) {
+int netns_side(addr_t *veth_, __be16 eph_port, __u8 protocol, addr_t *nat_, __be16 service_port) {
 
+    //addr_t veth = *veth_;
+    addr_t nat = *nat_;
+    
     // check that veth is what we expect amd that nat is in the correct range ...
     
     addr_t *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
@@ -554,7 +573,43 @@ int netns_side(addr_t veth, __be16 eph_port, __u8 protocol, addr_t nat, __be16 s
     return tunnel_request(ext_addr, bpf_htons(ext_port), protocol, rip, service_port);
 }
 
+/*
+int netns_side3(addr_t *veth_, __be16 eph_port, __u8 protocol, addr_t *nat_, __be16 service_port) {
 
+    //addr_t veth = *veth_;
+    addr_t nat = *nat_;
+    
+    // check that veth is what we expect amd that nat is in the correct range ...
+    
+    addr_t *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
+    
+    if (!vip_rip)
+	return -1;
+
+    addr_t vip = vip_rip[0];
+    addr_t rip = vip_rip[1];
+
+    addr_t ext_addr = {}; // look this up
+    __u64 ext_port = eph_port;
+
+    
+    struct five_tuple bar = {
+			     .saddr = vip,
+			     .sport = service_port,
+			     .protocol = protocol,
+			     .daddr = ext_addr,
+			     .dport = ext_port,
+    };
+
+    struct addr_port baz = {
+			    .addr = nat,
+			    .port = eph_port,
+    };
+
+    bpf_map_update_elem(&reply, &bar, &baz, BPF_ANY);
+    
+}
+*/
 
 // nat:nport:vip:vport:protocol -> ext-port (external addr is fixed)
 
@@ -600,7 +655,8 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u8[16]);
-    __type(value, __u32);
+    //    __type(value, __u32);
+    __type(value, struct vip_info);
     __uint(max_entries, 4096);
 } vips SEC(".maps");
 
@@ -849,16 +905,36 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 }
 
 //static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t, __u32 *nic)
 {
+    void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     
+    struct ethhdr *eth = data;
+
+    if (eth + 1 > data_end)
+        return NOT_FOUND;
+
     if (ip + 1 > data_end)
 	return NOT_FOUND;
     
     struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
 
+    if (bpf_map_lookup_elem(&vips, &saddr)) {
+	// source was a VIP
+	
+	struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+	
+	if (!vlaninfo)
+	    return NOT_FOUND;
+
+	// set correct MAC address for veth pair
+	memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
+	memcpy(eth->h_source, vlaninfo->router, 6);	    
+	return CHECK;
+    }
+    
     ft->saddr = saddr;
     ft->daddr = daddr;
     
@@ -891,7 +967,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
     
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
-    
+
     return lookup(ft, ip->protocol, t);
 }
 
@@ -949,6 +1025,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	next_header = vlan + 1;
     }
 
+    __u32 nic;
+    
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
@@ -956,8 +1034,46 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	overhead = sizeof(struct ip6_hdr);
 	break;
     case bpf_htons(ETH_P_IP):
-	result = lookup4(ctx, next_header, ft, t);
-	overhead = sizeof(struct iphdr);	
+
+	if (next_proto != bpf_htons(ETH_P_IP))
+	    return XDP_PASS;
+	
+	struct iphdr *ip = next_header;
+	
+	if (ip + 1 > data_end)
+	    return XDP_PASS;
+	
+	if (ip->version != 4)
+	    return XDP_PASS;
+
+	if (ip->ihl != 5)
+	    return XDP_PASS;
+	
+	if (ip->ttl <= 1)
+	    return XDP_PASS;
+	
+	// ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
+	if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
+	    return XDP_PASS; // FIXME - new enum;
+	
+	if (ip->protocol != IPPROTO_TCP)
+	    return XDP_PASS;
+	
+	struct tcphdr *tcp = (void *)(ip + 1);
+
+	if (tcp + 1 > data_end)
+	    return XDP_PASS;
+	
+	if (tcp->dest == htons(9999))
+	    return bpf_redirect_map(&redirect_map, 100, XDP_PASS);
+	
+	result = lookup4(ctx, next_header, ft, t, &nic);
+	overhead = sizeof(struct iphdr);
+	
+	if (result == CHECK) {
+	    return bpf_redirect_map(&redirect_map, NETNS,  XDP_DROP);
+	}
+	
 	break;
     default:
 	return XDP_PASS;
@@ -976,6 +1092,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case LAYER3_IPIP: break;
     case NOT_A_VIP: return XDP_PASS;
     case NOT_FOUND: return XDP_DROP;
+    case CHECK:
+	return XDP_DROP;
     }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
@@ -1060,6 +1178,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	update(&ft, &t);
 	return XDP_TX;
     case XDP_ABORTED: return XDP_ABORTED;
+    case XDP_REDIRECT: return XDP_REDIRECT;
     }
     
     return XDP_DROP;
@@ -1073,21 +1192,243 @@ int xdp_pass_func(struct xdp_md *ctx)
 }
 
 SEC("xdp")
-int hostns(struct xdp_md *ctx)
+int xdp_request(struct xdp_md *ctx)
 {
-    // needs mapping from a NAT address to a tunnel address with VIP inside
-    // use some counter to track port on external address to use
-    bpf_printk("hostns\n");
-    return XDP_PASS;
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+	return XDP_PASS;
+    
+    struct iphdr *ip = (void *)(eth + 1);
+    
+    if (ip + 1 > data_end)
+	return XDP_PASS;
+
+    addr_t nat = { .addr4.addr = ip->daddr};
+    addr_t *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
+
+    if (!vip_rip)
+    	return XDP_PASS;
+
+    addr_t vip = vip_rip[0];
+    addr_t rip = vip_rip[1];
+    
+    struct vip_info *vip_info = bpf_map_lookup_elem(&vips, &vip);
+    
+    if (!vip_info)
+	return XDP_DROP;
+    
+    __u32 vlanid = vip_info->vlanid;
+    
+    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &vlanid);
+
+    if (!vlaninfo)
+	return XDP_DROP;
+    
+    if (!vlaninfo->ifindex) // FIXME - in case of singel nic/no vlan setup?
+	return XDP_DROP;
+    
+    if (ip->version != 4)
+	return XDP_DROP;
+    
+    if (ip->ihl != 5)
+        return XDP_DROP;
+    
+    if (ip->ttl <= 1)
+	return XDP_DROP;
+
+    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
+    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
+        return XDP_DROP; // FIXME - new enum;
+    
+    if (ip->protocol != IPPROTO_TCP)
+	return XDP_DROP;
+    
+    struct tcphdr *tcp = (void *)(ip + 1);
+    
+    if (tcp + 1 > data_end)
+      return XDP_DROP;
+
+    __be16 eph = tcp->source;
+    __be16 svc = tcp->dest;
+    addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
+    
+    tunnel_t t = {
+		  .saddr = ext,
+		  .daddr = rip,
+		  .sport = 0x6666,
+		  .dport = 9999,
+		  .nochecksum = 1,
+		  .type = F_LAYER3_GRE,
+		  .vlanid = vip_info->vlanid,
+    };
+    
+    memcpy(t.hwaddr, vlaninfo->router, 6);
+    
+    /**********************************************************************/
+    // SAVE CHECKSUM INFO
+    /**********************************************************************/
+    struct l4 o = {.saddr = ip->saddr, .daddr = ip->daddr};
+    __u16 old_csum = ip->check;
+    struct iphdr old = *ip;
+    old.check = 0;
+    /**********************************************************************/
+
+    ip->saddr = ext.addr4.addr;
+    ip->daddr = vip.addr4.addr;
+    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+
+    /**********************************************************************/
+    // CHECKSUM DIFFS FROM OLD
+    /**********************************************************************/
+    ip->check = 0;
+    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+    struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
+    tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
+    /**********************************************************************/
+
+    if(push_gue4(ctx, vlaninfo->router, &t, IPPROTO_IPIP) < 0)
+	return XDP_DROP;
+
+    /**********************************************************************/
+    data_end = (void *)(long)ctx->data_end;
+    data     = (void *)(long)ctx->data;
+
+    eth = data;
+
+    if (eth + 1 > data_end)
+        return XDP_PASS;
+    
+    memcpy(eth->h_dest, vlaninfo->router, 6);   // router/dest addr
+    memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
+    /**********************************************************************/
+    
+
+    // to match returning packet
+    struct five_tuple bar = {
+                             .sport = svc,
+                             .protocol = IPPROTO_TCP,
+                             .dport = eph, // could rewrite if necc
+    };
+    bar.saddr = vip; // ????
+    bar.daddr = ext; // ????
+    
+    struct addr_port baz = {
+                            //.addr = nat,
+                            .port = eph,
+    };
+    baz.addr = nat; // ???
+    
+    bpf_map_update_elem(&reply, &bar, &baz, BPF_ANY);
+    
+    return bpf_redirect(vlaninfo->ifindex, 0);
 }
 
 SEC("xdp")
-int netns(struct xdp_md *ctx)
+int xdp_reply(struct xdp_md *ctx)
 {
-    // will get passed here from external is source was a VIP
-    // lookup VIP/dest port in table and will map to internal NAT address
-    // to use to replace source, src-port and dport - daddr will be netns's IP
-    bpf_printk("netns\n");
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+	return XDP_PASS;
+    
+    struct iphdr *ip = (void *)(eth + 1);
+    
+    if (ip + 1 > data_end)
+	return XDP_DROP;
+        
+    if (ip->version != 4)
+        return XDP_DROP;
+    
+    if (ip->ihl != 5)
+        return XDP_DROP;
+    
+    if (ip->ttl <= 1)
+        return XDP_DROP;
+
+    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
+    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
+        return XDP_DROP;
+    
+    if (ip->protocol != IPPROTO_TCP)
+        return XDP_PASS;
+    
+    struct tcphdr *tcp = (void *)(ip + 1);
+    
+    if (tcp + 1 > data_end)
+	return XDP_DROP;    
+
+
+    /**********************************************************************/
+    // SAVE CHECKSUM INFO
+    /**********************************************************************/
+    struct l4 o = {.saddr = ip->saddr, .daddr = ip->daddr};
+    __u16 old_csum = ip->check;
+    struct iphdr old = *ip;
+    old.check = 0;
+    /**********************************************************************/
+    
+    addr_t saddr = { .addr4.addr = ip->saddr};
+    addr_t daddr = { .addr4.addr = ip->daddr};    
+    
+    struct five_tuple rep = {
+                             .protocol = IPPROTO_TCP,
+                             .sport = tcp->source,
+                             .dport = tcp->dest,
+    };
+    
+    rep.saddr = saddr;
+    rep.daddr = daddr;
+    
+    struct addr_port *match = bpf_map_lookup_elem(&reply, &rep);
+    
+    if (!match)
+	return XDP_DROP;
+
+    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+    
+    if (!vlaninfo)
+	return XDP_DROP;    
+
+    ip->saddr = match->addr.addr4.addr;
+    ip->daddr = vlaninfo->source_ipv4;
+    tcp->dest = match->port;
+
+    /**********************************************************************/
+    // CHECKSUM DIFFS FROM OLD
+    /**********************************************************************/
+    ip->check = 0;
+    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+    struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
+    tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
+    /**********************************************************************/
+
+    // already done for us
+    //memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
+    //memcpy(eth->h_source, vlaninfo->router, 6);
+    
+    return XDP_PASS;
+}
+
+
+SEC("xdp")
+int pass(struct xdp_md *ctx)
+{
+    int ingress = ctx->ingress_ifindex;
+
+    bpf_printk("PASS %d\n", ingress);
     return XDP_PASS;
 }
 
