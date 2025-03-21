@@ -347,11 +347,11 @@ struct {
 } vlan_info SEC(".maps");
 
 
-struct three_tuple {
-    struct addr addr;
-    __u16 port;
-    __u16 protocol;
-};
+//struct three_tuple {
+//    struct addr addr;
+//    __u16 port;
+//    __u16 protocol;
+//};
 
 
 struct {
@@ -362,10 +362,10 @@ struct {
 } nat_to_vip_rip SEC(".maps");
     
 struct vip_info {
-    addr_t ext_ip;
+    addr_t ext_ip_;
     __u16 vlanid;
-    __u8 h_dest[6];   // router MAC
-    __u8 h_source[6]; // external interface AMC
+    __u8 h_dest_[6];   // router MAC - unused
+    __u8 h_source_[6]; // external interface AMC - unused
     __u8 pad[2];
 };
 
@@ -790,7 +790,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case LAYER3_IPIP: break;
     case NOT_A_VIP: return XDP_PASS;
     case NOT_FOUND: return XDP_DROP;
-    case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS,  XDP_DROP);
+    case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
     }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
@@ -920,7 +920,7 @@ int xdp_request(struct xdp_md *ctx)
     if (!vlaninfo)
 	return XDP_DROP;
     
-    if (!vlaninfo->ifindex) // FIXME - in case of singel nic/no vlan setup?
+    if (!vlaninfo->ifindex) // FIXME - in case of single nic/no vlan setup?
 	return XDP_DROP;
     
     if (ip->version != 4)
@@ -1116,16 +1116,6 @@ int xdp_reply(struct xdp_md *ctx)
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
 
-    return XDP_PASS;
-}
-
-
-SEC("xdp")
-int pass(struct xdp_md *ctx)
-{
-    int ingress = ctx->ingress_ifindex;
-
-    bpf_printk("PASS %d\n", ingress);
     return XDP_PASS;
 }
 
