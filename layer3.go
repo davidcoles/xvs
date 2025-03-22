@@ -106,11 +106,12 @@ type dinfo struct {
 }
 
 type layer3 struct {
-	viprip       map[[2]a16]dinfo
-	destinations xdp.Map
-	vips         xdp.Map
-	saddr4       [4]byte
-	saddr6       [16]byte
+	viprip         map[[2]a16]dinfo
+	destinations   xdp.Map
+	nat_to_vip_rip xdp.Map
+	vips           xdp.Map
+	saddr4         [4]byte
+	saddr6         [16]byte
 }
 
 func (l *layer3) SetDestination(v, r netip.Addr, method uint8, h_dest [6]byte) {
@@ -212,9 +213,8 @@ func (l *layer3) recalc(h_dest [6]byte) {
 		}
 
 		for i, _ := range val.hash {
-			//d := i % len(dests)
-			//val.hash[i] = byte(d + 1)
-			val.hash[i] = 1
+			d := i % len(dests)
+			val.hash[i] = byte(d + 1)
 		}
 
 		for _, port := range []uint16{80, 443, 8000} {
@@ -224,12 +224,23 @@ func (l *layer3) recalc(h_dest [6]byte) {
 				proto: uint16(TCP),
 			}
 
-			//if false {
 			l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
-			//}
+		}
+
+		for _, d := range dests {
+
+			nat := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, byte(d.index)}
+
+			vip_rip := bpf_vip_rip{
+				vip:    vip,
+				rip:    d.dest,
+				port:   d.tport,
+				method: d.flags,
+			}
+
+			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 		}
 	}
-
 }
 
 func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) (*layer3, error) {
@@ -330,31 +341,6 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	copy(vip_[12:], vip__[:])
 
-	for i, d := range dests {
-
-		var rip [16]byte
-		nat := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, byte(i + 1)}
-
-		if d.Is4() {
-			as4 := d.As4()
-			copy(rip[12:], as4[:])
-		} else {
-			rip = d.As16()
-		}
-
-		//rip_ := [16]byte{0xfd, 0x6e, 0xee, 0xc8, 0x76, 0xac, 0xac, 0x1d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
-
-		vip_rip := bpf_vip_rip{
-			vip:    vip_,
-			rip:    rip,
-			port:   l3port4,
-			method: tunnel,
-		}
-
-		nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
-
-	}
-
 	vlaninfo := bpf_vlaninfo{
 		source_ipv4: saddr,
 		source_ipv6: saddr6as16,
@@ -385,87 +371,109 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
 
-	//infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
-
-	hwaddr, _ := arp()
-
-	all := []netip.Addr{vip, vip2}
-
-	//h_dest := hwaddr[vip] // use same for both ipv4 and ipv6 in lieu of arp for ipv6
-
-	return &layer3{destinations: destinations, vips: vips, saddr4: saddr, saddr6: saddr6as16}, nil
-
-	for _, ip := range all {
-
-		var vip6 addr6
-		var port uint16 = l3port4
-
-		vip_info := bpf_vip_info{
-			vlanid:   uint16(vlanid),
-			h_dest:   h_dest,
-			h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
-		}
-
-		if ip.Is4() {
-			i := ip.As4()
-			copy(vip6[12:], i[:])
-			copy(vip_info.ext_ip[12:], saddr4as4[:])
-		} else {
-			i := ip.As16()
-			copy(vip6[:], i[:])
-			copy(vip_info.ext_ip[:], saddr6as16[:])
-			port = l3port6
-		}
-
-		fmt.Println(vip_info)
-
-		vips.UpdateElem(uP(&vip6), uP(&vip_info), xdp.BPF_ANY)
-
-		var val bpf_destinations
-
-		if sticky {
-			val.flag[0] |= F_STICKY
-		}
-
-		copy(val.saddr[12:], saddr[:])
-		val.saddr6 = saddr6.As16()
-		val.h_dest = h_dest
-		val.vlanid = uint16(vlanid)
-
+	if false {
 		for i, d := range dests {
 
-			val.flag[i+1] = tunnel
-			val.sport[i+1] = port
+			var rip [16]byte
+			nat := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, byte(i + 1)}
 
-			var daddr [16]byte
-
-			if d.Is6() {
-				daddr = d.As16()
+			if d.Is4() {
+				as4 := d.As4()
+				copy(rip[12:], as4[:])
 			} else {
-				ip := d.As4()
-				copy(daddr[12:], ip[:])
-
-				val.hwaddr[i+1] = hwaddr[ip]
-
+				rip = d.As16()
 			}
 
-			val.daddr[i+1] = daddr
-		}
+			//rip_ := [16]byte{0xfd, 0x6e, 0xee, 0xc8, 0x76, 0xac, 0xac, 0x1d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
 
-		for i, _ := range val.hash {
-			d := i % len(dests)
-			val.hash[i] = byte(d + 1)
-		}
-
-		for _, port := range []uint16{80, 443, 8000} {
-			key := bpf_servicekey{
-				addr:  vip6,
-				port:  port,
-				proto: TCP,
+			vip_rip := bpf_vip_rip{
+				vip:    vip_,
+				rip:    rip,
+				port:   l3port4,
+				method: tunnel,
 			}
-			destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+
+			nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
+
+		}
+
+	}
+	if false {
+		hwaddr, _ := arp()
+
+		all := []netip.Addr{vip, vip2}
+
+		for _, ip := range all {
+
+			var vip6 addr6
+			var port uint16 = l3port4
+
+			vip_info := bpf_vip_info{
+				vlanid:   uint16(vlanid),
+				h_dest:   h_dest,
+				h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
+			}
+
+			if ip.Is4() {
+				i := ip.As4()
+				copy(vip6[12:], i[:])
+				copy(vip_info.ext_ip[12:], saddr4as4[:])
+			} else {
+				i := ip.As16()
+				copy(vip6[:], i[:])
+				copy(vip_info.ext_ip[:], saddr6as16[:])
+				port = l3port6
+			}
+
+			fmt.Println(vip_info)
+
+			vips.UpdateElem(uP(&vip6), uP(&vip_info), xdp.BPF_ANY)
+
+			var val bpf_destinations
+
+			if sticky {
+				val.flag[0] |= F_STICKY
+			}
+
+			copy(val.saddr[12:], saddr[:])
+			val.saddr6 = saddr6.As16()
+			val.h_dest = h_dest
+			val.vlanid = uint16(vlanid)
+
+			for i, d := range dests {
+
+				val.flag[i+1] = tunnel
+				val.sport[i+1] = port
+
+				var daddr [16]byte
+
+				if d.Is6() {
+					daddr = d.As16()
+				} else {
+					ip := d.As4()
+					copy(daddr[12:], ip[:])
+
+					val.hwaddr[i+1] = hwaddr[ip]
+
+				}
+
+				val.daddr[i+1] = daddr
+			}
+
+			for i, _ := range val.hash {
+				d := i % len(dests)
+				val.hash[i] = byte(d + 1)
+			}
+
+			for _, port := range []uint16{80, 443, 8000} {
+				key := bpf_servicekey{
+					addr:  vip6,
+					port:  port,
+					proto: TCP,
+				}
+				destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+			}
 		}
 	}
-
-	return &layer3{destinations: destinations, vips: vips}, nil
+	return &layer3{destinations: destinations, vips: vips, saddr4: saddr, saddr6: saddr6as16, nat_to_vip_rip: nat_to_vip_rip}, nil
 }
