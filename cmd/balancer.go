@@ -30,14 +30,14 @@ func mac(m [6]byte) string {
 
 func main() {
 
-	sticky := flag.Bool("s", false, "Sticky")
+	//sticky := flag.Bool("s", false, "Sticky")
 	ipip := flag.Bool("i", false, "IP-in-IP")
 	gre := flag.Bool("g", false, "GRE")
 	gue := flag.Bool("G", false, "GUE")
 	layer2 := flag.Bool("2", false, "Layer 2")
-	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
-	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
-	ip6 := flag.String("6", "", "IPv6 VIP")
+	//l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
+	//l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
+	ip6 := flag.String("6", "", "Local IPv6 address")
 
 	flag.Parse()
 
@@ -48,10 +48,13 @@ func main() {
 	saddr := netip.MustParseAddr(args[1])
 	vip := netip.MustParseAddr(args[2])
 
-	var vip2 netip.Addr
+	var saddr6 [16]byte
+
 	if *ip6 != "" {
-		vip2 = netip.MustParseAddr(*ip6)
+		s6 := netip.MustParseAddr(*ip6)
+		saddr6 = s6.As16()
 	}
+
 	var h_dest [6]byte
 
 	copy(h_dest[:], mac[:])
@@ -86,13 +89,15 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	l3, err := xvs.Layer3(tun, 2, h_dest, saddr.As4(), vip, vip2, uint16(*l3port4), uint16(*l3port6), *sticky, addrs...)
+	l3, err := xvs.Layer3(2, h_dest, saddr.As4(), saddr6)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	l3.SetDestination(vip, addrs[0], xvs.GRE, h_dest)
+	for _, dest := range addrs {
+		l3.SetDestination(vip, dest, tun)
+	}
 
 	fmt.Println("OK")
 }

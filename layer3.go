@@ -106,6 +106,7 @@ type dinfo struct {
 }
 
 type layer3 struct {
+	h_dest         [6]byte
 	viprip         map[[2]a16]dinfo
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
@@ -114,8 +115,9 @@ type layer3 struct {
 	saddr6         [16]byte
 }
 
-func (l *layer3) SetDestination(v, r netip.Addr, method uint8, h_dest [6]byte) {
+func (l *layer3) SetDestination(v, r netip.Addr, method uint8) {
 	var vip, rip [16]byte
+	var tport uint16 = 9999
 
 	if len(l.viprip) < 1 {
 		l.viprip = map[[2]a16]dinfo{}
@@ -132,19 +134,20 @@ func (l *layer3) SetDestination(v, r netip.Addr, method uint8, h_dest [6]byte) {
 		as4 := r.As4()
 		copy(rip[12:], as4[:])
 	} else {
-		rip = v.As16()
+		rip = r.As16()
+		tport = 6666
 	}
 
 	vr := [2]a16{vip, rip}
 
 	flags := method & 0x7
 
-	l.viprip[vr] = dinfo{flags: flags}
+	l.viprip[vr] = dinfo{flags: flags, tport: tport}
 
-	l.recalc(h_dest)
+	l.recalc()
 }
 
-func (l *layer3) recalc(h_dest [6]byte) {
+func (l *layer3) recalc() {
 	var index uint16
 	var vlanid uint32 = 100
 
@@ -169,7 +172,7 @@ func (l *layer3) recalc(h_dest [6]byte) {
 
 		vip_info := bpf_vip_info{
 			vlanid:   uint16(vlanid),
-			h_dest:   h_dest,
+			h_dest:   l.h_dest,
 			h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
 		}
 
@@ -187,7 +190,7 @@ func (l *layer3) recalc(h_dest [6]byte) {
 
 		copy(val.saddr[12:], l.saddr4[:])
 		val.saddr6 = l.saddr6
-		val.h_dest = h_dest
+		val.h_dest = l.h_dest
 		val.vlanid = uint16(vlanid)
 
 		isIPv4 := func(ip [16]byte) bool {
@@ -204,6 +207,8 @@ func (l *layer3) recalc(h_dest [6]byte) {
 			val.flag[i+1] = d.flags
 			val.sport[i+1] = d.tport
 			val.daddr[i+1] = d.dest
+
+			fmt.Println("XXX", d.dest)
 
 			if isIPv4(d.dest) {
 				var ip [4]byte
@@ -243,21 +248,11 @@ func (l *layer3) recalc(h_dest [6]byte) {
 	}
 }
 
-func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) (*layer3, error) {
+func Layer3(nic uint32, h_dest [6]byte, saddr addr4, saddr6_ addr6) (*layer3, error) {
 
-	const TCP uint16 = 6
-	const UDP uint16 = 17
-
-	//var ZERO uint32 = 0
 	var vlanid uint32 = 100
 
 	var native bool
-
-	//info := bpf_info{
-	//	vip:    vip,
-	//	saddr:  saddr,
-	//	h_dest: h_dest,
-	//}
 
 	x, err := xdp.LoadBpfFile(layer3_o)
 
@@ -266,8 +261,6 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	}
 
 	x.LinkDetach(uint32(nic))
-
-	//	infos, err := x.FindMap("infos", 4, int(unsafe.Sizeof(bpf_info{})))
 
 	if err != nil {
 		return nil, err
@@ -315,21 +308,16 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return nil, err
 	}
 
-	saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
-	saddr6as16 := saddr6.As16()
+	//saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
+	//saddr6as16 := saddr6.As16()
 
-	saddr4as4 := saddr
-	var saddr4as16 [16]byte
-	copy(saddr4as16[12:], saddr[:])
-
-	var vip_ [16]byte
-	vip__ := vip.As4()
-
-	copy(vip_[12:], vip__[:])
+	//var saddr4as16 [16]byte
+	//copy(saddr4as16[12:], saddr[:])
 
 	vlaninfo := bpf_vlaninfo{
 		source_ipv4: saddr,
-		source_ipv6: saddr6as16,
+		//source_ipv6: saddr6as16,
+		source_ipv6: saddr6_,
 		ifindex:     nic,
 		hwaddr:      [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
 		router:      [6]byte{0x00, 0x0c, 0x29, 0x6a, 0x44, 0xaa},
@@ -357,5 +345,13 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 
 	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
 
-	return &layer3{destinations: destinations, vips: vips, saddr4: saddr, saddr6: saddr6as16, nat_to_vip_rip: nat_to_vip_rip}, nil
+	return &layer3{
+		h_dest:       h_dest,
+		destinations: destinations,
+		vips:         vips,
+		saddr4:       saddr,
+		//saddr6:         saddr6as16,
+		saddr6:         saddr6_,
+		nat_to_vip_rip: nat_to_vip_rip,
+	}, nil
 }
