@@ -248,7 +248,7 @@ func (l *layer3) recalc() {
 	}
 }
 
-func Layer3(nic uint32, h_dest [6]byte, saddr addr4, saddr6_ addr6) (*layer3, error) {
+func Layer3(nic uint32, h_source, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3, error) {
 
 	var vlanid uint32 = 100
 
@@ -308,19 +308,12 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, saddr6_ addr6) (*layer3, er
 		return nil, err
 	}
 
-	//saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
-	//saddr6as16 := saddr6.As16()
-
-	//var saddr4as16 [16]byte
-	//copy(saddr4as16[12:], saddr[:])
-
 	vlaninfo := bpf_vlaninfo{
-		source_ipv4: saddr,
-		//source_ipv6: saddr6as16,
-		source_ipv6: saddr6_,
+		source_ipv4: saddr4,
+		source_ipv6: saddr6,
 		ifindex:     nic,
-		hwaddr:      [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
-		router:      [6]byte{0x00, 0x0c, 0x29, 0x6a, 0x44, 0xaa},
+		hwaddr:      h_source,
+		router:      h_dest,
 	}
 
 	fmt.Println(vlaninfo, vlan_info)
@@ -346,12 +339,11 @@ func Layer3(nic uint32, h_dest [6]byte, saddr addr4, saddr6_ addr6) (*layer3, er
 	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
-		h_dest:       h_dest,
-		destinations: destinations,
-		vips:         vips,
-		saddr4:       saddr,
-		//saddr6:         saddr6as16,
-		saddr6:         saddr6_,
+		h_dest:         h_dest,
+		destinations:   destinations,
+		vips:           vips,
+		saddr4:         saddr4,
+		saddr6:         saddr6,
 		nat_to_vip_rip: nat_to_vip_rip,
 	}, nil
 }

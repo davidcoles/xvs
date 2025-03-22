@@ -43,10 +43,17 @@ func main() {
 
 	args := flag.Args()
 
-	//fmt.Println(os.Args)
-	mac, _ := net.ParseMAC(args[0])
-	saddr := netip.MustParseAddr(args[1])
-	vip := netip.MustParseAddr(args[2])
+	smac, _ := net.ParseMAC(args[0])
+	dmac, _ := net.ParseMAC(args[1])
+	saddr4 := netip.MustParseAddr(args[2])
+	vip := netip.MustParseAddr(args[3])
+	dests := args[4:]
+
+	var h_source [6]byte
+	var h_dest [6]byte
+
+	copy(h_source[:], smac[:])
+	copy(h_dest[:], dmac[:])
 
 	var saddr6 [16]byte
 
@@ -55,17 +62,11 @@ func main() {
 		saddr6 = s6.As16()
 	}
 
-	var h_dest [6]byte
-
-	copy(h_dest[:], mac[:])
-
 	type addr4 = [4]byte
-	//var addrs []addr4
 	var addrs []netip.Addr
 
-	for _, d := range args[3:] {
+	for _, d := range dests {
 		addr := netip.MustParseAddr(d)
-		//addrs = append(addrs, addr.As4())
 		addrs = append(addrs, addr)
 	}
 
@@ -89,7 +90,7 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	l3, err := xvs.Layer3(2, h_dest, saddr.As4(), saddr6)
+	l3, err := xvs.Layer3(2, h_source, h_dest, saddr4.As4(), saddr6)
 
 	if err != nil {
 		log.Fatal(err)
