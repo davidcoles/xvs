@@ -22,6 +22,22 @@ func init() {
 	}
 }
 
+const F_LAYER2_DSR uint8 = 0
+const F_LAYER3_FOU4 uint8 = 1  // IPv4 host with FOU tunnel
+const F_LAYER3_GRE uint8 = 2   // IPv6 host with FOU tunnel
+const F_LAYER3_GUE uint8 = 3   // IPv4 host with IP-in-IP tunnel
+const F_LAYER3_IPIP4 uint8 = 4 // IPv4 host with IP-in-IP tunnel
+const F_LAYER3_GENEVE uint8 = 5
+
+const FOU uint8 = 0
+const GRE uint8 = 1
+const GUE uint8 = 2
+const IPIP uint8 = 3
+const LAYER2 uint8 = 4
+const GENEVE uint8 = 5
+
+const F_STICKY uint8 = 0x01
+
 type bpf_info struct {
 	vip    [4]byte
 	saddr  [4]byte
@@ -72,15 +88,15 @@ type bpf_vlaninfo struct {
 	router      [6]byte
 }
 
+type bpf_vip_rip struct {
+	vip    [16]byte
+	rip    [16]byte
+	port   uint16
+	method uint8
+}
+
 type addr4 = [4]byte
 type addr6 = [16]byte
-
-const FOU uint8 = 0
-const GRE uint8 = 1
-const GUE uint8 = 2
-const IPIP uint8 = 3
-const LAYER2 uint8 = 4
-const GENEVE uint8 = 5
 
 func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.Addr, l3port4, l3port6 uint16, sticky bool, dests ...netip.Addr) error {
 
@@ -130,7 +146,7 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
-	nat_to_vip_rip, err := x.FindMap("nat_to_vip_rip", 16, 32)
+	nat_to_vip_rip, err := x.FindMap("nat_to_vip_rip", 16, int(unsafe.Sizeof(bpf_vip_rip{})))
 
 	if err != nil {
 		return err
@@ -154,6 +170,22 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 		return err
 	}
 
+	tunnel := F_LAYER3_FOU4
+
+	switch tun {
+	case FOU:
+	case GRE:
+		tunnel = F_LAYER3_GRE
+	case GUE:
+		tunnel = F_LAYER3_GUE
+	case IPIP:
+		tunnel = F_LAYER3_IPIP4
+	case LAYER2:
+		tunnel = F_LAYER2_DSR
+	case GENEVE:
+		tunnel = F_LAYER3_GENEVE
+	}
+
 	saddr6 := netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::3")
 	saddr6as16 := saddr6.As16()
 
@@ -161,18 +193,34 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	var saddr4as16 [16]byte
 	copy(saddr4as16[12:], saddr[:])
 
-	nat_ := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, 1}
-	vip_ := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 192, 168, 101, 201}
-	rip_ := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 73, 35, 156}
+	var vip_ [16]byte
+	vip__ := vip.As4()
 
-	type bpf_vip_rip struct {
-		vip [16]byte
-		rip [16]byte
-	}
+	copy(vip_[12:], vip__[:])
 
-	vip_rip := bpf_vip_rip{
-		vip: vip_,
-		rip: rip_,
+	for i, d := range dests {
+
+		var rip [16]byte
+		nat := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, byte(i + 1)}
+
+		if d.Is4() {
+			as4 := d.As4()
+			copy(rip[12:], as4[:])
+		} else {
+			rip = d.As16()
+		}
+
+		//rip_ := [16]byte{0xfd, 0x6e, 0xee, 0xc8, 0x76, 0xac, 0xac, 0x1d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
+
+		vip_rip := bpf_vip_rip{
+			vip:    vip_,
+			rip:    rip,
+			port:   l3port4,
+			method: tunnel,
+		}
+
+		nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
+
 	}
 
 	vlaninfo := bpf_vlaninfo{
@@ -184,8 +232,6 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	}
 
 	fmt.Println(vlaninfo, vlan_info)
-
-	nat_to_vip_rip.UpdateElem(uP(&nat_), uP(&vip_rip), xdp.BPF_ANY)
 
 	vlan_info.UpdateElem(uP(&vlanid), uP(&vlaninfo), xdp.BPF_ANY)
 
@@ -208,31 +254,6 @@ func Layer3(tun uint8, nic uint32, h_dest [6]byte, saddr addr4, vip, vip2 netip.
 	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
 
 	//infos.UpdateElem(uP(&ZERO), uP(&info), xdp.BPF_ANY) // not actually used now
-
-	const F_LAYER2_DSR uint8 = 0
-	const F_LAYER3_FOU4 uint8 = 1  // IPv4 host with FOU tunnel
-	const F_LAYER3_GRE uint8 = 2   // IPv6 host with FOU tunnel
-	const F_LAYER3_GUE uint8 = 3   // IPv4 host with IP-in-IP tunnel
-	const F_LAYER3_IPIP4 uint8 = 4 // IPv4 host with IP-in-IP tunnel
-	const F_LAYER3_GENEVE uint8 = 5
-
-	const F_STICKY uint8 = 0x01
-
-	tunnel := F_LAYER3_FOU4
-
-	switch tun {
-	case FOU:
-	case GRE:
-		tunnel = F_LAYER3_GRE
-	case GUE:
-		tunnel = F_LAYER3_GUE
-	case IPIP:
-		tunnel = F_LAYER3_IPIP4
-	case LAYER2:
-		tunnel = F_LAYER2_DSR
-	case GENEVE:
-		tunnel = F_LAYER3_GENEVE
-	}
 
 	hwaddr, _ := arp()
 

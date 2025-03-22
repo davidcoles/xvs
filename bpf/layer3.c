@@ -234,8 +234,8 @@ typedef struct fourtuple fourtuple_t;
 struct tunnel {
     addr_t saddr;
     addr_t daddr;
-    __be16 sport;
-    __be16 dport;
+    __u16 sport;
+    __u16 dport;
     __u16 nochecksum : 1;
     __u16 type : 3;
 
@@ -353,11 +353,18 @@ struct {
 //    __u16 protocol;
 //};
 
+struct vip_rip {
+    addr_t vip;
+    addr_t rip;
+    __u16 port;
+    __u8 method;
+};
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t); // nat
-    __type(value, addr_t[2]); // vip/rip
+    //    __type(value, addr_t[2]); // vip/rip
+    __type(value, struct vip_rip); // vip/rip    
     __uint(max_entries, 4096);
 } nat_to_vip_rip SEC(".maps");
     
@@ -446,8 +453,10 @@ int send_fou(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
+int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
+    __u8 protocol = is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    
     if (is_addr4(&(t->daddr)))
 	return push_gue4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
     
@@ -474,8 +483,10 @@ int send_in4(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 
 
 static __always_inline
-int send_gre(struct xdp_md *ctx, tunnel_t *t, __u16 protocol)
+int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
+    __u16 protocol = is_ipv6 ? ETH_P_IPV6 : ETH_P_IP;
+    
     if (is_addr4(&(t->daddr)))
 	return push_gre4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
     
@@ -823,8 +834,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     switch (result) {
     case LAYER3_FOU:    return send_fou(ctx, t);
     case LAYER3_IPIP:   return send_in4(ctx, t, is_ipv6);
-    case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
-    case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+    case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6);
+    case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6);
     default:
 	break;
     }
@@ -899,14 +910,16 @@ int xdp_request(struct xdp_md *ctx)
     if (ip + 1 > data_end)
 	return XDP_PASS;
 
-    addr_t nat = { .addr4.addr = ip->daddr};
-    addr_t *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
+    addr_t nat = { .addr4.addr = ip->daddr };
+    struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
 
     if (!vip_rip)
     	return XDP_PASS;
 
-    addr_t vip = vip_rip[0];
-    addr_t rip = vip_rip[1];
+    addr_t vip = vip_rip->vip; //vip_rip[0];
+    addr_t rip = vip_rip->rip; //vip_rip[1];
+    __u16 dport = vip_rip->port;
+    __u8 method = vip_rip->method;
     
     struct vip_info *vip_info = bpf_map_lookup_elem(&vips, &vip);
     
@@ -949,15 +962,16 @@ int xdp_request(struct xdp_md *ctx)
     addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
     
     tunnel_t t = {
-		  .saddr = ext,
-		  .daddr = rip,
+		  //.saddr = ext,
+		  //.daddr = rip,
 		  .sport = 0x6666,
-		  .dport = 9999,
+		  .dport = dport,
 		  .nochecksum = 1,
-		  .type = F_LAYER3_GUE,
+		  .type = method,
 		  .vlanid = vip_info->vlanid,
     };
-    
+    t.saddr = ext;
+    t.daddr = rip;
     memcpy(t.hwaddr, vlaninfo->router, 6);
     
     /**********************************************************************/
@@ -972,21 +986,29 @@ int xdp_request(struct xdp_md *ctx)
     ip->saddr = ext.addr4.addr;
     ip->daddr = vip.addr4.addr;
 
-    __u16 tmp = htons(eph);
-    tcp->source = tmp;
-
     /**********************************************************************/
     // CHECKSUM DIFFS FROM OLD
     /**********************************************************************/
     ip->check = 0;
     ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
-    //struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
     struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };    
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
 
-    // TODO - handle all options
-    if(push_gue4(ctx, vlaninfo->router, &t, IPPROTO_IPIP) < 0)
+    // FIXME - check overhead and send ICMP reply
+    
+    int is_ipv6 = 0;
+    int action = XDP_DROP;
+    
+    switch (method) {
+    case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
+    case F_LAYER3_IPIP:	action = send_in4(ctx, &t, is_ipv6); break;
+    case F_LAYER3_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
+    case F_LAYER3_GUE:	action = send_gue(ctx, &t, is_ipv6); break;
+    case F_LAYER2_DSR:  break;
+    }
+
+    if (action != XDP_TX)
 	return XDP_DROP;
 
     /**********************************************************************/
@@ -1001,22 +1023,14 @@ int xdp_request(struct xdp_md *ctx)
     memcpy(eth->h_dest, vlaninfo->router, 6);   // router/dest addr
     memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
     /**********************************************************************/
-    
 
     // to match returning packet
-    struct five_tuple rep = {
-                             .sport = svc,
-                             .dport = tmp, // might be modified
-                             .protocol = IPPROTO_TCP,
-    };
-    rep.saddr = vip; // ????
-    rep.daddr = ext; // ????
+    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = IPPROTO_TCP };
+    rep.saddr = vip; // ???? upsets verifier if in declaration above
+    rep.daddr = ext; // ???? upsets verifier if in declaration above
     
-    struct addr_port_time map = {
-                            .port = eph,
-			    .time = bpf_ktime_get_ns(),
-    };
-    map.addr = nat; // ???
+    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
+    map.addr = nat; // ??? upsets verifier if in declaration above
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
@@ -1067,7 +1081,7 @@ int xdp_reply(struct xdp_md *ctx)
     /**********************************************************************/
     // SAVE CHECKSUM INFO
     /**********************************************************************/
-    struct l4 o = {.saddr = ip->saddr, .daddr = ip->daddr};
+    struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
     __u16 old_csum = ip->check;
     struct iphdr old = *ip;
     old.check = 0;
@@ -1076,14 +1090,9 @@ int xdp_reply(struct xdp_md *ctx)
     addr_t saddr = { .addr4.addr = ip->saddr };
     addr_t daddr = { .addr4.addr = ip->daddr };    
     
-    struct five_tuple rep = {
-                             .protocol = IPPROTO_TCP,
-                             .sport = tcp->source,
-                             .dport = tcp->dest,
-    };
-    
-    rep.saddr = saddr;
-    rep.daddr = daddr;
+    struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
+    rep.saddr = saddr; // ??? upsets verifier if in declaration above
+    rep.daddr = daddr; // ??? upsets verifier if in declaration above
     
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
