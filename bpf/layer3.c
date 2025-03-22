@@ -190,6 +190,10 @@ const __u8 F_LAYER3_GRE    = 2;
 const __u8 F_LAYER3_GUE    = 3;
 const __u8 F_LAYER3_IPIP   = 4;
 
+const __u8 F_CHECKSUM_DISABLE = 0x08;
+
+// tunnel flags xxxxcttt - x: unused, c: checksum-disable ttt: type
+
 // https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 enum lookup_result {
@@ -358,12 +362,12 @@ struct vip_rip {
     addr_t rip;
     __u16 port;
     __u8 method;
+    __u8 nochecksum : 1;
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t); // nat
-    //    __type(value, addr_t[2]); // vip/rip
     __type(value, struct vip_rip); // vip/rip    
     __uint(max_entries, 4096);
 } nat_to_vip_rip SEC(".maps");
@@ -565,6 +569,8 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     
     if (!service)
 	return NOT_FOUND;
+
+    bpf_printk("FOUND\n");
     
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l3_hash(ft);
@@ -584,8 +590,7 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     memcpy(t->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips
     t->vlanid = service->vlanid;           // VLAN ID that L3 services should use - maybe vips?
     
-    __u8 type = service->flag[index] & 0xf; // bottom 4 bit only from userspace
-
+    __u8 type = service->flag[index] & 0x7; // bottom 3 bits
     
     // store flow? - maybe better to mark as new flow and allow a later stage to do this
 
@@ -962,18 +967,16 @@ int xdp_request(struct xdp_md *ctx)
     addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
     
     tunnel_t t = {
-		  //.saddr = ext,
-		  //.daddr = rip,
 		  .sport = 0x6666,
 		  .dport = dport,
 		  .nochecksum = 1,
 		  .type = method,
-		  .vlanid = vip_info->vlanid,
+		  .vlanid = vlanid,
     };
     t.saddr = ext;
     t.daddr = rip;
     memcpy(t.hwaddr, vlaninfo->router, 6);
-    
+
     /**********************************************************************/
     // SAVE CHECKSUM INFO
     /**********************************************************************/

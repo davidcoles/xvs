@@ -86,11 +86,13 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	err := xvs.Layer3(tun, 2, h_dest, saddr.As4(), vip, vip2, uint16(*l3port4), uint16(*l3port6), *sticky, addrs...)
+	l3, err := xvs.Layer3(tun, 2, h_dest, saddr.As4(), vip, vip2, uint16(*l3port4), uint16(*l3port6), *sticky, addrs...)
 
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	l3.SetDestination(vip, addrs[0], xvs.GRE, h_dest)
 
 	fmt.Println("OK")
 }
