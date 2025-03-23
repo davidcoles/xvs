@@ -100,6 +100,16 @@ type dinfo struct {
 	tport uint16
 }
 
+type threetuple struct {
+	address  netip.Addr
+	port     uint16
+	protocol uint8
+}
+
+type l3service struct {
+	dests map[netip.Addr]L3Destination
+}
+
 type layer3 struct {
 	h_dest         [6]byte
 	viprip         map[[2]a16]dinfo
@@ -108,6 +118,8 @@ type layer3 struct {
 	vips           xdp.Map
 	saddr4         [4]byte
 	saddr6         [16]byte
+
+	services map[threetuple]*l3service
 }
 
 type L3Destination struct {
@@ -116,8 +128,33 @@ type L3Destination struct {
 	TunnelPort uint16
 }
 
+func (d *L3Destination) is4() bool {
+	return d.Address.Is4()
+}
+func (d *L3Destination) as16() (r a16) {
+	if d.is4() {
+		ip := d.Address.As4()
+		copy(r[12:], ip[:])
+	} else {
+		r = d.Address.As16()
+	}
+	return
+}
+
 //func (l *layer3) SetDestination(v, r netip.Addr, method uint8, tport uint16) {
 func (l *layer3) SetDestination(v netip.Addr, l3d L3Destination) {
+
+	tuple := threetuple{address: v, port: 80, protocol: TCP}
+
+	service := l.services[tuple]
+
+	if service == nil {
+		service = &l3service{dests: map[netip.Addr]L3Destination{}}
+		l.services[tuple] = service
+	}
+
+	service.dests[l3d.Address] = l3d
+
 	var vip, rip [16]byte
 	r := l3d.Address
 
@@ -145,7 +182,68 @@ func (l *layer3) SetDestination(v netip.Addr, l3d L3Destination) {
 
 	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort}
 
+	l.recalc2()
 	l.recalc()
+}
+
+func (l *layer3) recalc2() {
+
+	var vlanid uint16 = 100
+
+	hwaddr, _ := arp()
+
+	for tuple, l3service := range l.services {
+		var dests []L3Destination
+		for _, v := range l3service.dests {
+			dests = append(dests, v)
+		}
+
+		var val bpf_destinations
+
+		copy(val.saddr[12:], l.saddr4[:])
+		val.saddr6 = l.saddr6
+		val.h_dest = l.h_dest
+		val.vlanid = uint16(vlanid)
+
+		for i, d := range dests {
+
+			as16 := d.as16()
+			val.flag[i+1] = d.TunnelType & 0x7
+			val.sport[i+1] = d.TunnelPort
+			val.daddr[i+1] = as16
+
+			//if isIPv4(as16) {
+			if d.is4() {
+				var ip [4]byte
+				copy(ip[:], as16[12:])
+				val.hwaddr[i+1] = hwaddr[ip]
+			}
+		}
+
+		for i, _ := range val.hash {
+			d := i % len(dests)
+			val.hash[i] = byte(d + 1)
+		}
+
+		var vip a16
+
+		if tuple.address.Is4() {
+			ip := tuple.address.As4()
+			copy(vip[12:], ip[:])
+
+		} else {
+			vip = tuple.address.As16()
+		}
+
+		key := bpf_servicekey{
+			addr:  vip,
+			port:  tuple.port,
+			proto: uint16(tuple.protocol),
+		}
+
+		l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+
+	}
 }
 
 func (l *layer3) recalc() {
@@ -167,7 +265,7 @@ func (l *layer3) recalc() {
 
 	}
 
-	hwaddr, _ := arp()
+	//hwaddr, _ := arp()
 
 	for vip, dests := range vips {
 
@@ -183,53 +281,55 @@ func (l *layer3) recalc() {
 
 		/**********************************************************************/
 
-		var val bpf_destinations
+		/*
+			var val bpf_destinations
 
-		//if sticky {
-		//	val.flag[0] |= F_STICKY
-		//}
+			//if sticky {
+			//	val.flag[0] |= F_STICKY
+			//}
 
-		copy(val.saddr[12:], l.saddr4[:])
-		val.saddr6 = l.saddr6
-		val.h_dest = l.h_dest
-		val.vlanid = uint16(vlanid)
+			copy(val.saddr[12:], l.saddr4[:])
+			val.saddr6 = l.saddr6
+			val.h_dest = l.h_dest
+			val.vlanid = uint16(vlanid)
 
-		isIPv4 := func(ip [16]byte) bool {
-			for i := 0; i < 12; i++ {
-				if ip[i] != 0 {
-					return false
+			isIPv4 := func(ip [16]byte) bool {
+				for i := 0; i < 12; i++ {
+					if ip[i] != 0 {
+						return false
+					}
+				}
+				return true
+			}
+
+			for i, d := range dests {
+
+				val.flag[i+1] = d.flags
+				val.sport[i+1] = d.tport
+				val.daddr[i+1] = d.dest
+
+				if isIPv4(d.dest) {
+					var ip [4]byte
+					copy(ip[:], d.dest[12:])
+					val.hwaddr[i+1] = hwaddr[ip]
 				}
 			}
-			return true
-		}
 
-		for i, d := range dests {
-
-			val.flag[i+1] = d.flags
-			val.sport[i+1] = d.tport
-			val.daddr[i+1] = d.dest
-
-			if isIPv4(d.dest) {
-				var ip [4]byte
-				copy(ip[:], d.dest[12:])
-				val.hwaddr[i+1] = hwaddr[ip]
-			}
-		}
-
-		for i, _ := range val.hash {
-			d := i % len(dests)
-			val.hash[i] = byte(d + 1)
-		}
-
-		for _, port := range []uint16{80, 443, 8000} {
-			key := bpf_servicekey{
-				addr:  vip,
-				port:  port,
-				proto: uint16(TCP),
+			for i, _ := range val.hash {
+				d := i % len(dests)
+				val.hash[i] = byte(d + 1)
 			}
 
-			l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
-		}
+			for _, port := range []uint16{80, 443, 8000} {
+				key := bpf_servicekey{
+					addr:  vip,
+					port:  port,
+					proto: uint16(TCP),
+				}
+
+				l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+			}
+		*/
 
 		for _, d := range dests {
 
@@ -364,5 +464,6 @@ func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3,
 		saddr4:         saddr4,
 		saddr6:         saddr6,
 		nat_to_vip_rip: nat_to_vip_rip,
+		services:       map[threetuple]*l3service{},
 	}, nil
 }
