@@ -712,7 +712,7 @@ int push_fou6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
     udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
     udp->check = 0;
     
-    if (!t->nochecksum)
+    if (! t->nochecksum)
 	udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
     
     return 0;
@@ -775,7 +775,7 @@ int push_gue6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 proto
 
     gue->protocol = protocol;
     
-    if (t->nochecksum)
+    if (! t->nochecksum)
 	udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
     
     return 0;

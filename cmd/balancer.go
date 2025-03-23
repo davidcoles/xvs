@@ -101,7 +101,9 @@ func main() {
 			tport = uint16(*l3port6)
 		}
 
-		l3.SetDestination(vip, xvs.L3Destination{Address: dest, TunnelType: tun, TunnelPort: tport})
+		for _, port := range []uint16{80, 443, 8000} {
+			l3.SetDestination(vip, port, xvs.L3Destination{Address: dest, TunnelType: tun, TunnelPort: tport})
+		}
 	}
 
 	fmt.Println("OK")

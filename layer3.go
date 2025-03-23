@@ -86,6 +86,9 @@ type bpf_vip_rip struct {
 	rip    [16]byte
 	port   uint16
 	method uint8
+	flags  uint8
+	hwaddr [6]byte
+	pad    [2]byte
 }
 
 type addr4 = [4]byte
@@ -98,6 +101,7 @@ type dinfo struct {
 	flags uint8
 	index uint16
 	tport uint16
+	mac   [6]byte
 }
 
 type threetuple struct {
@@ -111,6 +115,7 @@ type l3service struct {
 }
 
 type layer3 struct {
+	vlanid         uint16
 	h_dest         [6]byte
 	viprip         map[[2]a16]dinfo
 	destinations   xdp.Map
@@ -142,9 +147,9 @@ func (d *L3Destination) as16() (r a16) {
 }
 
 //func (l *layer3) SetDestination(v, r netip.Addr, method uint8, tport uint16) {
-func (l *layer3) SetDestination(v netip.Addr, l3d L3Destination) {
+func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 
-	tuple := threetuple{address: v, port: 80, protocol: TCP}
+	tuple := threetuple{address: v, port: port, protocol: TCP}
 
 	service := l.services[tuple]
 
@@ -169,9 +174,14 @@ func (l *layer3) SetDestination(v netip.Addr, l3d L3Destination) {
 		vip = v.As16()
 	}
 
+	hwaddr, _ := arp()
+
+	var mac [6]byte
+
 	if r.Is4() {
 		as4 := r.As4()
 		copy(rip[12:], as4[:])
+		mac = hwaddr[as4]
 	} else {
 		rip = r.As16()
 	}
@@ -180,15 +190,13 @@ func (l *layer3) SetDestination(v netip.Addr, l3d L3Destination) {
 
 	flags := l3d.TunnelType & 0x7
 
-	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort}
+	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort, mac: mac}
 
 	l.recalc2()
 	l.recalc()
 }
 
 func (l *layer3) recalc2() {
-
-	var vlanid uint16 = 100
 
 	hwaddr, _ := arp()
 
@@ -203,7 +211,7 @@ func (l *layer3) recalc2() {
 		copy(val.saddr[12:], l.saddr4[:])
 		val.saddr6 = l.saddr6
 		val.h_dest = l.h_dest
-		val.vlanid = uint16(vlanid)
+		val.vlanid = l.vlanid
 
 		for i, d := range dests {
 
@@ -212,13 +220,14 @@ func (l *layer3) recalc2() {
 			val.sport[i+1] = d.TunnelPort
 			val.daddr[i+1] = as16
 
-			//if isIPv4(as16) {
 			if d.is4() {
 				var ip [4]byte
 				copy(ip[:], as16[12:])
 				val.hwaddr[i+1] = hwaddr[ip]
 			}
 		}
+
+		fmt.Println(tuple)
 
 		for i, _ := range val.hash {
 			d := i % len(dests)
@@ -248,7 +257,7 @@ func (l *layer3) recalc2() {
 
 func (l *layer3) recalc() {
 	var index uint16
-	var vlanid uint32 = 100
+	var vlanid uint32 = 100 // key to a bpf map - needs to be uint32
 
 	for vr, d := range l.viprip {
 		index++
@@ -265,8 +274,6 @@ func (l *layer3) recalc() {
 
 	}
 
-	//hwaddr, _ := arp()
-
 	for vip, dests := range vips {
 
 		vip_info := bpf_vip_info{
@@ -275,61 +282,9 @@ func (l *layer3) recalc() {
 			h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
 		}
 
-		fmt.Println(vip_info)
+		//fmt.Println(vip_info)
 
 		l.vips.UpdateElem(uP(&vip), uP(&vip_info), xdp.BPF_ANY)
-
-		/**********************************************************************/
-
-		/*
-			var val bpf_destinations
-
-			//if sticky {
-			//	val.flag[0] |= F_STICKY
-			//}
-
-			copy(val.saddr[12:], l.saddr4[:])
-			val.saddr6 = l.saddr6
-			val.h_dest = l.h_dest
-			val.vlanid = uint16(vlanid)
-
-			isIPv4 := func(ip [16]byte) bool {
-				for i := 0; i < 12; i++ {
-					if ip[i] != 0 {
-						return false
-					}
-				}
-				return true
-			}
-
-			for i, d := range dests {
-
-				val.flag[i+1] = d.flags
-				val.sport[i+1] = d.tport
-				val.daddr[i+1] = d.dest
-
-				if isIPv4(d.dest) {
-					var ip [4]byte
-					copy(ip[:], d.dest[12:])
-					val.hwaddr[i+1] = hwaddr[ip]
-				}
-			}
-
-			for i, _ := range val.hash {
-				d := i % len(dests)
-				val.hash[i] = byte(d + 1)
-			}
-
-			for _, port := range []uint16{80, 443, 8000} {
-				key := bpf_servicekey{
-					addr:  vip,
-					port:  port,
-					proto: uint16(TCP),
-				}
-
-				l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
-			}
-		*/
 
 		for _, d := range dests {
 
@@ -340,6 +295,7 @@ func (l *layer3) recalc() {
 				rip:    d.dest,
 				port:   d.tport,
 				method: d.flags,
+				hwaddr: d.mac,
 			}
 
 			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
@@ -458,6 +414,7 @@ func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3,
 	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
+		vlanid:         uint16(vlanid),
 		h_dest:         h_dest,
 		destinations:   destinations,
 		vips:           vips,

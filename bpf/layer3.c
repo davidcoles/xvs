@@ -245,6 +245,9 @@ struct tunnel {
 
     __u8 hwaddr[6];
     __u16 vlanid;
+
+    //__u8 nochecksum;
+
 };
 typedef struct tunnel tunnel_t;
 
@@ -363,6 +366,8 @@ struct vip_rip {
     __u16 port;
     __u8 method;
     __u8 nochecksum : 1;
+    __u8 hwaddr[6];
+    __u8 pad[2];
 };
 
 struct {
@@ -515,6 +520,12 @@ __u16 l3_hash(fourtuple_t *ft)
 __u16 l4_hash(fourtuple_t *ft)
 {
     return sdbm((unsigned char *) ft, sizeof(fourtuple_t));
+}
+
+//static __always_inline
+__u16 l4_hash_(struct l4 *ft)
+{
+    return sdbm((unsigned char *) ft, sizeof(*ft));
 }
 
 static __always_inline
@@ -960,12 +971,17 @@ int xdp_request(struct xdp_md *ctx)
     if (tcp + 1 > data_end)
       return XDP_DROP;
 
+
+    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
+
+    __u16 hash4 = l4_hash_(&ft);
+
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
     addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
     
     tunnel_t t = {
-		  .sport = 0x6666,
+		  .sport =  0x8000 | (hash4 & 0x7fff),
 		  .dport = dport,
 		  .nochecksum = 1,
 		  .type = method,
@@ -973,7 +989,12 @@ int xdp_request(struct xdp_md *ctx)
     };
     t.saddr = ext;
     t.daddr = rip;
-    memcpy(t.hwaddr, vlaninfo->router, 6);
+
+    if (F_LAYER2_DSR == method) {
+	memcpy(t.hwaddr, vip_rip->hwaddr, 6);	
+    } else { 
+	memcpy(t.hwaddr, vlaninfo->router, 6);
+    }
 
     /**********************************************************************/
     // SAVE CHECKSUM INFO
@@ -1006,7 +1027,7 @@ int xdp_request(struct xdp_md *ctx)
     case F_LAYER3_IPIP:	action = send_in4(ctx, &t, is_ipv6); break;
     case F_LAYER3_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
     case F_LAYER3_GUE:	action = send_gue(ctx, &t, is_ipv6); break;
-    case F_LAYER2_DSR:  break;
+    case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)
@@ -1021,7 +1042,7 @@ int xdp_request(struct xdp_md *ctx)
     if (eth + 1 > data_end)
         return XDP_PASS;
     
-    memcpy(eth->h_dest, vlaninfo->router, 6);   // router/dest addr
+    memcpy(eth->h_dest, t.hwaddr, 6);           // router/dest addr
     memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
     /**********************************************************************/
 
