@@ -35,24 +35,21 @@ func main() {
 	gre := flag.Bool("g", false, "GRE")
 	gue := flag.Bool("G", false, "GUE")
 	layer2 := flag.Bool("2", false, "Layer 2")
-	//l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
-	//l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
+	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
+	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
 	ip6 := flag.String("6", "", "Local IPv6 address")
 
 	flag.Parse()
 
 	args := flag.Args()
 
-	smac, _ := net.ParseMAC(args[0])
+	iface := args[0]
 	dmac, _ := net.ParseMAC(args[1])
 	saddr4 := netip.MustParseAddr(args[2])
 	vip := netip.MustParseAddr(args[3])
 	dests := args[4:]
 
-	var h_source [6]byte
 	var h_dest [6]byte
-
-	copy(h_source[:], smac[:])
 	copy(h_dest[:], dmac[:])
 
 	var saddr6 [16]byte
@@ -90,14 +87,21 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	l3, err := xvs.Layer3(2, h_source, h_dest, saddr4.As4(), saddr6)
+	l3, err := xvs.Layer3(iface, h_dest, saddr4.As4(), saddr6)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for _, dest := range addrs {
-		l3.SetDestination(vip, dest, tun)
+
+		tport := uint16(*l3port4)
+
+		if vip.Is6() {
+			tport = uint16(*l3port6)
+		}
+
+		l3.SetDestination(vip, xvs.L3Destination{Address: dest, TunnelType: tun, TunnelPort: tport})
 	}
 
 	fmt.Println("OK")

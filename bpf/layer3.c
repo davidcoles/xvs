@@ -570,8 +570,6 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (!service)
 	return NOT_FOUND;
 
-    bpf_printk("FOUND\n");
-    
     __u8 sticky = service->flag[0] & F_STICKY;
     __u16 hash3 = l3_hash(ft);
     __u16 hash4 = l4_hash(ft);

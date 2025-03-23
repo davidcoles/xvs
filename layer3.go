@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/netip"
 	"unsafe"
 
@@ -22,17 +23,11 @@ func init() {
 	}
 }
 
-const F_LAYER2_DSR uint8 = 0
-const F_LAYER3_FOU4 uint8 = 1  // IPv4 host with FOU tunnel
-const F_LAYER3_GRE uint8 = 2   // IPv6 host with FOU tunnel
-const F_LAYER3_GUE uint8 = 3   // IPv4 host with IP-in-IP tunnel
-const F_LAYER3_IPIP4 uint8 = 4 // IPv4 host with IP-in-IP tunnel
-
-const FOU uint8 = F_LAYER3_FOU4
-const GRE uint8 = F_LAYER3_GRE
-const GUE uint8 = F_LAYER3_GUE
-const IPIP uint8 = F_LAYER3_IPIP4
-const LAYER2 uint8 = F_LAYER2_DSR
+const LAYER2 uint8 = 0
+const FOU uint8 = 1
+const GRE uint8 = 2
+const GUE uint8 = 3
+const IPIP uint8 = 4
 
 const F_STICKY uint8 = 0x01
 
@@ -115,9 +110,16 @@ type layer3 struct {
 	saddr6         [16]byte
 }
 
-func (l *layer3) SetDestination(v, r netip.Addr, method uint8) {
+type L3Destination struct {
+	Address    netip.Addr
+	TunnelType uint8
+	TunnelPort uint16
+}
+
+//func (l *layer3) SetDestination(v, r netip.Addr, method uint8, tport uint16) {
+func (l *layer3) SetDestination(v netip.Addr, l3d L3Destination) {
 	var vip, rip [16]byte
-	var tport uint16 = 9999
+	r := l3d.Address
 
 	if len(l.viprip) < 1 {
 		l.viprip = map[[2]a16]dinfo{}
@@ -135,14 +137,13 @@ func (l *layer3) SetDestination(v, r netip.Addr, method uint8) {
 		copy(rip[12:], as4[:])
 	} else {
 		rip = r.As16()
-		tport = 6666
 	}
 
 	vr := [2]a16{vip, rip}
 
-	flags := method & 0x7
+	flags := l3d.TunnelType & 0x7
 
-	l.viprip[vr] = dinfo{flags: flags, tport: tport}
+	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort}
 
 	l.recalc()
 }
@@ -208,8 +209,6 @@ func (l *layer3) recalc() {
 			val.sport[i+1] = d.tport
 			val.daddr[i+1] = d.dest
 
-			fmt.Println("XXX", d.dest)
-
 			if isIPv4(d.dest) {
 				var ip [4]byte
 				copy(ip[:], d.dest[12:])
@@ -248,7 +247,27 @@ func (l *layer3) recalc() {
 	}
 }
 
-func Layer3(nic uint32, h_source, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3, error) {
+func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3, error) {
+
+	iface, err := net.InterfaceByName(ifname)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(iface.HardwareAddr) != 6 {
+		return nil, fmt.Errorf("Nope")
+	}
+
+	nic := uint32(iface.Index)
+
+	addrs, _ := iface.Addrs()
+	for _, a := range addrs {
+		fmt.Println("ADDR", a)
+	}
+
+	var h_source [6]byte
+	copy(h_source[:], iface.HardwareAddr[:])
 
 	var vlanid uint32 = 100
 
