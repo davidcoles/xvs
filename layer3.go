@@ -61,10 +61,11 @@ type bpf_destinfo struct {
 	dport    uint16
 	sport    uint16
 	vlanid   uint16
-	flags    uint16
+	method   uint8
+	flags    uint8
 	h_dest   mac
 	h_source mac
-	pad      [12]byte
+	pad      [12]byte // pad to 64 bytes
 }
 
 type bpf_destinations struct {
@@ -222,27 +223,15 @@ func (l *layer3) recalc2() {
 
 		var val bpf_destinations
 
-		//copy(val.saddr[12:], l.saddr4[:])
-		//val.saddr6 = l.saddr6
-		//val.h_dest = l.h_dest
-		//val.vlanid = l.vlanid
-
 		for i, d := range dests {
 
-			as16 := d.as16()
-
-			//val.flag[i+1] = d.TunnelType & 0x7
-			//val.sport[i+1] = d.TunnelPort
-			//val.daddr[i+1] = as16
-
-			saddr := l.saddr6
-
 			var backend mac
+			as16 := d.as16()
+			saddr := l.saddr6
 
 			if d.is4() {
 				var ip [4]byte
 				copy(ip[:], as16[12:])
-				//val.hwaddr[i+1] = hwaddr[ip]
 				copy(saddr[12:], l.saddr4[:])
 				backend = hwaddr[ip]
 			} else {
@@ -254,7 +243,6 @@ func (l *layer3) recalc2() {
 
 			if d.TunnelPort == uint16(LAYER2) {
 				h_dest = backend
-
 			}
 
 			var info bpf_destinfo
@@ -262,20 +250,18 @@ func (l *layer3) recalc2() {
 			info.saddr = saddr
 			info.dport = d.TunnelPort
 			info.sport = 0
-			info.flags = uint16(d.TunnelType & 0x7)
+			info.method = d.TunnelType
+			info.flags = 0 // TODO
 			info.vlanid = l.vlanid
 			info.h_dest = h_dest
 			info.h_source = h_source
 			val.destinfo[i+1] = info
 
-			fmt.Println("INFO", info)
+			fmt.Println(h_dest.String())
 		}
 
-		fmt.Println(tuple)
-
 		for i, _ := range val.hash {
-			d := i % len(dests)
-			val.hash[i] = byte(d + 1)
+			val.hash[i] = byte((i % len(dests)) + 1)
 		}
 
 		var vip a16
@@ -283,7 +269,6 @@ func (l *layer3) recalc2() {
 		if tuple.address.Is4() {
 			ip := tuple.address.As4()
 			copy(vip[12:], ip[:])
-
 		} else {
 			vip = tuple.address.As16()
 		}

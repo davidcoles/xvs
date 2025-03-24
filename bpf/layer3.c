@@ -193,7 +193,6 @@ const __u8 F_LAYER3_IPIP   = 4;
 const __u8 F_CHECKSUM_DISABLE = 0x08;
 
 // tunnel flags xxxxcttt - x: unused, c: checksum-disable ttt: type
-
 // https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 enum lookup_result {
@@ -240,7 +239,7 @@ struct tunnel {
     addr_t daddr;
     __u16 sport;
     __u16 dport;
-    __u16 nochecksum : 1;
+    __u16 nochecksum : 1; // change to a flags field - essentially make this struct destinfo
     __u16 type : 3;
 
     __u8 hwaddr[6];
@@ -248,8 +247,6 @@ struct tunnel {
     __u8 h_source[6];
     
     __u16 vlanid;
-
-    //__u8 nochecksum;
 
 };
 typedef struct tunnel tunnel_t;
@@ -277,44 +274,24 @@ struct servicekey {
 
 typedef __u8 mac[6];
 
-// round this up to 64 bytes - the size of a cache line
+// will replace tunnel type
 struct destinfo {
-    struct addr daddr; // 16
-    struct addr saddr; // 16
-    __u16 dport; // tunnel port
-    __u16 sport; // unlikely to be used - 0 for "random"
+    struct addr daddr;
+    struct addr saddr;
+    __u16 dport;
+    __u16 sport;
     __u16 vlanid;
-    __u16 flags; // maybe two bytes, tunnel type and flags
-    
+    __u8 method;
+    __u8 flags; // no_udp_checksum
     __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
     __u8 h_source[6]; // local hw address
-    __u8 pad[12];
+    __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
 };
 
 struct destinations {
     struct destinfo destinfo[256];
     __u8 hash[8192];
-    //__u8 xflag[256];    // flag[0] - global flags for service; sticky, leastconns
-    //__u16 xdport[256];  // port[0] - high byte leastconns score, low byte destination index to use
-    //struct addr xdaddr[256];
-    //struct addr xsaddr; // source address to use with tunnels
-    //struct addr xsaddr6; // source address to use with tunnels    
-    //__u8 xrouter[6];    // router MAC address to send encapsulated packets to
-    //__u16 xvlanid;      // VLAN ID on which encapsulated packets should be received/sent
-    //mac xhwaddr[256];
 };
-
-
-
-// 16 byte daddr
-// 2 byte dport
-// 2 byte vlan id
-// 6 byte h_dest (for l2) = 26
-// 1 byte tunnel type+flags
-//
-// get h_source from vlaninfo
-// get saddr from vlaninfo
-// 
 
 struct flow {
     tunnel_t tunnel; // contains real IP of server, etc
@@ -379,13 +356,6 @@ struct {
     __type(value, struct vlaninfo);
     __uint(max_entries, 4096);
 } vlan_info SEC(".maps");
-
-
-//struct three_tuple {
-//    struct addr addr;
-//    __u16 port;
-//    __u16 protocol;
-//};
 
 struct vip_rip {
     addr_t vip;
@@ -616,37 +586,20 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (!index)
 	return NOT_FOUND;
 
-    //__u8 type = service->flag[index] & 0x7; // bottom 3 bits
     struct destinfo d = service->destinfo[index];
-    __u8 type = d.flags & 0x7;
     t->daddr = d.daddr;
     t->saddr = d.saddr;
     t->dport = d.dport;
     t->sport = d.sport ? d.sport : 0x8000 | (hash4 & 0x7fff);
-    memcpy(t->hwaddr, d.h_dest, 6);
+    memcpy(t->hwaddr, d.h_dest, 6); // obsolete
+    memcpy(t->h_dest, d.h_dest, 6);
     memcpy(t->h_source, d.h_source, 6);
-
     t->vlanid = d.vlanid;
-    t->type = type;
+    t->type = d.method;
+    //t->flags = d.flags;
+   
+    __u8 type = d.method;
     
-    /*
-    t->vlanid = service->vlanid;      // VLAN ID that L3 services should use - for L2 this will need to be on a per-RIP basis
-    t->daddr = service->daddr[index]; // backend's address
-    t->saddr = is_ipv4_addr(t->daddr) ? service->saddr : service->saddr6;
-    t->sport = 0x8000 | (hash4 & 0x7fff); // source port for L3 tunnel (eg. FOU)
-    t->dport = service->dport[index];     // destination port for L3 tunnel (eg. FOU)
-    //t->nochecksum = 1;
-
-    // store flow? - maybe better to mark as new flow and allow a later stage to do this
-
-    // for layer 2 the destination hwaddr is that of the backend, not a router
-    if (F_LAYER2_DSR == type) {
-	memcpy(t->hwaddr, service->hwaddr[index], 6);
-    } else {
-	memcpy(t->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips map?
-    }
-    */
-
     if (nulmac(t->hwaddr))
 	return NOT_FOUND;
     
@@ -1040,7 +993,9 @@ int xdp_request(struct xdp_md *ctx)
     } else { 
 	memcpy(t.h_dest, vlaninfo->router, 6);
     }
-    memcpy(eth->h_source, vlaninfo->hwaddr, 6);
+    memcpy(eth->h_source, vlaninfo->hwaddr, 6); // deprecate this
+
+    memcpy(t.h_source, vlaninfo->hwaddr, 6);
     
     
     /**********************************************************************/
