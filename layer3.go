@@ -1,6 +1,7 @@
 package xvs
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	_ "embed"
@@ -8,6 +9,8 @@ import (
 	"io/ioutil"
 	"net"
 	"net/netip"
+	"os/exec"
+	"regexp"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/xdp"
@@ -71,14 +74,6 @@ type bpf_destinfo struct {
 type bpf_destinations struct {
 	destinfo [256]bpf_destinfo
 	hash     [8192]uint8
-	//xflag    [256]uint8
-	//xsport   [256]uint16
-	//xdaddr   [256]bpf_dest
-	//xsaddr   bpf_dest
-	//xsaddr6  addr6
-	//xh_dest  [6]byte
-	//xvlanid  uint16
-	//xhwaddr  [256]mac
 }
 
 type bpf_servicekey struct {
@@ -161,7 +156,6 @@ func (d *L3Destination) as16() (r a16) {
 	return
 }
 
-//func (l *layer3) SetDestination(v, r netip.Addr, method uint8, tport uint16) {
 func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 
 	tuple := threetuple{address: v, port: port, protocol: TCP}
@@ -190,6 +184,7 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 	}
 
 	hwaddr, _ := arp()
+	hwaddr6 := hw6()
 
 	var mac [6]byte
 
@@ -199,6 +194,10 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 		mac = hwaddr[as4]
 	} else {
 		rip = r.As16()
+
+		if hw, ok := hwaddr6[r]; ok {
+			mac = hw.mac
+		}
 	}
 
 	vr := [2]a16{vip, rip}
@@ -211,9 +210,67 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 	l.recalc()
 }
 
+type neighbor struct {
+	dev string
+	mac mac
+}
+
+func hw6() map[netip.Addr]neighbor {
+
+	hw6 := map[netip.Addr]neighbor{}
+
+	cmd := exec.Command("/bin/sh", "-c", "ip -6 neighbor show")
+	_, _ = cmd.StdinPipe()
+	//stderr, _ := cmd.StderrPipe()
+	stdout, _ := cmd.StdoutPipe()
+
+	re := regexp.MustCompile(`^(\S+)\s+dev\s+(\S+)\s+lladdr\s+(\S+)\s+(\S+)$`)
+
+	if err := cmd.Start(); err != nil {
+		return nil
+	}
+
+	defer stdout.Close()
+
+	s := bufio.NewScanner(stdout)
+
+	for s.Scan() {
+		line := s.Text()
+
+		m := re.FindStringSubmatch(line)
+
+		if len(m) != 5 {
+			continue
+		}
+
+		addr, err := netip.ParseAddr(m[1])
+
+		if err != nil {
+			continue
+		}
+
+		dev := m[2]
+
+		hw, err := net.ParseMAC(m[3])
+
+		if err != nil || len(hw) != 6 {
+			continue
+		}
+
+		var mac mac
+
+		copy(mac[:], hw[:])
+
+		hw6[addr] = neighbor{dev: dev, mac: mac}
+	}
+
+	return hw6
+}
+
 func (l *layer3) recalc2() {
 
 	hwaddr, _ := arp()
+	hwaddr6 := hw6()
 
 	for tuple, l3service := range l.services {
 		var dests []L3Destination
@@ -227,7 +284,8 @@ func (l *layer3) recalc2() {
 
 			var backend mac
 			as16 := d.as16()
-			saddr := l.saddr6
+			//saddr := l.saddr6
+			var saddr addr6
 
 			if d.is4() {
 				var ip [4]byte
@@ -236,6 +294,9 @@ func (l *layer3) recalc2() {
 				backend = hwaddr[ip]
 			} else {
 				saddr = l.saddr6
+				if hw, ok := hwaddr6[d.Address]; ok {
+					backend = hw.mac
+				}
 			}
 
 			h_dest := l.h_dest
@@ -256,8 +317,6 @@ func (l *layer3) recalc2() {
 			info.h_dest = h_dest
 			info.h_source = h_source
 			val.destinfo[i+1] = info
-
-			fmt.Println(h_dest.String())
 		}
 
 		for i, _ := range val.hash {
@@ -310,8 +369,6 @@ func (l *layer3) recalc() {
 			h_dest:   l.h_dest,
 			h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
 		}
-
-		//fmt.Println(vip_info)
 
 		l.vips.UpdateElem(uP(&vip), uP(&vip_info), xdp.BPF_ANY)
 

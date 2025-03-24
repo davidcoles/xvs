@@ -416,13 +416,11 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
 }
 
 static __always_inline
-//int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, unsigned char *router, __be32 saddr, __be32 daddr, __u8 protocol, int overhead)
 int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, int overhead)
 {
 
     __be32 saddr = t->saddr.addr4.addr;
     __be32 daddr = t->daddr.addr4.addr;
-    //unsigned char *router = t->h_dest;
     
     if (!saddr || !daddr)
 	return -1;
@@ -448,17 +446,6 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     int tot_len = sizeof(struct iphdr) + overhead + orig_len;
     new_iphdr(p->ip, tot_len, protocol, saddr, daddr);
 
-    /*
-    if (!nulmac(router)) {
-	// If a router is explicitly indicated then direct the frame there
-	memcpy(p->eth->h_source, p->eth->h_dest, 6);
-	memcpy(p->eth->h_dest, router, 6);
-    } else {
-	// Otherwise return it to the device that it came from
-	reverse_ethhdr(p->eth);
-    }
-    */
-
     memcpy(p->eth->h_dest, t->h_dest, 6);
     memcpy(p->eth->h_source, t->h_source,6);
 
@@ -476,7 +463,6 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
     
-    //if (push_xin4(ctx,t,  &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)
     if (push_xin4(ctx,t,  &p, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)	
 	return -1;
 
@@ -495,29 +481,24 @@ static __always_inline
 int push_ipip(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
-    //return push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_IPIP, 0);
     return push_xin4(ctx, t, &p, IPPROTO_IPIP, 0);
 }
 
 
 static __always_inline
-//int push_6in4(struct xdp_md *ctx, char *router, tunnel_t *t)
 int push_6in4(struct xdp_md *ctx, tunnel_t *t)    
 {
     struct pointers p = {};
-    //return push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_IPV6, 0);
     return push_xin4(ctx, t, &p, IPPROTO_IPV6, 0);
 }
 
 
 static __always_inline
-//int push_xin6(struct xdp_md *ctx, struct pointers *p, unsigned char *router, struct in6_addr saddr, struct in6_addr daddr, __u8 protocol, unsigned int overhead)
 int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, unsigned int overhead)
 {
 
     struct in6_addr saddr = t->saddr.addr6;
     struct in6_addr daddr = t->daddr.addr6;
-    //unsigned char *router = t->h_dest;
     
     if (nul6(&saddr) || nul6(&daddr))
     	return -1;
@@ -541,20 +522,8 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (new + 1 > data_end)
         return -1;
     
-    // Update the outer IP header to send to the FOU target
     int payload_len = overhead + orig_len;
     new_ip6hdr(new, payload_len, protocol, saddr, daddr);
-
-    /*
-    if (!nulmac(router)) {
-	// If a router is explicitly indicated then direct the frame there
-	memcpy(p->eth->h_source, p->eth->h_dest, 6);
-	memcpy(p->eth->h_dest, router, 6);
-    } else {
-	// Otherwise return it to the device that it came from
-	reverse_ethhdr(p->eth);
-    }
-    */
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
     memcpy(p->eth->h_source, t->h_source,6);
@@ -563,7 +532,6 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
 
-    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
     return orig_len;
 }
 
@@ -572,16 +540,14 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 int push_6in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
-    //return push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_IPV6, 0);
     return push_xin6(ctx, t, &p, IPPROTO_IPV6, 0);
 }
 
 //static __always_inline
 int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 {
-    //struct pointers p = {};
-    //return push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_IPIP, 0);
-    return -1;
+    struct pointers p = {};
+    return push_xin6(ctx, t, &p, IPPROTO_IPIP, 0);
 }
 
 
@@ -590,7 +556,6 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
     
-    //int orig_len = push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_GRE, sizeof(struct gre_hdr));
     int orig_len = push_xin6(ctx, t, &p, IPPROTO_GRE, sizeof(struct gre_hdr));
 
     if (orig_len < 0)
@@ -612,7 +577,6 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 {
     struct pointers p = {};
     
-    //int orig_len = push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_UDP, sizeof(struct udphdr));
     int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr));
     
     if (orig_len < 0)
@@ -639,7 +603,6 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
 {
     struct pointers p = {};
-    //int orig_len = push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr));
     int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr));
 
     if (orig_len < 0)
@@ -666,7 +629,6 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
     
-    //int orig_len = push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
     int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
     
     if (orig_len < 0)
@@ -704,7 +666,6 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
-    //int orig_len = push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
     int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
 
     if (orig_len < 0)
