@@ -517,7 +517,7 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 
     struct in6_addr saddr = t->saddr.addr6;
     struct in6_addr daddr = t->daddr.addr6;
-    unsigned char *router = t->h_dest;
+    //unsigned char *router = t->h_dest;
     
     if (nul6(&saddr) || nul6(&daddr))
     	return -1;
@@ -545,6 +545,7 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     int payload_len = overhead + orig_len;
     new_ip6hdr(new, payload_len, protocol, saddr, daddr);
 
+    /*
     if (!nulmac(router)) {
 	// If a router is explicitly indicated then direct the frame there
 	memcpy(p->eth->h_source, p->eth->h_dest, 6);
@@ -553,6 +554,10 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 	// Otherwise return it to the device that it came from
 	reverse_ethhdr(p->eth);
     }
+    */
+
+    memcpy(p->eth->h_dest, t->h_dest, 6);
+    memcpy(p->eth->h_source, t->h_source,6);
 
     // some final sanity checks on ethernet addresses
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
