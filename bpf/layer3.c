@@ -590,7 +590,6 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     t->saddr = d.saddr;
     t->dport = d.dport;
     t->sport = d.sport ? d.sport : 0x8000 | (hash4 & 0x7fff);
-    //memcpy(t->hwaddr, d.h_dest, 6); // obsolete
     memcpy(t->h_dest, d.h_dest, 6);
     memcpy(t->h_source, d.h_source, 6);
     t->vlanid = d.vlanid;
