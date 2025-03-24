@@ -244,6 +244,9 @@ struct tunnel {
     __u16 type : 3;
 
     __u8 hwaddr[6];
+    __u8 h_dest[6];
+    __u8 h_source[6];
+    
     __u16 vlanid;
 
     //__u8 nochecksum;
@@ -274,20 +277,44 @@ struct servicekey {
 
 typedef __u8 mac[6];
 
-struct destinations {
-    __u8 hash[8192];
-    __u8 flag[256];    // flag[0] - global flags for service; sticky, leastconns
-    __u16 dport[256];  // port[0] - high byte leastconns score, low byte destination index to use
-    struct addr daddr[256];
-    struct addr saddr; // source address to use with tunnels
-    struct addr saddr6; // source address to use with tunnels    
-    __u8 router[6];    // router MAC address to send encapsulated packets to
-    __u16 vlanid;      // VLAN ID on which encapsulated packets should be received/sent
-    //struct addr icmp; // optional address to send ICMP UNREACH/FRAG from?
-    // maybe seperate vlan/mac records if IPv6 is to support L2
-    mac hwaddr[256];
+// round this up to 64 bytes - the size of a cache line
+struct destinfo {
+    struct addr daddr; // 16
+    struct addr saddr; // 16
+    __u16 dport; // tunnel port
+    __u16 sport; // unlikely to be used - 0 for "random"
+    __u16 vlanid;
+    __u16 flags; // maybe two bytes, tunnel type and flags
+    
+    __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
+    __u8 h_source[6]; // local hw address
+    __u8 pad[12];
 };
 
+struct destinations {
+    struct destinfo destinfo[256];
+    __u8 hash[8192];
+    //__u8 xflag[256];    // flag[0] - global flags for service; sticky, leastconns
+    //__u16 xdport[256];  // port[0] - high byte leastconns score, low byte destination index to use
+    //struct addr xdaddr[256];
+    //struct addr xsaddr; // source address to use with tunnels
+    //struct addr xsaddr6; // source address to use with tunnels    
+    //__u8 xrouter[6];    // router MAC address to send encapsulated packets to
+    //__u16 xvlanid;      // VLAN ID on which encapsulated packets should be received/sent
+    //mac xhwaddr[256];
+};
+
+
+
+// 16 byte daddr
+// 2 byte dport
+// 2 byte vlan id
+// 6 byte h_dest (for l2) = 26
+// 1 byte tunnel type+flags
+//
+// get h_source from vlaninfo
+// get saddr from vlaninfo
+// 
 
 struct flow {
     tunnel_t tunnel; // contains real IP of server, etc
@@ -581,7 +608,7 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (!service)
 	return NOT_FOUND;
 
-    __u8 sticky = service->flag[0] & F_STICKY;
+    __u8 sticky = 0; //service->flag[0] & F_STICKY;
     __u16 hash3 = l3_hash(ft);
     __u16 hash4 = l4_hash(ft);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
@@ -589,24 +616,37 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (!index)
 	return NOT_FOUND;
 
+    //__u8 type = service->flag[index] & 0x7; // bottom 3 bits
+    struct destinfo d = service->destinfo[index];
+    __u8 type = d.flags & 0x7;
+    t->daddr = d.daddr;
+    t->saddr = d.saddr;
+    t->dport = d.dport;
+    t->sport = d.sport ? d.sport : 0x8000 | (hash4 & 0x7fff);
+    memcpy(t->hwaddr, d.h_dest, 6);
+    memcpy(t->h_source, d.h_source, 6);
 
-    t->daddr = service->daddr[index];     // backend's address
+    t->vlanid = d.vlanid;
+    t->type = type;
+    
+    /*
+    t->vlanid = service->vlanid;      // VLAN ID that L3 services should use - for L2 this will need to be on a per-RIP basis
+    t->daddr = service->daddr[index]; // backend's address
     t->saddr = is_ipv4_addr(t->daddr) ? service->saddr : service->saddr6;
     t->sport = 0x8000 | (hash4 & 0x7fff); // source port for L3 tunnel (eg. FOU)
     t->dport = service->dport[index];     // destination port for L3 tunnel (eg. FOU)
     //t->nochecksum = 1;
 
-    memcpy(t->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips
-    t->vlanid = service->vlanid;           // VLAN ID that L3 services should use - maybe vips?
-    
-    __u8 type = service->flag[index] & 0x7; // bottom 3 bits
-    
     // store flow? - maybe better to mark as new flow and allow a later stage to do this
 
     // for layer 2 the destination hwaddr is that of the backend, not a router
-    if (F_LAYER2_DSR == type)	
+    if (F_LAYER2_DSR == type) {
 	memcpy(t->hwaddr, service->hwaddr[index], 6);
-    
+    } else {
+	memcpy(t->hwaddr, service->router, 6); // router MAC for L3 tunnel - may be better in vips map?
+    }
+    */
+
     if (nulmac(t->hwaddr))
 	return NOT_FOUND;
     
@@ -671,46 +711,21 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 //static __always_inline
 enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t)
 {
-    void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
     
-    struct ethhdr *eth = data;
-
     if (eth + 1 > data_end)
         return NOT_FOUND;
-
+    
     if (ip + 1 > data_end)
 	return NOT_FOUND;
     
-    struct addr saddr = { .addr4.addr = ip->saddr };
-    struct addr daddr = { .addr4.addr = ip->daddr };
-
-    if (bpf_map_lookup_elem(&vips, &saddr)) {
-	// source was a VIP
-	
-	struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-	
-	if (!vlaninfo)
-	    return NOT_FOUND;
-
-	// set correct MAC address for veth pair
-	memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
-	memcpy(eth->h_source, vlaninfo->router, 6);	    
-	return PROBE_REPLY;
-    }
-    
-    ft->saddr = saddr;
-    ft->daddr = daddr;
-    
-    if (!bpf_map_lookup_elem(&vips, &daddr))
-    	return NOT_A_VIP;
-
     if (ip->version != 4)
 	return NOT_FOUND;
     
     if (ip->ihl != 5)
         return NOT_FOUND;
-
+    
     if (ip->ttl <= 1)
 	return NOT_FOUND; // FIXME - new enum
     
@@ -718,16 +733,42 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return NOT_FOUND; // FIXME - new enum;
     
-    if (ip->protocol != IPPROTO_TCP)
-	return NOT_FOUND;
+    struct addr saddr = { .addr4.addr = ip->saddr };
+    struct addr daddr = { .addr4.addr = ip->daddr };
     
-    struct tcphdr *tcp = (void *)(ip + 1);
+    if (!bpf_map_lookup_elem(&vips, &daddr)) {
+	
+	if (!bpf_map_lookup_elem(&vips, &saddr))
+	    return NOT_A_VIP;
+	
+	// source was a VIP - send to netns via veth interface
+	struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+	
+	if (!vlaninfo)
+	    return NOT_FOUND;
+	
+	// set correct MAC address for veth pair
+	memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
+	memcpy(eth->h_source, vlaninfo->router, 6);	    
+	return PROBE_REPLY;
+    }
 
-    if (tcp + 1 > data_end)
-      return NOT_FOUND;
+    ft->saddr = saddr;
+    ft->daddr = daddr;
+
+    struct tcphdr *tcp = NULL;
     
-    ft->sport = tcp->source;
-    ft->dport = tcp->dest;
+    switch (ip->protocol) {
+    case IPPROTO_TCP:
+	tcp = (void *)(ip + 1);
+	if (tcp + 1 > data_end)
+	    return NOT_FOUND;
+	ft->sport = tcp->source;
+	ft->dport = tcp->dest;
+	break;
+    default:
+	return NOT_FOUND;
+    }
     
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
@@ -974,14 +1015,12 @@ int xdp_request(struct xdp_md *ctx)
 
     struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
 
-    __u16 hash4 = l4_hash_(&ft);
-
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
     addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
     
     tunnel_t t = {
-		  .sport =  0x8000 | (hash4 & 0x7fff),
+		  .sport =  0x8000 | (l4_hash_(&ft) & 0x7fff),
 		  .dport = dport,
 		  .nochecksum = 1,
 		  .type = method,
@@ -995,7 +1034,15 @@ int xdp_request(struct xdp_md *ctx)
     } else { 
 	memcpy(t.hwaddr, vlaninfo->router, 6);
     }
-
+    
+    if (F_LAYER2_DSR == method) {
+	memcpy(t.h_dest, vip_rip->hwaddr, 6);	
+    } else { 
+	memcpy(t.h_dest, vlaninfo->router, 6);
+    }
+    memcpy(eth->h_source, vlaninfo->hwaddr, 6);
+    
+    
     /**********************************************************************/
     // SAVE CHECKSUM INFO
     /**********************************************************************/
@@ -1005,8 +1052,8 @@ int xdp_request(struct xdp_md *ctx)
     old.check = 0;
     /**********************************************************************/
 
-    ip->saddr = ext.addr4.addr;
-    ip->daddr = vip.addr4.addr;
+    ip->saddr = ext.addr4.addr; // the source address of the NATed packet needs to be the LB's external IP
+    ip->daddr = vip.addr4.addr; // the destination needs to the that of the VIP that we are probing
 
     /**********************************************************************/
     // CHECKSUM DIFFS FROM OLD
@@ -1034,14 +1081,11 @@ int xdp_request(struct xdp_md *ctx)
 	return XDP_DROP;
 
     /**********************************************************************/
+    // Modify the send_* routines to update the hw address and remove this
+    /**********************************************************************/
     data_end = (void *)(long)ctx->data_end;
-    data     = (void *)(long)ctx->data;
-
-    eth = data;
-
-    if (eth + 1 > data_end)
-        return XDP_PASS;
-    
+    eth      = (void *)(long)ctx->data;
+    if (eth + 1 > data_end) return XDP_PASS;
     memcpy(eth->h_dest, t.hwaddr, 6);           // router/dest addr
     memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
     /**********************************************************************/

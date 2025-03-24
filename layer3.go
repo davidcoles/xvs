@@ -55,16 +55,29 @@ type bpf_dest4 struct {
 
 type bpf_dest [16]byte
 
+type bpf_destinfo struct {
+	daddr    addr6
+	saddr    addr6
+	dport    uint16
+	sport    uint16
+	vlanid   uint16
+	flags    uint16
+	h_dest   mac
+	h_source mac
+	pad      [12]byte
+}
+
 type bpf_destinations struct {
-	hash   [8192]uint8
-	flag   [256]uint8
-	sport  [256]uint16
-	daddr  [256]bpf_dest
-	saddr  bpf_dest
-	saddr6 addr6
-	h_dest [6]byte
-	vlanid uint16
-	hwaddr [256]mac
+	destinfo [256]bpf_destinfo
+	hash     [8192]uint8
+	//xflag    [256]uint8
+	//xsport   [256]uint16
+	//xdaddr   [256]bpf_dest
+	//xsaddr   bpf_dest
+	//xsaddr6  addr6
+	//xh_dest  [6]byte
+	//xvlanid  uint16
+	//xhwaddr  [256]mac
 }
 
 type bpf_servicekey struct {
@@ -116,7 +129,8 @@ type l3service struct {
 
 type layer3 struct {
 	vlanid         uint16
-	h_dest         [6]byte
+	h_dest         mac
+	h_source       mac
 	viprip         map[[2]a16]dinfo
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
@@ -208,23 +222,53 @@ func (l *layer3) recalc2() {
 
 		var val bpf_destinations
 
-		copy(val.saddr[12:], l.saddr4[:])
-		val.saddr6 = l.saddr6
-		val.h_dest = l.h_dest
-		val.vlanid = l.vlanid
+		//copy(val.saddr[12:], l.saddr4[:])
+		//val.saddr6 = l.saddr6
+		//val.h_dest = l.h_dest
+		//val.vlanid = l.vlanid
 
 		for i, d := range dests {
 
 			as16 := d.as16()
-			val.flag[i+1] = d.TunnelType & 0x7
-			val.sport[i+1] = d.TunnelPort
-			val.daddr[i+1] = as16
+
+			//val.flag[i+1] = d.TunnelType & 0x7
+			//val.sport[i+1] = d.TunnelPort
+			//val.daddr[i+1] = as16
+
+			saddr := l.saddr6
+
+			var backend mac
 
 			if d.is4() {
 				var ip [4]byte
 				copy(ip[:], as16[12:])
-				val.hwaddr[i+1] = hwaddr[ip]
+				//val.hwaddr[i+1] = hwaddr[ip]
+				copy(saddr[12:], l.saddr4[:])
+				backend = hwaddr[ip]
+			} else {
+				saddr = l.saddr6
 			}
+
+			h_dest := l.h_dest
+			h_source := l.h_source
+
+			if d.TunnelPort == uint16(LAYER2) {
+				h_dest = backend
+
+			}
+
+			var info bpf_destinfo
+			info.daddr = as16
+			info.saddr = saddr
+			info.dport = d.TunnelPort
+			info.sport = 0
+			info.flags = uint16(d.TunnelType & 0x7)
+			info.vlanid = l.vlanid
+			info.h_dest = h_dest
+			info.h_source = h_source
+			val.destinfo[i+1] = info
+
+			fmt.Println("INFO", info)
 		}
 
 		fmt.Println(tuple)
@@ -416,6 +460,7 @@ func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3,
 	return &layer3{
 		vlanid:         uint16(vlanid),
 		h_dest:         h_dest,
+		h_source:       h_source,
 		destinations:   destinations,
 		vips:           vips,
 		saddr4:         saddr4,
