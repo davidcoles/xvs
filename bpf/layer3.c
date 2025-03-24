@@ -242,7 +242,6 @@ struct tunnel {
     __u16 nochecksum : 1; // change to a flags field - essentially make this struct destinfo
     __u16 type : 3;
 
-    __u8 hwaddr[6];
     __u8 h_dest[6];
     __u8 h_source[6];
     
@@ -446,16 +445,16 @@ int is_addr4(struct addr *a) {
 static __always_inline
 int send_l2(struct xdp_md *ctx, tunnel_t *t)
 {
-    return redirect_eth(ctx, t->hwaddr) < 0 ? XDP_ABORTED : XDP_TX;
+    return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
 int send_fou(struct xdp_md *ctx, tunnel_t *t)
 {
     if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_fou6(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;    
+    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
 }
 
 static __always_inline
@@ -464,9 +463,9 @@ int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
     __u8 protocol = is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP;
     
     if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_gue4(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_gue6(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_gue6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
@@ -476,15 +475,15 @@ int send_in4(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
     if (is_addr4(&(t->daddr))) {
 	
 	if (is_ipv6)
-	    return push_6in4(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	    return push_6in4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 	
-	return push_ipip(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_ipip(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
     }
 
     if (is_ipv6)
-	return push_6in6(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_6in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 	
-    return push_4in6(ctx, t->hwaddr, t) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_4in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 
@@ -494,9 +493,9 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
     __u16 protocol = is_ipv6 ? ETH_P_IPV6 : ETH_P_IP;
     
     if (is_addr4(&(t->daddr)))
-	return push_gre4(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_gre4(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_gre6(ctx, t->hwaddr, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_gre6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 //static __always_inline
@@ -591,7 +590,7 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     t->saddr = d.saddr;
     t->dport = d.dport;
     t->sport = d.sport ? d.sport : 0x8000 | (hash4 & 0x7fff);
-    memcpy(t->hwaddr, d.h_dest, 6); // obsolete
+    //memcpy(t->hwaddr, d.h_dest, 6); // obsolete
     memcpy(t->h_dest, d.h_dest, 6);
     memcpy(t->h_source, d.h_source, 6);
     t->vlanid = d.vlanid;
@@ -600,7 +599,7 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
    
     __u8 type = d.method;
     
-    if (nulmac(t->hwaddr))
+    if (nulmac(t->h_dest))
 	return NOT_FOUND;
     
     switch (type) {
@@ -983,12 +982,6 @@ int xdp_request(struct xdp_md *ctx)
     t.daddr = rip;
 
     if (F_LAYER2_DSR == method) {
-	memcpy(t.hwaddr, vip_rip->hwaddr, 6);	
-    } else { 
-	memcpy(t.hwaddr, vlaninfo->router, 6);
-    }
-    
-    if (F_LAYER2_DSR == method) {
 	memcpy(t.h_dest, vip_rip->hwaddr, 6);	
     } else { 
 	memcpy(t.h_dest, vlaninfo->router, 6);
@@ -1038,11 +1031,11 @@ int xdp_request(struct xdp_md *ctx)
     /**********************************************************************/
     // Modify the send_* routines to update the hw address and remove this
     /**********************************************************************/
-    data_end = (void *)(long)ctx->data_end;
-    eth      = (void *)(long)ctx->data;
-    if (eth + 1 > data_end) return XDP_PASS;
-    memcpy(eth->h_dest, t.hwaddr, 6);           // router/dest addr
-    memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
+    //data_end = (void *)(long)ctx->data_end;
+    //eth      = (void *)(long)ctx->data;
+    //if (eth + 1 > data_end) return XDP_PASS;
+    //memcpy(eth->h_dest, t.hwaddr, 6);           // router/dest addr
+    //memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
     /**********************************************************************/
 
     // to match returning packet

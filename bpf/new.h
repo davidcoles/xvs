@@ -467,7 +467,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 
 
 static __always_inline
-int push_gre4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 protocol)
+int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
     
@@ -487,7 +487,7 @@ int push_gre4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 prot
 }
 
 static __always_inline
-int push_ipip(struct xdp_md *ctx, char *router, tunnel_t *t)
+int push_ipip(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
     //return push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_IPIP, 0);
@@ -496,7 +496,8 @@ int push_ipip(struct xdp_md *ctx, char *router, tunnel_t *t)
 
 
 static __always_inline
-int push_6in4(struct xdp_md *ctx, char *router, tunnel_t *t)
+//int push_6in4(struct xdp_md *ctx, char *router, tunnel_t *t)
+int push_6in4(struct xdp_md *ctx, tunnel_t *t)    
 {
     struct pointers p = {};
     //return push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_IPV6, 0);
@@ -558,7 +559,7 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 
 
 //static __always_inline
-int push_6in6(struct xdp_md *ctx, char *router, tunnel_t *t)
+int push_6in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
     //return push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_IPV6, 0);
@@ -566,7 +567,7 @@ int push_6in6(struct xdp_md *ctx, char *router, tunnel_t *t)
 }
 
 //static __always_inline
-int push_4in6(struct xdp_md *ctx, char *router, tunnel_t *t)
+int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 {
     //struct pointers p = {};
     //return push_xin6(ctx, &p, router, t->saddr.addr6, t->daddr.addr6, IPPROTO_IPIP, 0);
@@ -575,7 +576,7 @@ int push_4in6(struct xdp_md *ctx, char *router, tunnel_t *t)
 
 
 //static __always_inline
-int push_gre6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 protocol)
+int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
     
@@ -597,7 +598,7 @@ int push_gre6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u16 prot
 }
 
 //static __always_inline
-int push_fou6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
+int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 {
     struct pointers p = {};
     
@@ -625,7 +626,7 @@ int push_fou6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
 
 
 //static __always_inline
-int push_fou4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
+int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
 {
     struct pointers p = {};
     //int orig_len = push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr));
@@ -651,7 +652,7 @@ int push_fou4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t)
 }
 
 //static __always_inline
-int push_gue6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 protocol)
+int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
     
@@ -690,7 +691,7 @@ int push_gue6(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 proto
 
 
 //static __always_inline
-int push_gue4(struct xdp_md *ctx, unsigned char *router, tunnel_t *t, __u8 protocol)
+int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
     //int orig_len = push_xin4(ctx, t, &p, router, t->saddr.addr4.addr, t->daddr.addr4.addr, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
