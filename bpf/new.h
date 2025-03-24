@@ -422,7 +422,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 
     __be32 saddr = t->saddr.addr4.addr;
     __be32 daddr = t->daddr.addr4.addr;
-    unsigned char *router = t->h_dest;
+    //unsigned char *router = t->h_dest;
     
     if (!saddr || !daddr)
 	return -1;
@@ -448,6 +448,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     int tot_len = sizeof(struct iphdr) + overhead + orig_len;
     new_iphdr(p->ip, tot_len, protocol, saddr, daddr);
 
+    /*
     if (!nulmac(router)) {
 	// If a router is explicitly indicated then direct the frame there
 	memcpy(p->eth->h_source, p->eth->h_dest, 6);
@@ -456,6 +457,10 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 	// Otherwise return it to the device that it came from
 	reverse_ethhdr(p->eth);
     }
+    */
+
+    memcpy(p->eth->h_dest, t->h_dest, 6);
+    memcpy(p->eth->h_source, t->h_source,6);
 
     // some final sanity checks on ethernet addresses
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))

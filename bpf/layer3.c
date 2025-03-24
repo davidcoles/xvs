@@ -986,7 +986,7 @@ int xdp_request(struct xdp_md *ctx)
     } else { 
 	memcpy(t.h_dest, vlaninfo->router, 6);
     }
-    memcpy(eth->h_source, vlaninfo->hwaddr, 6); // deprecate this
+    //memcpy(eth->h_source, vlaninfo->hwaddr, 6); // deprecate this
 
     memcpy(t.h_source, vlaninfo->hwaddr, 6);
     
