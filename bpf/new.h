@@ -511,10 +511,11 @@ static __always_inline
 int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, unsigned int overhead)
 {
 
-    struct in6_addr saddr = t->saddr.addr6;
-    struct in6_addr daddr = t->daddr.addr6;
-    
-    if (nul6(&saddr) || nul6(&daddr))
+    //struct in6_addr saddr = t->saddr.addr6;
+    //struct in6_addr daddr = t->daddr.addr6;
+    //if (nul6(&saddr) || nul6(&daddr))
+    //return -1;
+    if (nul6(&(t->saddr.addr6)) || nul6(&(t->daddr.addr6)))
     	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
@@ -537,7 +538,8 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
         return -1;
     
     int payload_len = overhead + orig_len;
-    new_ip6hdr(new, payload_len, protocol, saddr, daddr);
+    //new_ip6hdr(new, payload_len, protocol, saddr, daddr);
+    new_ip6hdr(new, payload_len, protocol, t->saddr.addr6, t->daddr.addr6);
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
     memcpy(p->eth->h_source, t->h_source,6);
@@ -550,14 +552,14 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 }
 
 
-//static __always_inline
+static __always_inline
 int push_6in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
     return push_xin6(ctx, t, &p, IPPROTO_IPV6, 0);
 }
 
-//static __always_inline
+static __always_inline
 int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
@@ -565,7 +567,7 @@ int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 }
 
 
-//static __always_inline
+static __always_inline
 int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};

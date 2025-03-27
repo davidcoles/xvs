@@ -457,7 +457,7 @@ int is_addr4(struct addr *a) {
     return (!(a->addr4.pad1) && !(a->addr4.pad2) && !(a->addr4.pad3)) ? 1 : 0;
 }
 
-static __always_inline
+//static __always_inline
 int send_l2(struct xdp_md *ctx, tunnel_t *t)
 {
     return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
@@ -484,7 +484,7 @@ int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_in4(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_xinx(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
 
     if (is_addr4(&(t->daddr))) {
@@ -501,7 +501,8 @@ int send_in4(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
     return push_4in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
-//static __always_inline
+/*
+static __always_inline
 int send_6inx(struct xdp_md *ctx, tunnel_t *t)
 {
 
@@ -510,7 +511,7 @@ int send_6inx(struct xdp_md *ctx, tunnel_t *t)
 
     return push_6in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
-
+*/
 
 static __always_inline
 int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
@@ -523,7 +524,7 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
     return push_gre6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
-//static __always_inline
+static __always_inline
 int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
     // should probably rate limit sending frag_needed - calculating checksum is slow
@@ -531,19 +532,19 @@ int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     return (frag_needed4(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
 }
 
-//static __always_inline
+static __always_inline
 __u16 l3_hash(fourtuple_t *ft)
 {
     return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
 }
 
-//static __always_inline
+static __always_inline
 __u16 l4_hash(fourtuple_t *ft)
 {
     return sdbm((unsigned char *) ft, sizeof(fourtuple_t));
 }
 
-//static __always_inline
+static __always_inline
 __u16 l4_hash_(struct l4 *ft)
 {
     return sdbm((unsigned char *) ft, sizeof(*ft));
@@ -789,8 +790,7 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 
 
-//SEC("XDP")
-static __always_inline
+//static __always_inline
 int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)    
 {
 
@@ -883,7 +883,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     
     switch (result) {
     case LAYER3_FOU:    return send_fou(ctx, t);
-    case LAYER3_IPIP:   return send_in4(ctx, t, is_ipv6);
+    case LAYER3_IPIP:   return send_xinx(ctx, t, is_ipv6);
     case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6);
     case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6);
     default:
@@ -908,37 +908,6 @@ void update(fourtuple_t *key, tunnel_t *t)
 }
 
 
-
-
-SEC("xdp")
-int xdp_fwd_func(struct xdp_md *ctx)
-{
-    //__u64 start = bpf_ktime_get_ns();
-    //__u32 took = 0;
-     
-    fourtuple_t ft = {};
-    tunnel_t t = {};
-    
-    int action = xdp_fwd_func_(ctx, &ft, &t);
-
-    // handle stats here
-    switch (action) {
-    case XDP_PASS: return XDP_PASS;
-    case XDP_DROP: return XDP_DROP;
-    case XDP_TX:
-	//took = bpf_ktime_get_ns() - start;
-	//int ack = dest.flags.ack ? 1 : 0;	
-	//int syn = dest.flags.syn ? 1 : 0;	
-	//bpf_printk("TOOK: %d\n", took);
-	//bpf_printk("FT %d %d\n", bpf_ntohs(ft.sport), bpf_ntohs(ft.dport));
-	//update(&ft, &t);
-	return XDP_TX;
-    case XDP_ABORTED: return XDP_ABORTED;
-    case XDP_REDIRECT: return XDP_REDIRECT;
-    }
-    
-    return XDP_DROP;
-}
 
 // urgh, need to set up veth interfaces with ipv6 addresses first, of course
 int xdp_request_v6(struct xdp_md *ctx) {
@@ -1022,17 +991,15 @@ int xdp_request_v6(struct xdp_md *ctx) {
     struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
 
-    int is_ipv6 = 1;
     int action = XDP_DROP;
 
     switch (method) {
     case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
 	//case F_LAYER3_IPIP: action = send_6inx(ctx, &t); break;
-    case F_LAYER3_GRE:  action = send_gre(ctx, &t, is_ipv6); break;
-    case F_LAYER3_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
-	//case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
-    default:
-	return XDP_DROP;
+    case F_LAYER3_IPIP: action = send_xinx(ctx, &t, 1); break;
+    case F_LAYER3_GRE:  action = send_gre(ctx, &t, 1); break;
+    case F_LAYER3_GUE:  action = send_gue(ctx, &t, 1); break;
+    case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)
@@ -1063,10 +1030,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (eth + 1 > data_end)
         return XDP_DROP;
     
-    if (eth->h_proto == bpf_htons(ETH_P_IPV6))
-	//return xdp_request_v6(ctx);
-	return XDP_PASS;
-
     if (eth->h_proto != bpf_htons(ETH_P_IP))
 	return XDP_PASS;
 
@@ -1184,7 +1147,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     switch (method) {
     case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
-    case F_LAYER3_IPIP:	action = send_in4(ctx, &t, is_ipv6); break;
+    case F_LAYER3_IPIP:	action = send_xinx(ctx, &t, is_ipv6); break;
     case F_LAYER3_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
     case F_LAYER3_GUE:	action = send_gue(ctx, &t, is_ipv6); break;
     case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
@@ -1291,6 +1254,8 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     struct ethhdr *eth = data;
     
+    bpf_printk("HERE\n");
+    
     if (eth + 1 > data_end)
         return XDP_DROP;
     
@@ -1376,6 +1341,36 @@ int xdp_reply_v4(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
+
+SEC("xdp")
+int xdp_fwd_func(struct xdp_md *ctx)
+{
+     //__u64 start = bpf_ktime_get_ns();
+    //__u32 took = 0;
+     
+    fourtuple_t ft = {};
+    tunnel_t t = {};
+    
+    int action = xdp_fwd_func_(ctx, &ft, &t);
+
+    // handle stats here
+    switch (action) {
+    case XDP_PASS: return XDP_PASS;
+    case XDP_DROP: return XDP_DROP;
+    case XDP_TX:
+	//took = bpf_ktime_get_ns() - start;
+	//int ack = dest.flags.ack ? 1 : 0;	
+	//int syn = dest.flags.syn ? 1 : 0;	
+	//bpf_printk("TOOK: %d\n", took);
+	//bpf_printk("FT %d %d\n", bpf_ntohs(ft.sport), bpf_ntohs(ft.dport));
+	//update(&ft, &t);
+	return XDP_TX;
+    case XDP_ABORTED: return XDP_ABORTED;
+    case XDP_REDIRECT: return XDP_REDIRECT;
+    }
+     return XDP_PASS;
+}
+
 SEC("xdp")
 int xdp_reply(struct xdp_md *ctx)
 {
@@ -1383,12 +1378,13 @@ int xdp_reply(struct xdp_md *ctx)
     void *data     = (void *)(long)ctx->data;
     
     struct ethhdr *eth = data;
-    
+
     if (eth + 1 > data_end)
         return XDP_DROP;
     
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
+	//bpf_printk("ETH_P_IP reply\n");
 	return xdp_reply_v4(ctx);	
     case bpf_htons(ETH_P_IPV6):
 	return xdp_reply_v6(ctx);
@@ -1410,6 +1406,7 @@ int xdp_request(struct xdp_md *ctx)
 
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
+	//bpf_printk("ETH_P_IP request\n");
 	return xdp_request_v4(ctx);
     case bpf_htons(ETH_P_IPV6):
 	return xdp_request_v6(ctx);
