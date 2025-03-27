@@ -299,11 +299,13 @@ func (l *layer3) recalc2() {
 				}
 			}
 
-			h_dest := l.h_dest
+			var h_dest mac
 			h_source := l.h_source
 
 			if d.TunnelPort == uint16(LAYER2) {
 				h_dest = backend
+			} else {
+				h_dest = l.h_dest
 			}
 
 			var info bpf_destinfo

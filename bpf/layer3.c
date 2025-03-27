@@ -949,8 +949,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (!vip_rip)
         return XDP_PASS;
     
-    bpf_printk("vip_rip\n");
-    
     addr_t vip = vip_rip->vip;
     addr_t rip = vip_rip->rip;
     __u16 dport = vip_rip->port;
@@ -1203,9 +1201,6 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if (tcp + 1 > data_end)
         return XDP_DROP;
 
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-
-
     addr_t saddr = { .addr6 = ip6->ip6_src };
     addr_t daddr = { .addr6 = ip6->ip6_dst };    
     
@@ -1218,6 +1213,11 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if (!match)
 	return XDP_DROP;
     
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
+	return XDP_DROP;
+    
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
+        
     __u64 time = bpf_ktime_get_ns();
 
     if (time < match->time)
@@ -1240,9 +1240,6 @@ int xdp_reply_v6(struct xdp_md *ctx)
 
     struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
-
-
-    bpf_printk("RETURN v6 XDP_PASS\n");
     
     return XDP_PASS;
 }
@@ -1253,8 +1250,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
     void *data     = (void *)(long)ctx->data;
     
     struct ethhdr *eth = data;
-    
-    bpf_printk("HERE\n");
     
     if (eth + 1 > data_end)
         return XDP_DROP;
@@ -1283,8 +1278,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
     if (ip->protocol != IPPROTO_TCP)
         return XDP_DROP;
 
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-    
     struct tcphdr *tcp = (void *)(ip + 1);
     
     if (tcp + 1 > data_end)
@@ -1311,7 +1304,9 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     if (!match)
 	return XDP_DROP;
-
+    
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+    
     __u64 time = bpf_ktime_get_ns();
 
     if (time < match->time)
@@ -1384,7 +1379,6 @@ int xdp_reply(struct xdp_md *ctx)
     
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
-	//bpf_printk("ETH_P_IP reply\n");
 	return xdp_reply_v4(ctx);	
     case bpf_htons(ETH_P_IPV6):
 	return xdp_reply_v6(ctx);
@@ -1406,7 +1400,6 @@ int xdp_request(struct xdp_md *ctx)
 
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
-	//bpf_printk("ETH_P_IP request\n");
 	return xdp_request_v4(ctx);
     case bpf_htons(ETH_P_IPV6):
 	return xdp_request_v6(ctx);

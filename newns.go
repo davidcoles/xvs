@@ -143,11 +143,14 @@ ip a add ` + ip1 + `/30 dev ` + a.nic + `
 ip -6 a add ` + ip6_1 + `/126 dev ` + a.nic + `
 ip netns add ` + ns + `
 ip link set ` + b.nic + ` netns ` + ns + `
-ip netns exec ` + ns + ` /bin/sh -c "ip l set ` + b.nic + ` up && ip a add ` + ip2 + `/30 dev ` + b.nic + ` && ip r replace default via ` + ip1 + `"
-ip netns exec ` + ns + ` /bin/sh -c "ip -6 a add ` + ip6_2 + `/126 dev ` + b.nic + ` && ip r replace default via ` + ip6_1 + `"
+ip netns exec ` + ns + ` ip l set ` + b.nic + ` up
+ip netns exec ` + ns + ` ip a add ` + ip2 + `/30 dev ` + b.nic + `
+ip netns exec ` + ns + ` ip r replace default via ` + ip1 + `
+ip netns exec ` + ns + ` ip -6 a add ` + ip6_2 + `/126 dev ` + b.nic + `
+ip netns exec ` + ns + ` ip -6 r replace default via ` + ip6_1 + `
 ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
 ip r replace ` + cbs + `/16 via ` + ip2 + `
-ip -r r replace ` + cb6 + `/64 via ` + ip6_2 + `
+ip -6 r replace ` + cb6 + `/64 via ` + ip6_2 + `
 `
 
 	fmt.Println(script)
