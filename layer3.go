@@ -97,7 +97,7 @@ type bpf_vip_rip struct {
 	method uint8
 	flags  uint8
 	hwaddr [6]byte
-	pad    [2]byte
+	vlanid uint16
 }
 
 type addr4 = [4]byte
@@ -374,14 +374,39 @@ func (l *layer3) recalc() {
 
 		for _, d := range dests {
 
+			mac := l.h_dest // default to router - potential loop?
+
+			if d.flags&0x07 == LAYER2 {
+				mac = d.mac
+			}
+
+			// TODO - check if dst is on local interface
+
 			nat := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, byte(d.index)}
+
+			var is6 bool
+
+			for i := 0; i < 12; i++ {
+				if vip[i] != 0 {
+					is6 = true
+				}
+			}
+
+			rip := d.dest
+
+			if is6 {
+				nat = [16]byte{0xfe, 0xfe, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, byte(d.index)}
+				nat[0] = 0xfe
+				nat[1] = 0xfe
+			}
 
 			vip_rip := bpf_vip_rip{
 				vip:    vip,
-				rip:    d.dest,
+				rip:    rip,
 				port:   d.tport,
 				method: d.flags,
-				hwaddr: d.mac,
+				hwaddr: mac,
+				vlanid: uint16(vlanid),
 			}
 
 			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
@@ -389,7 +414,8 @@ func (l *layer3) recalc() {
 	}
 }
 
-func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3, error) {
+//func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3, error) {
+func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	iface, err := net.InterfaceByName(ifname)
 
@@ -403,10 +429,30 @@ func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3,
 
 	nic := uint32(iface.Index)
 
+	var prefix4 netip.Prefix
+	var prefix6 netip.Prefix
+
 	addrs, _ := iface.Addrs()
 	for _, a := range addrs {
-		fmt.Println("ADDR", a)
+		prefix := netip.MustParsePrefix(a.String())
+		addr := prefix.Addr()
+
+		if !addr.IsGlobalUnicast() {
+			continue
+		}
+
+		if addr.Is4() {
+			prefix4 = prefix
+		} else {
+			prefix6 = prefix
+		}
 	}
+
+	fmt.Println(prefix4, prefix6)
+
+	//return nil, nil
+	saddr4 := prefix4.Addr().As4()
+	saddr6 := prefix6.Addr().As16()
 
 	var h_source [6]byte
 	copy(h_source[:], iface.HardwareAddr[:])
@@ -483,6 +529,7 @@ func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3,
 
 	internal := bpf_vlaninfo{
 		source_ipv4: ns.addr(),
+		source_ipv6: ns.ipv6(),
 		ifindex:     uint32(ns.a.idx),
 		hwaddr:      ns.b.mac,
 		router:      ns.a.mac,

@@ -18,6 +18,12 @@
 
 /*
 
+// all backends in data plane have full source IP/HW addresses in destinfo - no need to look up seperate VLAN details
+// On a single/bond interface with no VLANs then TX always
+// On a single/bond interface with VLANs then update VLAN header (if necc) and TX always
+// On multiple interfaces then REDIRECT always
+
+
 https://www.etb-tech.com/netronome-agilio-cx-40gb-qsfp-dual-port-low-profile-network-card-pcbd0097-005-nic00476.html
 
 https://datatracker.ietf.org/doc/html/draft-herbert-gue-01
@@ -42,7 +48,7 @@ ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
 * IPv6 ICMP - frag needed
 * ICMP replies
 * flow table
-* healthchecks
+* healthchecks for IPv6
 
 **********************************************************************
 
@@ -189,6 +195,14 @@ const __u8 F_LAYER3_FOU    = 1;
 const __u8 F_LAYER3_GRE    = 2;
 const __u8 F_LAYER3_GUE    = 3;
 const __u8 F_LAYER3_IPIP   = 4;
+
+enum tunnel_type {
+	  T_LAYER2 = F_LAYER2_DSR,
+	  T_FOU    = F_LAYER3_FOU,
+	  T_GRE    = F_LAYER3_GRE,
+	  T_GUE    = F_LAYER3_GUE,
+	  T_IPIP   = F_LAYER3_IPIP,
+};
 
 const __u8 F_CHECKSUM_DISABLE = 0x08;
 
@@ -338,7 +352,8 @@ struct {
 
 struct vlaninfo {
     __u32 source_ipv4;
-    struct addr source_ipv6;
+    //struct addr source_ipv6;
+    struct in6_addr source_ipv6;
     __u32 ifindex;
     __u8 hwaddr[6]; // interface's MAC
     __u8 router[6]; // router's MAC (peer's address in case of veth)
@@ -361,9 +376,10 @@ struct vip_rip {
     addr_t rip;
     __u16 port;
     __u8 method;
-    __u8 nochecksum : 1;
-    __u8 hwaddr[6];
-    __u8 pad[2];
+    __u8 nochecksum : 1; // flags
+    __u8 h_dest[6];
+    __u16 vlanid;
+    // vlanid to get source interface and sadd/h_source, or embed here?
 };
 
 struct {
@@ -374,10 +390,10 @@ struct {
 } nat_to_vip_rip SEC(".maps");
     
 struct vip_info {
-    addr_t ext_ip_;
-    __u16 vlanid;
-    __u8 h_dest_[6];   // router MAC - unused
-    __u8 h_source_[6]; // external interface AMC - unused
+    addr_t _ext_ip_;
+    __u16 _vlanid;
+    __u8 _h_dest_[6];   // router MAC - unused
+    __u8 _h_source_[6]; // external interface AMC - unused
     __u8 pad[2];
 };
 
@@ -416,7 +432,6 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u8[16]);
-    //    __type(value, __u32);
     __type(value, struct vip_info);
     __uint(max_entries, 4096);
 } vips SEC(".maps");
@@ -484,6 +499,16 @@ int send_in4(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 	return push_6in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 	
     return push_4in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+//static __always_inline
+int send_6inx(struct xdp_md *ctx, tunnel_t *t)
+{
+
+    if (is_addr4(&(t->daddr)))
+	return push_6in4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+
+    return push_6in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 
@@ -616,7 +641,11 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
 
+    if (eth + 1 > data_end)
+        return NOT_FOUND;
+    
     if (ip6 + 1 > data_end)
         return NOT_FOUND;
 
@@ -629,8 +658,23 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
     ft->saddr = saddr;
     ft->daddr = daddr;
     
-    if (!bpf_map_lookup_elem(&vips, &daddr))
-        return NOT_A_VIP;
+    if (!bpf_map_lookup_elem(&vips, &daddr)) {
+	if (!bpf_map_lookup_elem(&vips, &saddr))
+            return NOT_A_VIP;
+	
+	bpf_printk("VIPv6 reply\n");
+
+	// source was a VIP - send to netns via veth interface
+        struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+	
+	if (!vlaninfo)
+            return NOT_FOUND;
+	
+        // set correct MAC address for veth pair
+        memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
+	memcpy(eth->h_source, vlaninfo->router, 6);
+        return PROBE_REPLY;
+    }
     
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
         //bpf_printk("IPv6 ICMP!\n");
@@ -896,9 +940,120 @@ int xdp_fwd_func(struct xdp_md *ctx)
     return XDP_DROP;
 }
 
+// urgh, need to set up veth interfaces with ipv6 addresses first, of course
+int xdp_request_v6(struct xdp_md *ctx) {
+    
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    if (eth->h_proto != bpf_htons(ETH_P_IPV6))
+       	return XDP_PASS;
+    
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+    
+    if (ip6 + 1 > data_end)
+        return XDP_DROP;
+    
+    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
+        return XDP_DROP;
+    
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
+        return XDP_PASS;
+    }
 
-SEC("xdp")
-int xdp_request(struct xdp_md *ctx)
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
+        return XDP_PASS;
+    
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+    
+    if (tcp + 1 > data_end)
+        return XDP_DROP;
+    
+    addr_t nat = { .addr6 = ip6->ip6_dst };
+    struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
+
+    if (!vip_rip)
+        return XDP_PASS;
+    
+    bpf_printk("vip_rip\n");
+    
+    addr_t vip = vip_rip->vip;
+    addr_t rip = vip_rip->rip;
+    __u16 dport = vip_rip->port;
+    __u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
+    enum tunnel_type method = vip_rip->method;
+
+    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &vlanid);
+
+    if (!vlaninfo)
+	return XDP_DROP;
+    
+    if (!vlaninfo->ifindex) // FIXME - in case of single nic/no vlan setup?
+	return XDP_DROP;
+    
+    __be16 eph = tcp->source;
+    __be16 svc = tcp->dest;
+    addr_t ext = { .addr6 = vlaninfo->source_ipv6 };
+    
+    tunnel_t t = {
+                  .sport = 6666, //0x8000 | (l4_hash_(&ft) & 0x7fff),
+                  .dport = dport,
+                  .nochecksum = 1,
+                  .type = method,
+                  .vlanid = vlanid,
+    };
+    t.saddr = ext;
+    t.daddr = rip;
+
+    memcpy(t.h_dest, vip_rip->h_dest, 6);
+    memcpy(t.h_source, vlaninfo->hwaddr, 6);
+
+
+    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    
+    ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
+    ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
+
+    struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+
+    int is_ipv6 = 1;
+    int action = XDP_DROP;
+
+    switch (method) {
+    case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
+	//case F_LAYER3_IPIP: action = send_6inx(ctx, &t); break;
+    case F_LAYER3_GRE:  action = send_gre(ctx, &t, is_ipv6); break;
+    case F_LAYER3_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
+	//case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
+    default:
+	return XDP_DROP;
+    }
+
+    if (action != XDP_TX)
+        return XDP_DROP;
+
+    // to match returning packet
+    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = IPPROTO_TCP };
+    rep.saddr = vip; // ???? upsets verifier if in declaration above
+    rep.daddr = ext; // ???? upsets verifier if in declaration above
+
+    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
+    map.addr = nat; // ??? upsets verifier if in declaration above
+
+    bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
+
+    return bpf_redirect(vlaninfo->ifindex, 0);
+
+}
+
+
+int xdp_request_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
@@ -908,9 +1063,13 @@ int xdp_request(struct xdp_md *ctx)
     if (eth + 1 > data_end)
         return XDP_DROP;
     
+    if (eth->h_proto == bpf_htons(ETH_P_IPV6))
+	//return xdp_request_v6(ctx);
+	return XDP_PASS;
+
     if (eth->h_proto != bpf_htons(ETH_P_IP))
 	return XDP_PASS;
-    
+
     struct iphdr *ip = (void *)(eth + 1);
     
     if (ip + 1 > data_end)
@@ -922,17 +1081,11 @@ int xdp_request(struct xdp_md *ctx)
     if (!vip_rip)
     	return XDP_PASS;
 
-    addr_t vip = vip_rip->vip; //vip_rip[0];
-    addr_t rip = vip_rip->rip; //vip_rip[1];
+    addr_t vip = vip_rip->vip;
+    addr_t rip = vip_rip->rip;
     __u16 dport = vip_rip->port;
-    __u8 method = vip_rip->method;
-    
-    struct vip_info *vip_info = bpf_map_lookup_elem(&vips, &vip);
-    
-    if (!vip_info)
-	return XDP_DROP;
-    
-    __u32 vlanid = vip_info->vlanid;
+    __u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
+    enum tunnel_type method = vip_rip->method;
     
     struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &vlanid);
 
@@ -953,10 +1106,12 @@ int xdp_request(struct xdp_md *ctx)
 
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-        return XDP_DROP; // FIXME - new enum;
+        return XDP_DROP;
     
     if (ip->protocol != IPPROTO_TCP)
 	return XDP_DROP;
+
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
     
     struct tcphdr *tcp = (void *)(ip + 1);
     
@@ -964,11 +1119,31 @@ int xdp_request(struct xdp_md *ctx)
       return XDP_DROP;
 
 
+    int overhead = 0;
+    int mtu = MTU;
+
+    switch (method) {
+    case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
+    case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
+    case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
+    case T_IPIP: overhead = sizeof(struct iphdr);  break;
+    case T_LAYER2: break;
+    }
+    
+    if ((data_end - (void *) ip) + overhead > mtu) {
+	bpf_printk("IPv4 FRAG_NEEDED\n");
+	__be32 internal = bpf_htonl(10<<24 | 255<<16 | 255<<8 | 253); // TODO - add to VETH vlaninfo
+	return send_frag_needed4(ctx, internal, mtu - overhead);
+    }
+
     struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
 
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
     addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
+
+    //if (!is_ipv4_addr(rip))
+    //ext = vlaninfo->source_ipv6;
     
     tunnel_t t = {
 		  .sport =  0x8000 | (l4_hash_(&ft) & 0x7fff),
@@ -980,15 +1155,8 @@ int xdp_request(struct xdp_md *ctx)
     t.saddr = ext;
     t.daddr = rip;
 
-    if (F_LAYER2_DSR == method) {
-	memcpy(t.h_dest, vip_rip->hwaddr, 6);	
-    } else { 
-	memcpy(t.h_dest, vlaninfo->router, 6);
-    }
-    //memcpy(eth->h_source, vlaninfo->hwaddr, 6); // deprecate this
-
+    memcpy(t.h_dest, vip_rip->h_dest, 6);    
     memcpy(t.h_source, vlaninfo->hwaddr, 6);
-    
     
     /**********************************************************************/
     // SAVE CHECKSUM INFO
@@ -1011,8 +1179,6 @@ int xdp_request(struct xdp_md *ctx)
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
 
-    // FIXME - check overhead and send ICMP reply
-    
     int is_ipv6 = 0;
     int action = XDP_DROP;
     
@@ -1027,16 +1193,6 @@ int xdp_request(struct xdp_md *ctx)
     if (action != XDP_TX)
 	return XDP_DROP;
 
-    /**********************************************************************/
-    // Modify the send_* routines to update the hw address and remove this
-    /**********************************************************************/
-    //data_end = (void *)(long)ctx->data_end;
-    //eth      = (void *)(long)ctx->data;
-    //if (eth + 1 > data_end) return XDP_PASS;
-    //memcpy(eth->h_dest, t.hwaddr, 6);           // router/dest addr
-    //memcpy(eth->h_source, vlaninfo->hwaddr, 6); // our hw addr
-    /**********************************************************************/
-
     // to match returning packet
     struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = IPPROTO_TCP };
     rep.saddr = vip; // ???? upsets verifier if in declaration above
@@ -1050,8 +1206,85 @@ int xdp_request(struct xdp_md *ctx)
     return bpf_redirect(vlaninfo->ifindex, 0);
 }
 
-SEC("xdp")
-int xdp_reply(struct xdp_md *ctx)
+
+int xdp_reply_v6(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    if (eth->h_proto != bpf_htons(ETH_P_IPV6))
+       	return XDP_PASS;
+    
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+    
+    if (ip6 + 1 > data_end)
+        return XDP_DROP;
+    
+    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
+        return XDP_DROP;
+    
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
+        return XDP_PASS;
+    }
+
+    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
+        return XDP_PASS;
+    
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+    
+    if (tcp + 1 > data_end)
+        return XDP_DROP;
+
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
+
+
+    addr_t saddr = { .addr6 = ip6->ip6_src };
+    addr_t daddr = { .addr6 = ip6->ip6_dst };    
+    
+    struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
+    rep.saddr = saddr; // ??? upsets verifier if in declaration above
+    rep.daddr = daddr; // ??? upsets verifier if in declaration above
+    
+    struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
+    
+    if (!match)
+	return XDP_DROP;
+    
+    __u64 time = bpf_ktime_get_ns();
+
+    if (time < match->time)
+	return XDP_DROP;
+
+    if ((time - match->time) > (5 * SECOND_NS))
+	return XDP_DROP;
+
+    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+    
+    if (!vlaninfo)
+	return XDP_DROP;    
+
+    
+    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    
+    ip6->ip6_src = match->addr.addr6;
+    ip6->ip6_dst = vlaninfo->source_ipv6;
+    tcp->dest = match->port;
+
+    struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+
+
+    bpf_printk("RETURN v6 XDP_PASS\n");
+    
+    return XDP_PASS;
+}
+
+int xdp_reply_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
@@ -1084,6 +1317,8 @@ int xdp_reply(struct xdp_md *ctx)
     
     if (ip->protocol != IPPROTO_TCP)
         return XDP_DROP;
+
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
     
     struct tcphdr *tcp = (void *)(ip + 1);
     
@@ -1137,6 +1372,48 @@ int xdp_reply(struct xdp_md *ctx)
     struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
+
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_reply(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	return xdp_reply_v4(ctx);	
+    case bpf_htons(ETH_P_IPV6):
+	return xdp_reply_v6(ctx);
+    }
+
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_request(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+	return XDP_DROP;
+
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	return xdp_request_v4(ctx);
+    case bpf_htons(ETH_P_IPV6):
+	return xdp_request_v6(ctx);
+    }
 
     return XDP_PASS;
 }

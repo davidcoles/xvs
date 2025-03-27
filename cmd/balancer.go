@@ -37,7 +37,7 @@ func main() {
 	layer2 := flag.Bool("2", false, "Layer 2")
 	l3port4 := flag.Uint("p", 9999, "Port to use for FOU on IPv4")
 	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
-	ip6 := flag.String("6", "", "Local IPv6 address")
+	//ip6 := flag.String("6", "", "Local IPv6 address")
 
 	flag.Parse()
 
@@ -45,20 +45,21 @@ func main() {
 
 	iface := args[0]
 	dmac, _ := net.ParseMAC(args[1])
-	saddr4 := netip.MustParseAddr(args[2])
-	vip := netip.MustParseAddr(args[3])
-	dests := args[4:]
+	//saddr4 := netip.MustParseAddr(args[2])
+	vip := netip.MustParseAddr(args[2])
+	dests := args[3:]
 
 	var h_dest [6]byte
 	copy(h_dest[:], dmac[:])
 
-	var saddr6 [16]byte
+	/*
+		var saddr6 [16]byte
 
-	if *ip6 != "" {
-		s6 := netip.MustParseAddr(*ip6)
-		saddr6 = s6.As16()
-	}
-
+		if *ip6 != "" {
+			s6 := netip.MustParseAddr(*ip6)
+			saddr6 = s6.As16()
+		}
+	*/
 	type addr4 = [4]byte
 	var addrs []netip.Addr
 
@@ -87,7 +88,8 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	l3, err := xvs.Layer3(iface, h_dest, saddr4.As4(), saddr6)
+	//l3, err := xvs.Layer3(iface, h_dest, saddr4.As4(), saddr6)
+	l3, err := xvs.Layer3(iface, h_dest)
 
 	if err != nil {
 		log.Fatal(err)

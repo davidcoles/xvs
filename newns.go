@@ -45,6 +45,16 @@ func (n *newns) nat(i uint16) ip4  { return ip4{n.a.ip4[0], n.a.ip4[1], byte(i >
 
 func (n *newns) test() { fmt.Println("OK") }
 
+func (n *newns) ipv6() [16]byte {
+	//ip6_2 := "fefe::ffff:2"
+	return [16]byte{
+		0xfe, 0xfe, 0x0, 0x0,
+		0x0, 0x0, 0x0, 0x0,
+		0x0, 0x0, 0x0, 0x0,
+		0xff, 0xff, 0x0, 0x2,
+	}
+}
+
 func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 
 	namespace := "l3"
@@ -122,16 +132,26 @@ func (n *newns) config_pair(ns string, a, b nic) error {
 	cb[3] = 0
 	cbs := cb.String()
 
+	ip6_1 := "fefe::ffff:1"
+	ip6_2 := "fefe::ffff:2"
+	cb6 := "fefe::"
+
 	script := `
 ip netns del ` + ns + ` >/dev/null 2>&1 || true
 ip l set ` + a.nic + ` up
 ip a add ` + ip1 + `/30 dev ` + a.nic + `
+ip -6 a add ` + ip6_1 + `/126 dev ` + a.nic + `
 ip netns add ` + ns + `
 ip link set ` + b.nic + ` netns ` + ns + `
-ip netns exec ` + ns + ` /bin/sh -c "ip l set ` + b.nic + ` up && ip a add ` + ip2 + `/30 dev ` + b.nic + ` && ip r replace default via ` + ip1 +
-		` && ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off"
+ip netns exec ` + ns + ` /bin/sh -c "ip l set ` + b.nic + ` up && ip a add ` + ip2 + `/30 dev ` + b.nic + ` && ip r replace default via ` + ip1 + `"
+ip netns exec ` + ns + ` /bin/sh -c "ip -6 a add ` + ip6_2 + `/126 dev ` + b.nic + ` && ip r replace default via ` + ip6_1 + `"
+ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
 ip r replace ` + cbs + `/16 via ` + ip2 + `
+ip -r r replace ` + cb6 + `/64 via ` + ip6_2 + `
 `
+
+	fmt.Println(script)
+
 	if out, err := exec.Command("/bin/sh", "-e", "-c", script).Output(); err != nil {
 		fmt.Println(out)
 		return fmt.Errorf("Error seting up netns: %s", err.Error())

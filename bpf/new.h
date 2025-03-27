@@ -85,6 +85,20 @@ l4_checksum_diff(__u16 seed, struct l4 *new, struct l4 *old) {
     return csum_fold_helper(csum);
 }
 
+struct l4v6 {
+    struct in6_addr saddr;
+    struct in6_addr daddr;
+    __be16 sport;
+    __be16 dport;
+};
+
+//static __always_inline
+__u16 l4v6_checksum_diff(__u16 seed, struct l4v6 *new, struct l4v6 *old) {
+    __u32 csum, size = sizeof(struct l4v6);
+    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
+    return csum_fold_helper(csum);
+}
+
 
 static __always_inline
 __u16 internet_checksum(void *data, void *data_end, __u32 csum)
