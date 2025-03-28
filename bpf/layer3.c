@@ -176,6 +176,7 @@ ipip
 
 const __u8 F_CALCULATE_CHECKSUM = 1;
 
+#include "imports.h"
 #include "vlan.h"
 
 
@@ -188,21 +189,7 @@ const __u32 NETNS = 4095;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 
-const __u8 F_STICKY = 0x01;
-
-const __u8 F_LAYER2_DSR    = 0;
-const __u8 F_LAYER3_FOU    = 1;
-const __u8 F_LAYER3_GRE    = 2;
-const __u8 F_LAYER3_GUE    = 3;
-const __u8 F_LAYER3_IPIP   = 4;
-
-enum tunnel_type {
-	  T_LAYER2 = F_LAYER2_DSR,
-	  T_FOU    = F_LAYER3_FOU,
-	  T_GRE    = F_LAYER3_GRE,
-	  T_GUE    = F_LAYER3_GUE,
-	  T_IPIP   = F_LAYER3_IPIP,
-};
+//const __u8 F_STICKY = 0x01;
 
 const __u8 F_CHECKSUM_DISABLE = 0x08;
 
@@ -607,11 +594,11 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 	return NOT_FOUND;
     
     switch (type) {
-    case F_LAYER3_FOU:  return LAYER3_FOU;
-    case F_LAYER3_GRE:  return LAYER3_GRE;
-    case F_LAYER3_IPIP: return LAYER3_IPIP;
-    case F_LAYER3_GUE:  return LAYER3_GUE;
-    case F_LAYER2_DSR:  return LAYER2_DSR;
+    case T_FOU:  return LAYER3_FOU;
+    case T_GRE:  return LAYER3_GRE;
+    case T_IPIP: return LAYER3_IPIP;
+    case T_GUE:  return LAYER3_GUE;
+    case T_LAYER2:  return LAYER2_DSR;
     }
     
    return NOT_FOUND;
@@ -977,11 +964,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     int action = XDP_DROP;
 
     switch (method) {
-    case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
-    case F_LAYER3_IPIP: action = send_xinx(ctx, &t, 1); break;
-    case F_LAYER3_GRE:  action = send_gre(ctx, &t, 1); break;
-    case F_LAYER3_GUE:  action = send_gue(ctx, &t, 1); break;
-    case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
+    case T_FOU:  action = send_fou(ctx, &t); break;
+    case T_IPIP: action = send_xinx(ctx, &t, 1); break;
+    case T_GRE:  action = send_gre(ctx, &t, 1); break;
+    case T_GUE:  action = send_gue(ctx, &t, 1); break;
+    case T_LAYER2:  action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)
@@ -1132,11 +1119,11 @@ int xdp_request_v4(struct xdp_md *ctx)
     int action = XDP_DROP;
     
     switch (method) {
-    case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
-    case F_LAYER3_IPIP:	action = send_xinx(ctx, &t, is_ipv6); break;
-    case F_LAYER3_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
-    case F_LAYER3_GUE:	action = send_gue(ctx, &t, is_ipv6); break;
-    case F_LAYER2_DSR:  action = send_l2(ctx, &t); break;
+    case T_FOU:  action = send_fou(ctx, &t); break;
+    case T_IPIP:	action = send_xinx(ctx, &t, is_ipv6); break;
+    case T_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
+    case T_GUE:	action = send_gue(ctx, &t, is_ipv6); break;
+    case T_LAYER2:  action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)

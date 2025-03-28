@@ -37,6 +37,16 @@ enum {
       //F_DISABLED    = 0x40,
 };
 
+enum tunnel_type {
+		  T_LAYER2 = 0,
+		  T_FOU    = 1,
+		  T_GRE    = 2,
+		  T_GUE    = 3,
+		  T_IPIP   = 4,
+};
+
+
+
 // https://github.com/davidcoles/xvs/issues/2
 static __always_inline
 __u64 pow64(__u8 n)

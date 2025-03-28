@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"unsafe"
 
+	"github.com/davidcoles/xvs/bpf"
 	"github.com/davidcoles/xvs/xdp"
 )
 
@@ -26,13 +27,13 @@ func init() {
 	}
 }
 
-const LAYER2 uint8 = 0
-const FOU uint8 = 1
-const GRE uint8 = 2
-const GUE uint8 = 3
-const IPIP uint8 = 4
+const LAYER2 uint8 = bpf.T_LAYER2
+const FOU uint8 = bpf.T_FOU
+const GRE uint8 = bpf.T_GRE
+const GUE uint8 = bpf.T_GUE
+const IPIP uint8 = bpf.T_IPIP
 
-const F_STICKY uint8 = 0x01
+const F_STICKY uint8 = bpf.F_STICKY
 
 var VLANID uint32 = 100
 var VETH32 uint32 = 4095
