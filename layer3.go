@@ -133,6 +133,7 @@ type layer3 struct {
 	vips           xdp.Map
 	saddr4         [4]byte
 	saddr6         [16]byte
+	ns             *newns
 
 	services map[threetuple]*l3service
 }
@@ -384,7 +385,7 @@ func (l *layer3) recalc() {
 
 			// TODO - check if dst is on local interface
 
-			nat := [16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 255, 0, byte(d.index)}
+			nat := l.ns.nat4(d.index)
 
 			var is6 bool
 
@@ -397,10 +398,10 @@ func (l *layer3) recalc() {
 			rip := d.dest
 
 			if is6 {
-				nat = [16]byte{0xfe, 0xfe, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, byte(d.index)}
-				nat[0] = 0xfe
-				nat[1] = 0xfe
+				nat = l.ns.nat6(d.index)
 			}
+
+			fmt.Println("YYYY", nat)
 
 			vip_rip := bpf_vip_rip{
 				vip:    vip,
@@ -511,8 +512,6 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	ns.test()
-
 	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
 		return nil, err
 	}
@@ -530,12 +529,14 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 	vlan_info.UpdateElem(uP(&vlanid), uP(&vlaninfo), xdp.BPF_ANY)
 
 	internal := bpf_vlaninfo{
-		source_ipv4: ns.addr(),
+		source_ipv4: ns.ipv4(),
 		source_ipv6: ns.ipv6(),
 		ifindex:     uint32(ns.a.idx),
 		hwaddr:      ns.b.mac,
 		router:      ns.a.mac,
 	}
+
+	fmt.Println("XXXX", internal.source_ipv6)
 
 	var ftanf = uint32(4095)
 	vlan_info.UpdateElem(uP(&ftanf), uP(&internal), xdp.BPF_ANY)
@@ -558,5 +559,6 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		saddr6:         saddr6,
 		nat_to_vip_rip: nat_to_vip_rip,
 		services:       map[threetuple]*l3service{},
+		ns:             ns,
 	}, nil
 }

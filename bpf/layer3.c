@@ -352,7 +352,6 @@ struct {
 
 struct vlaninfo {
     __u32 source_ipv4;
-    //struct addr source_ipv6;
     struct in6_addr source_ipv6;
     __u32 ifindex;
     __u8 hwaddr[6]; // interface's MAC
@@ -457,7 +456,7 @@ int is_addr4(struct addr *a) {
     return (!(a->addr4.pad1) && !(a->addr4.pad2) && !(a->addr4.pad3)) ? 1 : 0;
 }
 
-//static __always_inline
+static __always_inline
 int send_l2(struct xdp_md *ctx, tunnel_t *t)
 {
     return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
@@ -663,8 +662,6 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	if (!bpf_map_lookup_elem(&vips, &saddr))
             return NOT_A_VIP;
 	
-	bpf_printk("VIPv6 reply\n");
-
 	// source was a VIP - send to netns via veth interface
         struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
 	
@@ -993,7 +990,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     switch (method) {
     case F_LAYER3_FOU:  action = send_fou(ctx, &t); break;
-	//case F_LAYER3_IPIP: action = send_6inx(ctx, &t); break;
     case F_LAYER3_IPIP: action = send_xinx(ctx, &t, 1); break;
     case F_LAYER3_GRE:  action = send_gre(ctx, &t, 1); break;
     case F_LAYER3_GUE:  action = send_gue(ctx, &t, 1); break;
@@ -1093,7 +1089,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     if ((data_end - (void *) ip) + overhead > mtu) {
 	bpf_printk("IPv4 FRAG_NEEDED\n");
-	__be32 internal = bpf_htonl(10<<24 | 255<<16 | 255<<8 | 253); // TODO - add to VETH vlaninfo
+	__be32 internal = vlaninfo->source_ipv4;
 	return send_frag_needed4(ctx, internal, mtu - overhead);
     }
 

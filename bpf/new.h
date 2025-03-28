@@ -92,7 +92,7 @@ struct l4v6 {
     __be16 dport;
 };
 
-//static __always_inline
+static __always_inline
 __u16 l4v6_checksum_diff(__u16 seed, struct l4v6 *new, struct l4v6 *old) {
     __u32 csum, size = sizeof(struct l4v6);
     csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
@@ -119,6 +119,7 @@ __u16 internet_checksum(void *data, void *data_end, __u32 csum)
     return csum_fold_helper(csum);
 }
 
+static __always_inline
 int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
 {
     void *data     = (void *)(long)ctx->data;
@@ -150,6 +151,7 @@ int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
      return 0;
 }
 
+static __always_inline
 int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
 {
     void *data     = (void *)(long)ctx->data;
@@ -552,14 +554,14 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 }
 
 
-static __always_inline
+//static __always_inline
 int push_6in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
     return push_xin6(ctx, t, &p, IPPROTO_IPV6, 0);
 }
 
-static __always_inline
+//static __always_inline
 int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
@@ -567,7 +569,7 @@ int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 }
 
 
-static __always_inline
+//static __always_inline
 int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};

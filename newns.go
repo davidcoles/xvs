@@ -21,41 +21,43 @@ package xvs
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os/exec"
 	"time"
 
 	"github.com/davidcoles/xvs/xdp"
 )
 
-//type ip4 [4]byte
-//type mac [6]byte
-
-//func (i *ip4) String() string { return b4s(*i) }
-//func (m *mac) String() string { return b6s(*m) }
-
 type newns struct {
 	a, b nic
 	ns   string
 }
 
-func (n *newns) namespace() string { return n.ns }
-func (n *newns) addr() [4]byte     { return n.b.ip4 }
-func (n *newns) id() uint32        { return uint32(n.a.idx) }
-func (n *newns) nat(i uint16) ip4  { return ip4{n.a.ip4[0], n.a.ip4[1], byte(i >> 8), byte(i & 0xff)} }
+//func (n *newns) namespace() string { return n.ns }
+//func (n *newns) addr() [4]byte     { return n.b.ip4 }
+//func (n *newns) id() uint32        { return uint32(n.a.idx) }
 
-func (n *newns) test() { fmt.Println("OK") }
-
-func (n *newns) ipv6() [16]byte {
-	//ip6_2 := "fefe::ffff:2"
-	return [16]byte{
-		0xfe, 0xfe, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x0,
-		0xff, 0xff, 0x0, 0x2,
-	}
+func (n *newns) nat4(i uint16) (nat [16]byte) {
+	nat = n.nat6(i)
+	nat[0] = 0
+	nat[1] = 0
+	return
+}
+func (n *newns) nat6(i uint16) (nat [16]byte) {
+	nat = n.a.ip6 //netip.MustParseAddr(IP6_2).As16()
+	nat[13] = 0
+	nat[14] = byte(i >> 8)
+	nat[15] = byte(i & 0xff)
+	return
 }
 
+func (n *newns) ipv4() [4]byte  { return n.b.ip4 }
+func (n *newns) ipv6() [16]byte { return n.b.ip6 }
+
 func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
+
+	const IP6_A = "fefe::ffff:fffd"
+	const IP6_B = "fefe::ffff:fffe"
 
 	namespace := "l3"
 
@@ -64,9 +66,11 @@ func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 	n.a.nic = namespace
 	n.b.nic = namespace + "ns"
 
-	var ip ip4 = ip4{10, 255, 255, 254}
-	n.a.ip4 = [4]byte{ip[0], ip[1], 255, 253}
-	n.b.ip4 = [4]byte{ip[0], ip[1], 255, 254}
+	n.a.ip6 = netip.MustParseAddr(IP6_A).As16()
+	n.b.ip6 = netip.MustParseAddr(IP6_B).As16()
+
+	copy(n.a.ip4[:], n.a.ip6[12:])
+	copy(n.b.ip4[:], n.b.ip6[12:])
 
 	if err := n.create_pair(n.a.nic, n.b.nic); err != nil {
 		return nil, err
@@ -93,7 +97,7 @@ func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 	}
 
 	// this seems to be needed to make native mode hardware work
-	if err := x.LoadBpfSection(outside, false, uint32(n.b.idx)); err != nil {
+	if err := x.LoadBpfSection(outside, true, uint32(n.b.idx)); err != nil {
 		return nil, err
 	}
 
@@ -128,19 +132,25 @@ func (n *newns) config_pair(ns string, a, b nic) error {
 	ip1 := a.ip4.String()
 	ip2 := b.ip4.String()
 	cb := a.ip4
+	cb[1] = 0
 	cb[2] = 0
 	cb[3] = 0
-	cbs := cb.String()
+	cbs := cb.String() + "/8"
 
-	ip6_1 := "fefe::ffff:1"
-	ip6_2 := "fefe::ffff:2"
-	cb6 := "fefe::"
+	ip6_1 := a.ip6.String()
+	ip6_2 := b.ip6.String()
+	//cb6 := "fefe::ff00:0"
+	cb6x := a.ip6
+	cb6x[13] = 0
+	cb6x[14] = 0
+	cb6x[15] = 0
+	cb6 := cb6x.String() + "/104"
 
 	script := `
 ip netns del ` + ns + ` >/dev/null 2>&1 || true
 ip l set ` + a.nic + ` up
 ip a add ` + ip1 + `/30 dev ` + a.nic + `
-ip r replace ` + cbs + `/16 via ` + ip2 + `
+#ip r replace ` + cbs + ` via ` + ip2 + `
 
 ip netns add ` + ns + `
 ip link set ` + b.nic + ` netns ` + ns + `
@@ -150,15 +160,12 @@ ip netns exec ` + ns + ` ip a add ` + ip2 + `/30 dev ` + b.nic + `
 ip netns exec ` + ns + ` ip r replace default via ` + ip1 + `
 
 ip -6 a add ` + ip6_1 + `/126 dev ` + a.nic + `
-ip -6 r replace ` + cb6 + `/64 via ` + ip6_2 + `
+#ip -6 r replace ` + cb6 + ` via ` + ip6_2 + `
 ip netns exec ` + ns + ` ip -6 a add ` + ip6_2 + `/126 dev ` + b.nic + `
 ip netns exec ` + ns + ` ip -6 r replace default via ` + ip6_1 + `
 
 ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
-
 `
-
-	fmt.Println(script)
 
 	if out, err := exec.Command("/bin/sh", "-e", "-c", script).Output(); err != nil {
 		fmt.Println(out)

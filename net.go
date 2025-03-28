@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"regexp"
 )
@@ -83,9 +84,16 @@ func defaultInterface(wanted net.IP) *net.Interface {
 	return nil
 }
 
+type ip6 [16]byte
+
+func (i *ip6) String() string {
+	return netip.AddrFrom16(*i).String()
+}
+
 type nic struct {
 	idx int
 	ip4 ip4
+	ip6 ip6
 	mac mac
 	nic string
 }
