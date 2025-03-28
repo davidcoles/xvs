@@ -971,9 +971,15 @@ int xdp_request_v6(struct xdp_md *ctx) {
                   .type = method,
                   .vlanid = vlanid,
     };
-    t.saddr = ext;
+    //t.saddr = is_addr4(&ext) ? vlaninfo->source_ipv4 : vlaninfo->source_ipv6;
     t.daddr = rip;
 
+    if (is_addr4(&rip)) {
+	t.saddr.addr4.addr = vlaninfo->source_ipv4;
+    } else {
+	t.saddr.addr6 = vlaninfo->source_ipv6;
+    }
+    
     memcpy(t.h_dest, vip_rip->h_dest, 6);
     memcpy(t.h_source, vlaninfo->hwaddr, 6);
 
@@ -1098,9 +1104,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
     addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
-
-    //if (!is_ipv4_addr(rip))
-    //ext = vlaninfo->source_ipv6;
     
     tunnel_t t = {
 		  .sport =  0x8000 | (l4_hash_(&ft) & 0x7fff),
@@ -1109,9 +1112,16 @@ int xdp_request_v4(struct xdp_md *ctx)
 		  .type = method,
 		  .vlanid = vlanid,
     };
-    t.saddr = ext;
+    //t.saddr = ext;
     t.daddr = rip;
 
+    if (is_addr4(&rip)) {
+	t.saddr.addr4.addr = vlaninfo->source_ipv4;
+    } else {
+	t.saddr.addr6 = vlaninfo->source_ipv6;
+    }
+
+    
     memcpy(t.h_dest, vip_rip->h_dest, 6);    
     memcpy(t.h_source, vlaninfo->hwaddr, 6);
     

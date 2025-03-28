@@ -29,6 +29,7 @@ func mac(m [6]byte) string {
 }
 
 func main() {
+	var vips list
 
 	//sticky := flag.Bool("s", false, "Sticky")
 	ipip := flag.Bool("i", false, "IP-in-IP")
@@ -39,6 +40,8 @@ func main() {
 	l3port6 := flag.Uint("P", 6666, "Port to use for FOU on IPv6")
 	//ip6 := flag.String("6", "", "Local IPv6 address")
 
+	flag.Var(&vips, "v", "extra vips")
+
 	flag.Parse()
 
 	args := flag.Args()
@@ -46,7 +49,8 @@ func main() {
 	iface := args[0]
 	dmac, _ := net.ParseMAC(args[1])
 	//saddr4 := netip.MustParseAddr(args[2])
-	vip := netip.MustParseAddr(args[2])
+	//vip := netip.MustParseAddr(args[2])
+	vip := args[2]
 	dests := args[3:]
 
 	var h_dest [6]byte
@@ -95,16 +99,22 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for _, dest := range addrs {
+	vips = append(vips, vip)
 
-		tport := uint16(*l3port4)
+	for _, v := range vips {
+		for _, dest := range addrs {
 
-		if vip.Is6() {
-			tport = uint16(*l3port6)
-		}
+			vip := netip.MustParseAddr(v)
 
-		for _, port := range []uint16{80, 443, 8000} {
-			l3.SetDestination(vip, port, xvs.L3Destination{Address: dest, TunnelType: tun, TunnelPort: tport})
+			tport := uint16(*l3port4)
+
+			if vip.Is6() {
+				tport = uint16(*l3port6)
+			}
+
+			for _, port := range []uint16{80, 443, 8000} {
+				l3.SetDestination(vip, port, xvs.L3Destination{Address: dest, TunnelType: tun, TunnelPort: tport})
+			}
 		}
 	}
 

@@ -134,6 +134,7 @@ type layer3 struct {
 	saddr4         [4]byte
 	saddr6         [16]byte
 	ns             *newns
+	natmap         natmap6
 
 	services map[threetuple]*l3service
 }
@@ -158,6 +159,13 @@ func (d *L3Destination) as16() (r a16) {
 }
 
 func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
+
+	l.natmap.add(v, l3d.Address)
+	l.natmap.index()
+
+	index := l.natmap.get(v, l3d.Address)
+
+	fmt.Println(index, l.natmap)
 
 	tuple := threetuple{address: v, port: port, protocol: TCP}
 
@@ -205,7 +213,7 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 
 	flags := l3d.TunnelType & 0x7
 
-	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort, mac: mac}
+	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort, mac: mac, index: index}
 
 	l.recalc2()
 	l.recalc()
@@ -347,14 +355,14 @@ func (l *layer3) recalc2() {
 }
 
 func (l *layer3) recalc() {
-	var index uint16
 	var vlanid uint32 = 100 // key to a bpf map - needs to be uint32
 
-	for vr, d := range l.viprip {
-		index++
-		d.index = index
-		l.viprip[vr] = d
-	}
+	//var index uint16
+	//for vr, d := range l.viprip {
+	//	index++
+	//	d.index = index
+	//	l.viprip[vr] = d
+	//}
 
 	vips := map[a16][]dinfo{}
 	for vr, d := range l.viprip {
@@ -370,7 +378,7 @@ func (l *layer3) recalc() {
 		vip_info := bpf_vip_info{
 			vlanid:   uint16(vlanid),
 			h_dest:   l.h_dest,
-			h_source: [6]byte{0x00, 0x0c, 0x29, 0xeb, 0xf0, 0xd2},
+			h_source: l.h_source,
 		}
 
 		l.vips.UpdateElem(uP(&vip), uP(&vip_info), xdp.BPF_ANY)
@@ -400,8 +408,6 @@ func (l *layer3) recalc() {
 			if is6 {
 				nat = l.ns.nat6(d.index)
 			}
-
-			fmt.Println("YYYY", nat)
 
 			vip_rip := bpf_vip_rip{
 				vip:    vip,
@@ -457,8 +463,10 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 	saddr4 := prefix4.Addr().As4()
 	saddr6 := prefix6.Addr().As16()
 
-	var h_source [6]byte
+	var h_source mac
 	copy(h_source[:], iface.HardwareAddr[:])
+
+	fmt.Println("ZZZZ", h_source.String())
 
 	var vlanid uint32 = 100
 
@@ -524,7 +532,7 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		router:      h_dest,
 	}
 
-	fmt.Println(vlaninfo, vlan_info)
+	fmt.Println("AAAA", vlaninfo.source_ipv4, vlaninfo.source_ipv6)
 
 	vlan_info.UpdateElem(uP(&vlanid), uP(&vlaninfo), xdp.BPF_ANY)
 
@@ -536,7 +544,7 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		router:      ns.a.mac,
 	}
 
-	fmt.Println("XXXX", internal.source_ipv6)
+	fmt.Println("XXXX", internal.source_ipv4, internal.source_ipv6)
 
 	var ftanf = uint32(4095)
 	vlan_info.UpdateElem(uP(&ftanf), uP(&internal), xdp.BPF_ANY)
@@ -560,5 +568,6 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		nat_to_vip_rip: nat_to_vip_rip,
 		services:       map[threetuple]*l3service{},
 		ns:             ns,
+		natmap:         natmap6{},
 	}, nil
 }
