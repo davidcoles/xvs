@@ -34,19 +34,14 @@ const IPIP uint8 = 4
 
 const F_STICKY uint8 = 0x01
 
+var VLANID uint32 = 100
+var VETH32 uint32 = 4095
+
 type bpf_info struct {
 	vip    [4]byte
 	saddr  [4]byte
 	h_dest [6]byte
 	pad    [2]byte
-}
-
-type bpf_vip_info struct {
-	ext_ip   [16]byte
-	vlanid   uint16
-	h_dest   [6]byte
-	h_source [6]byte
-	pad      [2]byte
 }
 
 type bpf_dest4 struct {
@@ -355,7 +350,7 @@ func (l *layer3) recalc2() {
 }
 
 func (l *layer3) recalc() {
-	var vlanid uint32 = 100 // key to a bpf map - needs to be uint32
+	//var vlanid uint32 = 100 // key to a bpf map - needs to be uint32
 
 	//var index uint16
 	//for vr, d := range l.viprip {
@@ -375,13 +370,7 @@ func (l *layer3) recalc() {
 
 	for vip, dests := range vips {
 
-		vip_info := bpf_vip_info{
-			vlanid:   uint16(vlanid),
-			h_dest:   l.h_dest,
-			h_source: l.h_source,
-		}
-
-		l.vips.UpdateElem(uP(&vip), uP(&vip_info), xdp.BPF_ANY)
+		l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
 
 		for _, d := range dests {
 
@@ -415,7 +404,7 @@ func (l *layer3) recalc() {
 				port:   d.tport,
 				method: d.flags,
 				hwaddr: mac,
-				vlanid: uint16(vlanid),
+				vlanid: uint16(VLANID),
 			}
 
 			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
@@ -468,7 +457,7 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	fmt.Println("ZZZZ", h_source.String())
 
-	var vlanid uint32 = 100
+	//var vlanid uint32 = 100
 
 	var native bool
 
@@ -490,7 +479,7 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	vips, err := x.FindMap("vips", 16, int(unsafe.Sizeof(bpf_vip_info{})))
+	vips, err := x.FindMap("vips", 16, 4)
 
 	if err != nil {
 		return nil, err
@@ -532,9 +521,9 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		router:      h_dest,
 	}
 
-	fmt.Println("AAAA", vlaninfo.source_ipv4, vlaninfo.source_ipv6)
+	fmt.Println("VLAN", vlaninfo.source_ipv4, vlaninfo.source_ipv6)
 
-	vlan_info.UpdateElem(uP(&vlanid), uP(&vlaninfo), xdp.BPF_ANY)
+	vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
 
 	internal := bpf_vlaninfo{
 		source_ipv4: ns.ipv4(),
@@ -544,21 +533,20 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		router:      ns.a.mac,
 	}
 
-	fmt.Println("XXXX", internal.source_ipv4, internal.source_ipv6)
+	fmt.Println("VETH", internal.source_ipv4, internal.source_ipv6)
 
-	var ftanf = uint32(4095)
-	vlan_info.UpdateElem(uP(&ftanf), uP(&internal), xdp.BPF_ANY)
+	vlan_info.UpdateElem(uP(&VETH32), uP(&internal), xdp.BPF_ANY)
 
 	/**********************************************************************/
 
-	redirect_map.UpdateElem(uP(&vlanid), uP(&nic), xdp.BPF_ANY)
+	redirect_map.UpdateElem(uP(&VLANID), uP(&nic), xdp.BPF_ANY)
 
 	var ns_nic uint32 = uint32(ns.a.idx)
 
-	redirect_map.UpdateElem(uP(&ftanf), uP(&ns_nic), xdp.BPF_ANY)
+	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
-		vlanid:         uint16(vlanid),
+		vlanid:         uint16(VLANID),
 		h_dest:         h_dest,
 		h_source:       h_source,
 		destinations:   destinations,

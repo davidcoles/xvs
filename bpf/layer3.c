@@ -355,7 +355,7 @@ struct vlaninfo {
     struct in6_addr source_ipv6;
     __u32 ifindex;
     __u8 hwaddr[6]; // interface's MAC
-    __u8 router[6]; // router's MAC (peer's address in case of veth)
+    __u8 router[6]; // router's MAC (peer's address in the case of veth (4095))
 };
 
 struct nat_info {
@@ -388,14 +388,6 @@ struct {
     __uint(max_entries, 4096);
 } nat_to_vip_rip SEC(".maps");
     
-struct vip_info {
-    addr_t _ext_ip_;
-    __u16 _vlanid;
-    __u8 _h_dest_[6];   // router MAC - unused
-    __u8 _h_source_[6]; // external interface AMC - unused
-    __u8 pad[2];
-};
-
 struct five_tuple {
     addr_t saddr;
     addr_t daddr;
@@ -431,7 +423,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u8[16]);
-    __type(value, struct vip_info);
+    __type(value, __u32); // VLAN ID
     __uint(max_entries, 4096);
 } vips SEC(".maps");
 
@@ -499,18 +491,6 @@ int send_xinx(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 	
     return push_4in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
 }
-
-/*
-static __always_inline
-int send_6inx(struct xdp_md *ctx, tunnel_t *t)
-{
-
-    if (is_addr4(&(t->daddr)))
-	return push_6in4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_6in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-}
-*/
 
 static __always_inline
 int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
@@ -963,9 +943,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
     addr_t ext = { .addr6 = vlaninfo->source_ipv6 };
+
+    struct l4 ft = { .saddr = ext.addr4.addr, .daddr = rip.addr4.addr, .sport = tcp->source, .dport = tcp->dest };
     
     tunnel_t t = {
-                  .sport = 6666, //0x8000 | (l4_hash_(&ft) & 0x7fff),
+                  .sport = 0x8000 | (l4_hash_(&ft) & 0x7fff),
                   .dport = dport,
                   .nochecksum = 1,
                   .type = method,
