@@ -56,8 +56,8 @@ func (n *newns) ipv6() [16]byte { return n.b.ip6 }
 
 func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 
-	const IP6_A = "fefe::ffff:fffd"
-	const IP6_B = "fefe::ffff:fffe"
+	const IPA = "fefe::ffff:fffd"
+	const IPB = "fefe::ffff:fffe"
 
 	namespace := "l3"
 
@@ -66,8 +66,8 @@ func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 	n.a.nic = namespace
 	n.b.nic = namespace + "ns"
 
-	n.a.ip6 = netip.MustParseAddr(IP6_A).As16()
-	n.b.ip6 = netip.MustParseAddr(IP6_B).As16()
+	n.a.ip6 = netip.MustParseAddr(IPA).As16()
+	n.b.ip6 = netip.MustParseAddr(IPB).As16()
 
 	copy(n.a.ip4[:], n.a.ip6[12:])
 	copy(n.b.ip4[:], n.b.ip6[12:])
@@ -127,42 +127,49 @@ ip link add ` + if1 + ` type veth peer name ` + if2 + `
 	return nil
 }
 
+func (n *newns) prefix4() string {
+	p4 := n.a.ip4
+	p4[1] = 0
+	p4[2] = 0
+	p4[3] = 0
+	return p4.String() + "/8"
+}
+
+func (n *newns) prefix6() string {
+	p6 := n.a.ip6
+	p6[13] = 0
+	p6[14] = 0
+	p6[15] = 0
+	return p6.String() + "/104"
+}
+
 // can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32
 func (n *newns) config_pair(ns string, a, b nic) error {
-	ip1 := a.ip4.String()
-	ip2 := b.ip4.String()
-	cb := a.ip4
-	cb[1] = 0
-	cb[2] = 0
-	cb[3] = 0
-	cbs := cb.String() + "/8"
+	a4 := a.ip4.String()
+	b4 := b.ip4.String()
+	prefix4 := n.prefix4()
 
-	ip6_1 := a.ip6.String()
-	ip6_2 := b.ip6.String()
-	//cb6 := "fefe::ff00:0"
-	cb6x := a.ip6
-	cb6x[13] = 0
-	cb6x[14] = 0
-	cb6x[15] = 0
-	cb6 := cb6x.String() + "/104"
+	a6 := a.ip6.String()
+	b6 := b.ip6.String()
+	prefix6 := n.prefix6()
 
 	script := `
 ip netns del ` + ns + ` >/dev/null 2>&1 || true
 ip l set ` + a.nic + ` up
-ip a add ` + ip1 + `/30 dev ` + a.nic + `
-#ip r replace ` + cbs + ` via ` + ip2 + `
+ip a add ` + a4 + `/30 dev ` + a.nic + `
+#ip r replace ` + prefix4 + ` via ` + b4 + `
 
 ip netns add ` + ns + `
 ip link set ` + b.nic + ` netns ` + ns + `
 
 ip netns exec ` + ns + ` ip l set ` + b.nic + ` up
-ip netns exec ` + ns + ` ip a add ` + ip2 + `/30 dev ` + b.nic + `
-ip netns exec ` + ns + ` ip r replace default via ` + ip1 + `
+ip netns exec ` + ns + ` ip a add ` + b4 + `/30 dev ` + b.nic + `
+ip netns exec ` + ns + ` ip r replace default via ` + a4 + `
 
-ip -6 a add ` + ip6_1 + `/126 dev ` + a.nic + `
-#ip -6 r replace ` + cb6 + ` via ` + ip6_2 + `
-ip netns exec ` + ns + ` ip -6 a add ` + ip6_2 + `/126 dev ` + b.nic + `
-ip netns exec ` + ns + ` ip -6 r replace default via ` + ip6_1 + `
+ip -6 a add ` + a6 + `/126 dev ` + a.nic + `
+#ip -6 r replace ` + prefix6 + ` via ` + b6 + `
+ip netns exec ` + ns + ` ip -6 a add ` + b6 + `/126 dev ` + b.nic + `
+ip netns exec ` + ns + ` ip -6 r replace default via ` + a6 + `
 
 ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
 `

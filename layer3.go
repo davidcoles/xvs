@@ -98,16 +98,6 @@ type bpf_vip_rip struct {
 type addr4 = [4]byte
 type addr6 = [16]byte
 
-type a16 = [16]byte
-
-type dinfo struct {
-	dest  a16
-	flags uint8
-	index uint16
-	tport uint16
-	mac   [6]byte
-}
-
 type threetuple struct {
 	address  netip.Addr
 	port     uint16
@@ -122,7 +112,6 @@ type layer3 struct {
 	vlanid         uint16
 	h_dest         mac
 	h_source       mac
-	viprip         map[[2]a16]dinfo
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
 	vips           xdp.Map
@@ -143,7 +132,7 @@ type L3Destination struct {
 func (d *L3Destination) is4() bool {
 	return d.Address.Is4()
 }
-func (d *L3Destination) as16() (r a16) {
+func (d *L3Destination) as16() (r addr6) {
 	if d.is4() {
 		ip := d.Address.As4()
 		copy(r[12:], ip[:])
@@ -157,7 +146,6 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 
 	l.natmap.add(v, l3d.Address)
 	l.natmap.index()
-	index := l.natmap.get(v, l3d.Address)
 
 	tuple := threetuple{address: v, port: port, protocol: TCP}
 
@@ -169,46 +157,7 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 	}
 
 	service.dests[l3d.Address] = l3d
-
-	var vip, rip [16]byte
-	r := l3d.Address
-
-	if len(l.viprip) < 1 {
-		l.viprip = map[[2]a16]dinfo{}
-	}
-
-	if v.Is4() {
-		as4 := v.As4()
-		copy(vip[12:], as4[:])
-	} else {
-		vip = v.As16()
-	}
-
-	hwaddr, _ := arp()
-	hwaddr6 := hw6()
-
-	var mac [6]byte
-
-	if r.Is4() {
-		as4 := r.As4()
-		copy(rip[12:], as4[:])
-		mac = hwaddr[as4]
-	} else {
-		rip = r.As16()
-
-		if hw, ok := hwaddr6[r]; ok {
-			mac = hw.mac
-		}
-	}
-
-	vr := [2]a16{vip, rip}
-
-	flags := l3d.TunnelType & 0x7
-
-	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort, mac: mac, index: index}
-
 	l.recalc2()
-	//l.recalc()
 	l.recalc3()
 }
 
@@ -327,7 +276,7 @@ func (l *layer3) recalc2() {
 			val.hash[i] = byte((i % len(dests)) + 1)
 		}
 
-		var vip a16
+		var vip addr6
 
 		if tuple.address.Is4() {
 			ip := tuple.address.As4()
@@ -344,70 +293,6 @@ func (l *layer3) recalc2() {
 
 		l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
 
-	}
-}
-
-func (l *layer3) recalc() {
-	//var vlanid uint32 = 100 // key to a bpf map - needs to be uint32
-
-	//var index uint16
-	//for vr, d := range l.viprip {
-	//	index++
-	//	d.index = index
-	//	l.viprip[vr] = d
-	//}
-
-	vips := map[a16][]dinfo{}
-	for vr, d := range l.viprip {
-		v := vr[0]
-		r := vr[1]
-		d.dest = r
-		vips[v] = append(vips[v], d)
-
-	}
-
-	for vip, dests := range vips {
-
-		l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
-
-		for _, d := range dests {
-
-			mac := l.h_dest // default to router - potential loop?
-
-			if d.flags&0x07 == LAYER2 {
-				mac = d.mac
-			}
-
-			// TODO - check if dst is on local interface
-
-			nat := l.ns.nat4(d.index)
-
-			var is6 bool
-
-			for i := 0; i < 12; i++ {
-				if vip[i] != 0 {
-					is6 = true
-				}
-			}
-
-			rip := d.dest
-
-			if is6 {
-				nat = l.ns.nat6(d.index)
-			}
-
-			vip_rip := bpf_vip_rip{
-				vip:    vip,
-				rip:    rip,
-				port:   d.tport,
-				method: d.flags,
-				hwaddr: mac,
-				vlanid: uint16(VLANID),
-			}
-
-			fmt.Println("OLD", nat, vip_rip)
-			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
-		}
 	}
 }
 
@@ -439,10 +324,9 @@ func (l *layer3) recalc3() {
 
 		for _, d := range dests {
 			r := d.Address
+			rip := as16(r)
 
 			index := l.natmap.get(v, r)
-
-			rip := as16(r)
 
 			var mac, nul mac
 			var nat [16]byte
@@ -460,12 +344,10 @@ func (l *layer3) recalc3() {
 				mac = hwaddr6[r].mac
 			}
 
-			// if not local and not a layer 2 service (otherwise we get a loop) then use the router as the next hop
+			// if not found locally and not a layer 2 service (otherwise we get a loop) then use the router as the next hop
 			if mac == nul && d.TunnelType != LAYER2 {
 				mac = l.h_dest
 			}
-
-			//fmt.Println(vip, rip, nat, mac, d.TunnelType, d.TunnelPort)
 
 			vip_rip := bpf_vip_rip{
 				vip:    vip,
@@ -476,14 +358,11 @@ func (l *layer3) recalc3() {
 				vlanid: uint16(VLANID),
 			}
 
-			//fmt.Println("NEW", nat, vip_rip)
-			fmt.Println(v, r, mac.String(), d.TunnelType, d.TunnelPort, index, nat)
 			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 		}
 	}
 }
 
-//func Layer3(ifname string, h_dest [6]byte, saddr4 addr4, saddr6 addr6) (*layer3, error) {
 func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	iface, err := net.InterfaceByName(ifname)
@@ -519,16 +398,13 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	fmt.Println(prefix4, prefix6)
 
-	//return nil, nil
 	saddr4 := prefix4.Addr().As4()
 	saddr6 := prefix6.Addr().As16()
 
 	var h_source mac
 	copy(h_source[:], iface.HardwareAddr[:])
 
-	fmt.Println("ZZZZ", h_source.String())
-
-	//var vlanid uint32 = 100
+	fmt.Println("MAC", h_source.String())
 
 	var native bool
 
@@ -538,7 +414,7 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	x.LinkDetach(uint32(nic))
+	x.LinkDetach(nic)
 
 	if err != nil {
 		return nil, err

@@ -48,22 +48,12 @@ func main() {
 
 	iface := args[0]
 	dmac, _ := net.ParseMAC(args[1])
-	//saddr4 := netip.MustParseAddr(args[2])
-	//vip := netip.MustParseAddr(args[2])
 	vip := args[2]
 	dests := args[3:]
 
 	var h_dest [6]byte
 	copy(h_dest[:], dmac[:])
 
-	/*
-		var saddr6 [16]byte
-
-		if *ip6 != "" {
-			s6 := netip.MustParseAddr(*ip6)
-			saddr6 = s6.As16()
-		}
-	*/
 	type addr4 = [4]byte
 	var addrs []netip.Addr
 
@@ -92,7 +82,6 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	//l3, err := xvs.Layer3(iface, h_dest, saddr4.As4(), saddr6)
 	l3, err := xvs.Layer3(iface, h_dest)
 
 	if err != nil {
