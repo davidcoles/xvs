@@ -157,10 +157,7 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 
 	l.natmap.add(v, l3d.Address)
 	l.natmap.index()
-
 	index := l.natmap.get(v, l3d.Address)
-
-	fmt.Println(index, l.natmap)
 
 	tuple := threetuple{address: v, port: port, protocol: TCP}
 
@@ -211,7 +208,8 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 	l.viprip[vr] = dinfo{flags: flags, tport: l3d.TunnelPort, mac: mac, index: index}
 
 	l.recalc2()
-	l.recalc()
+	//l.recalc()
+	l.recalc3()
 }
 
 type neighbor struct {
@@ -407,6 +405,79 @@ func (l *layer3) recalc() {
 				vlanid: uint16(VLANID),
 			}
 
+			fmt.Println("OLD", nat, vip_rip)
+			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
+		}
+	}
+}
+
+func as16(a netip.Addr) (r [16]byte) {
+	if a.Is6() {
+		return a.As16()
+	}
+
+	ip := a.As4()
+	copy(r[12:], ip[:])
+	return
+}
+
+func (l *layer3) recalc3() {
+
+	hwaddr, _ := arp()
+	hwaddr6 := hw6()
+
+	for tuple, l3service := range l.services {
+		var dests []L3Destination
+		for _, v := range l3service.dests {
+			dests = append(dests, v)
+		}
+
+		v := tuple.address
+		vip := as16(v)
+
+		l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
+
+		for _, d := range dests {
+			r := d.Address
+
+			index := l.natmap.get(v, r)
+
+			rip := as16(r)
+
+			var mac, nul mac
+			var nat [16]byte
+
+			if v.Is4() {
+				nat = l.ns.nat4(index)
+			} else {
+				nat = l.ns.nat6(index)
+			}
+
+			// get mac address of backend if local
+			if r.Is4() {
+				mac = hwaddr[r.As4()]
+			} else {
+				mac = hwaddr6[r].mac
+			}
+
+			// if not local and not a layer 2 service (otherwise we get a loop) then use the router as the next hop
+			if mac == nul && d.TunnelType != LAYER2 {
+				mac = l.h_dest
+			}
+
+			//fmt.Println(vip, rip, nat, mac, d.TunnelType, d.TunnelPort)
+
+			vip_rip := bpf_vip_rip{
+				vip:    vip,
+				rip:    rip,
+				port:   d.TunnelPort,
+				method: d.TunnelType,
+				hwaddr: mac,
+				vlanid: uint16(VLANID),
+			}
+
+			//fmt.Println("NEW", nat, vip_rip)
+			fmt.Println(v, r, mac.String(), d.TunnelType, d.TunnelPort, index, nat)
 			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 		}
 	}

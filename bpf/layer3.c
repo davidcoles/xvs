@@ -387,7 +387,7 @@ struct {
     __type(value, struct vip_rip); // vip/rip    
     __uint(max_entries, 4096);
 } nat_to_vip_rip SEC(".maps");
-    
+
 struct five_tuple {
     addr_t saddr;
     addr_t daddr;
