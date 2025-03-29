@@ -899,6 +899,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
         return XDP_PASS;
     }
 
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
+	return XDP_DROP;
+    
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
         return XDP_PASS;
     
@@ -912,6 +915,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     if (!vip_rip)
         return XDP_PASS;
+
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
     addr_t vip = vip_rip->vip;
     addr_t rip = vip_rip->rip;
@@ -1095,7 +1100,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     memcpy(t.h_dest, vip_rip->h_dest, 6);    
     memcpy(t.h_source, vlaninfo->hwaddr, 6);
     
-    bpf_printk("HERE %x:%x:%x\n", t.h_dest[3], t.h_dest[4], t.h_dest[5]);
+    //bpf_printk("HERE %x:%x:%x\n", t.h_dest[3], t.h_dest[4], t.h_dest[5]);
 
     /**********************************************************************/
     // SAVE CHECKSUM INFO
@@ -1174,6 +1179,9 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
         return XDP_PASS;
     
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
+	return XDP_DROP;
+    
     struct tcphdr *tcp = (void *) (ip6 + 1);
     
     if (tcp + 1 > data_end)
@@ -1189,9 +1197,6 @@ int xdp_reply_v6(struct xdp_md *ctx)
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
     if (!match)
-	return XDP_DROP;
-    
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return XDP_DROP;
     
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;

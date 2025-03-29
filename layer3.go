@@ -28,11 +28,20 @@ func init() {
 	}
 }
 
+//TunnelType
+/*
 const LAYER2 uint8 = bpf.T_LAYER2
 const FOU uint8 = bpf.T_FOU
 const GRE uint8 = bpf.T_GRE
 const GUE uint8 = bpf.T_GUE
 const IPIP uint8 = bpf.T_IPIP
+*/
+
+const LAYER2 TunnelType = bpf.T_LAYER2
+const FOU TunnelType = bpf.T_FOU
+const GRE TunnelType = bpf.T_GRE
+const GUE TunnelType = bpf.T_GUE
+const IPIP TunnelType = bpf.T_IPIP
 
 const F_STICKY uint8 = bpf.F_STICKY
 
@@ -45,7 +54,7 @@ type bpf_destinfo struct {
 	dport    uint16
 	sport    uint16
 	vlanid   uint16
-	method   uint8
+	method   TunnelType // uint8
 	flags    uint8
 	h_dest   mac
 	h_source mac
@@ -75,7 +84,7 @@ type bpf_vip_rip struct {
 	vip    [16]byte
 	rip    [16]byte
 	port   uint16
-	method uint8
+	method TunnelType // uint8
 	flags  uint8
 	hwaddr [6]byte
 	vlanid uint16
@@ -118,7 +127,7 @@ type L3Destination = Destination3
 
 type Destination3 struct {
 	Address    netip.Addr
-	TunnelType uint8
+	TunnelType TunnelType
 	TunnelPort uint16
 }
 
@@ -495,8 +504,6 @@ func (l *layer3) Info() (Info, error) {
 			fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
 		}
 	}
-
-	fmt.Println(l.h_dest)
 	return Info{}, nil
 }
 
