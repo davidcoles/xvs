@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os/exec"
 	"regexp"
+	"sync"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/bpf"
@@ -37,22 +38,6 @@ const F_STICKY uint8 = bpf.F_STICKY
 
 var VLANID uint32 = 100
 var VETH32 uint32 = 4095
-
-type bpf_info struct {
-	vip    [4]byte
-	saddr  [4]byte
-	h_dest [6]byte
-	pad    [2]byte
-}
-
-type bpf_dest4 struct {
-	vid  uint16
-	mac  [6]byte
-	pad  [4]byte
-	addr [4]byte
-}
-
-type bpf_dest [16]byte
 
 type bpf_destinfo struct {
 	daddr    addr6
@@ -106,7 +91,8 @@ type threetuple struct {
 }
 
 type l3service struct {
-	dests map[netip.Addr]L3Destination
+	dests   map[netip.Addr]L3Destination
+	service Service3
 }
 
 type layer3 struct {
@@ -116,15 +102,21 @@ type layer3 struct {
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
 	vips           xdp.Map
+	vlan_info      xdp.Map
 	saddr4         [4]byte
 	saddr6         [16]byte
 	ns             *newns
 	natmap         natmap6
+	mutex          sync.Mutex
+
+	nic uint32
 
 	services map[threetuple]*l3service
 }
 
-type L3Destination struct {
+type L3Destination = Destination3
+
+type Destination3 struct {
 	Address    netip.Addr
 	TunnelType uint8
 	TunnelPort uint16
@@ -158,8 +150,9 @@ func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 	}
 
 	service.dests[l3d.Address] = l3d
-	l.recalc2()
-	l.recalc3()
+	//l.recalc2()
+	//l.recalc3()
+	service.recalc(l)
 }
 
 type neighbor struct {
@@ -235,9 +228,8 @@ func (l *layer3) recalc2() {
 		for i, d := range dests {
 
 			var backend mac
-			as16 := d.as16()
-			//saddr := l.saddr6
 			var saddr addr6
+			as16 := d.as16()
 
 			if d.is4() {
 				var ip [4]byte
@@ -254,7 +246,7 @@ func (l *layer3) recalc2() {
 			var h_dest mac
 			h_source := l.h_source
 
-			if d.TunnelPort == uint16(LAYER2) {
+			if d.TunnelType == LAYER2 {
 				h_dest = backend
 			} else {
 				h_dest = l.h_dest
@@ -273,8 +265,10 @@ func (l *layer3) recalc2() {
 			val.destinfo[i+1] = info
 		}
 
-		for i, _ := range val.hash {
-			val.hash[i] = byte((i % len(dests)) + 1)
+		if len(dests) > 0 {
+			for i, _ := range val.hash {
+				val.hash[i] = byte((i % len(dests)) + 1)
+			}
 		}
 
 		var vip addr6
@@ -294,6 +288,133 @@ func (l *layer3) recalc2() {
 
 		l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
 
+	}
+}
+
+func (s *l3service) recalc(l *layer3) {
+
+	hwaddr, _ := arp()
+	hwaddr6 := hw6()
+
+	var dests []L3Destination
+	for _, v := range s.dests {
+		dests = append(dests, v)
+	}
+
+	tuple := threetuple{address: s.service.Address, port: s.service.Port, protocol: s.service.Protocol}
+
+	var val bpf_destinations
+
+	for i, d := range dests {
+
+		var backend mac
+		var saddr addr6
+		as16 := d.as16()
+
+		if d.is4() {
+			var ip [4]byte
+			copy(ip[:], as16[12:])
+			copy(saddr[12:], l.saddr4[:])
+			backend = hwaddr[ip]
+		} else {
+			saddr = l.saddr6
+			if hw, ok := hwaddr6[d.Address]; ok {
+				backend = hw.mac
+			}
+		}
+
+		var h_dest mac
+		h_source := l.h_source
+
+		if d.TunnelType == LAYER2 {
+			h_dest = backend
+		} else {
+			h_dest = l.h_dest
+		}
+
+		var info bpf_destinfo
+		info.daddr = as16
+		info.saddr = saddr
+		info.dport = d.TunnelPort
+		info.sport = 0
+		info.method = d.TunnelType
+		info.flags = 0 // TODO
+		info.vlanid = l.vlanid
+		info.h_dest = h_dest
+		info.h_source = h_source
+		val.destinfo[i+1] = info
+	}
+
+	if len(dests) > 0 {
+		for i, _ := range val.hash {
+			val.hash[i] = byte((i % len(dests)) + 1)
+		}
+	}
+
+	/*
+		var vip addr6
+
+		if tuple.address.Is4() {
+			ip := tuple.address.As4()
+			copy(vip[12:], ip[:])
+		} else {
+			vip = tuple.address.As16()
+		}
+	*/
+
+	v := tuple.address
+	vip := as16(v)
+
+	key := bpf_servicekey{
+		addr:  vip,
+		port:  tuple.port,
+		proto: uint16(tuple.protocol),
+	}
+
+	l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+
+	/**********************************************************************/
+
+	l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
+
+	for _, d := range dests {
+		r := d.Address
+		rip := as16(r)
+
+		index := l.natmap.get(v, r)
+
+		var mac, nul mac
+		var nat [16]byte
+
+		if v.Is4() {
+			nat = l.ns.nat4(index)
+		} else {
+			nat = l.ns.nat6(index)
+		}
+
+		// get mac address of backend if local
+		if r.Is4() {
+			mac = hwaddr[r.As4()]
+		} else {
+			mac = hwaddr6[r].mac
+		}
+
+		// use the router as the next hop if not found locally and not a layer 2 service (otherwise we get a loop)
+		// TODO - compare RIP to local VLAN prefixes
+		if mac == nul && d.TunnelType != LAYER2 {
+			mac = l.h_dest
+		}
+
+		vip_rip := bpf_vip_rip{
+			vip:    vip,
+			rip:    rip,
+			port:   d.TunnelPort,
+			method: d.TunnelType,
+			hwaddr: mac,
+			vlanid: uint16(VLANID),
+		}
+
+		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 	}
 }
 
@@ -345,7 +466,8 @@ func (l *layer3) recalc3() {
 				mac = hwaddr6[r].mac
 			}
 
-			// if not found locally and not a layer 2 service (otherwise we get a loop) then use the router as the next hop
+			// use the router as the next hop if not found locally and not a layer 2 service (otherwise we get a loop)
+			// TODO - compare RIP to local VLAN prefixes
 			if mac == nul && d.TunnelType != LAYER2 {
 				mac = l.h_dest
 			}
@@ -362,6 +484,20 @@ func (l *layer3) recalc3() {
 			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 		}
 	}
+}
+
+func (l *layer3) Info() (Info, error) {
+	for t, l3service := range l.services {
+		for _, d := range l3service.dests {
+			vip := t.address
+			rip := d.Address
+			nat := l.ns.addr(l.natmap.get(vip, rip), vip.Is6())
+			fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
+		}
+	}
+
+	fmt.Println(l.h_dest)
+	return Info{}, nil
 }
 
 func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
@@ -494,16 +630,37 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
-		vlanid:         uint16(VLANID),
-		h_dest:         h_dest,
-		h_source:       h_source,
+		vlanid:   uint16(VLANID),
+		h_dest:   h_dest,
+		h_source: h_source,
+		saddr4:   saddr4,
+		saddr6:   saddr6,
+		services: map[threetuple]*l3service{},
+
 		destinations:   destinations,
 		vips:           vips,
-		saddr4:         saddr4,
-		saddr6:         saddr6,
 		nat_to_vip_rip: nat_to_vip_rip,
-		services:       map[threetuple]*l3service{},
-		ns:             ns,
-		natmap:         natmap6{},
+		vlan_info:      vlan_info,
+
+		nic:    nic,
+		ns:     ns,
+		natmap: natmap6{},
 	}, nil
+}
+
+func (l *layer3) config() {
+	vlaninfo := bpf_vlaninfo{
+		source_ipv4: l.saddr4,
+		source_ipv6: l.saddr6,
+		ifindex:     l.nic,
+		hwaddr:      l.h_source,
+		router:      l.h_dest,
+	}
+
+	l.vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
+	//l.recalc2()
+	//l.recalc3()
+	for _, s := range l.services {
+		s.recalc(l)
+	}
 }

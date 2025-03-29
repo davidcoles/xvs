@@ -1062,6 +1062,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_LAYER2: break;
     }
     
+    
     if ((data_end - (void *) ip) + overhead > mtu) {
 	bpf_printk("IPv4 FRAG_NEEDED\n");
 	__be32 internal = vlaninfo->source_ipv4;
@@ -1094,6 +1095,8 @@ int xdp_request_v4(struct xdp_md *ctx)
     memcpy(t.h_dest, vip_rip->h_dest, 6);    
     memcpy(t.h_source, vlaninfo->hwaddr, 6);
     
+    bpf_printk("HERE %x:%x:%x\n", t.h_dest[3], t.h_dest[4], t.h_dest[5]);
+
     /**********************************************************************/
     // SAVE CHECKSUM INFO
     /**********************************************************************/

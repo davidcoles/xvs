@@ -82,7 +82,8 @@ func main() {
 		tun = xvs.IPIP
 	}
 
-	l3, err := xvs.Layer3(iface, h_dest)
+	//l3, err := xvs.Layer3(iface, h_dest)
+	l3, err := xvs.New(iface)
 
 	if err != nil {
 		log.Fatal(err)
@@ -91,9 +92,19 @@ func main() {
 	vips = append(vips, vip)
 
 	for _, v := range vips {
-		for _, dest := range addrs {
 
-			vip := netip.MustParseAddr(v)
+		vip := netip.MustParseAddr(v)
+
+		for _, port := range []uint16{80, 443, 8000} {
+
+			service := xvs.Service3{Address: vip, Port: port, Protocol: xvs.TCP}
+
+			if err := l3.CreateService(service); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		for _, dest := range addrs {
 
 			tport := uint16(*l3port4)
 
@@ -102,10 +113,20 @@ func main() {
 			}
 
 			for _, port := range []uint16{80, 443, 8000} {
-				l3.SetDestination(vip, port, xvs.L3Destination{Address: dest, TunnelType: tun, TunnelPort: tport})
+
+				service := xvs.Service3{Address: vip, Port: port, Protocol: xvs.TCP}
+				destination := xvs.Destination3{Address: dest, TunnelType: tun, TunnelPort: tport}
+
+				fmt.Println("XXX", service, destination)
+
+				if err := l3.CreateDestination(service, destination); err != nil {
+					log.Fatal(err)
+				}
 			}
 		}
 	}
+
+	l3.Info()
 
 	fmt.Println("OK")
 }

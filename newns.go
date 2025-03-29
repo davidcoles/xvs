@@ -51,6 +51,22 @@ func (n *newns) nat6(i uint16) (nat [16]byte) {
 	return
 }
 
+func (n *newns) addr(idx uint16, ipv6 bool) (r netip.Addr) {
+	if idx == 0 {
+		return
+	}
+	if ipv6 {
+		ip := n.nat6(idx)
+		r = netip.AddrFrom16(ip)
+	} else {
+		var ip4 [4]byte
+		ip := n.nat4(idx)
+		copy(ip4[:], ip[12:])
+		r = netip.AddrFrom4(ip4)
+	}
+	return
+}
+
 func (n *newns) ipv4() [4]byte  { return n.b.ip4 }
 func (n *newns) ipv6() [16]byte { return n.b.ip6 }
 
