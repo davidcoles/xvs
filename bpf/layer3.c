@@ -1373,6 +1373,14 @@ int xdp_reply(struct xdp_md *ctx)
 SEC("xdp")
 int xdp_request(struct xdp_md *ctx)
 {
+
+    // TODO - have probes set from host side to NAT addresses via
+    // veth, process on ns side and TX *back* to through veth, host
+    // side veth then forwards out to the destination. Returning
+    // traffic is forwarded from physical nic to the veth, mapped back
+    // to NAT addresses and TX back to host. Obviates the need to exec
+    // anything in the namespace!
+    
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     
