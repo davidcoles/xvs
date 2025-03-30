@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/davidcoles/xvs"
 )
@@ -21,6 +22,7 @@ func main() {
 	var vips list
 	var serv list
 
+	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
 	sticky := flag.Bool("s", false, "Sticky")
 	tunnel := flag.String("t", "layer2", "Tunnel type layer2|fou|gre|gue|ipip")
 	tport4 := flag.Uint("4", 9999, "Port to use for FOU/GUE on IPv4")
@@ -119,20 +121,30 @@ func main() {
 
 	client.Info()
 
-	client.Clean()
+	services, _ := client.Services()
 
-	return
-
-	for _, vip := range vips {
-		for _, port := range ports {
-			service := xvs.Service3{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
-			client.RemoveService(service)
+	for _, service := range services {
+		destinations, _ := client.Destinations(service.Service)
+		for _, destination := range destinations {
+			fmt.Println("DEST", service.Service, destination.Destination)
 		}
 	}
 
-	fmt.Println("XXXXXXXXXXX")
+	if *remove != 0 {
 
-	client.Clean()
+		time.Sleep(time.Duration(*remove) * time.Second)
+
+		fmt.Println("REMOVING")
+
+		for _, vip := range vips {
+			for _, port := range ports {
+				service := xvs.Service3{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
+				client.RemoveService(service)
+			}
+		}
+
+		client.Clean()
+	}
 
 	fmt.Println("OK")
 }

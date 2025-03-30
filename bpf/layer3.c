@@ -993,7 +993,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
 }
 
-
 int xdp_request_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -1347,6 +1346,12 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_REDIRECT: return XDP_REDIRECT;
     }
      return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_pass(struct xdp_md *ctx)
+{
+    return XDP_PASS;
 }
 
 SEC("xdp")

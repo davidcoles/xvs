@@ -7,11 +7,13 @@ import (
 	_ "embed"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/netip"
 	"os/exec"
 	"regexp"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/bpf"
@@ -99,8 +101,8 @@ type threetuple struct {
 	protocol uint8
 }
 
-type l3service struct {
-	dests   map[netip.Addr]L3Destination
+type service3 struct {
+	dests   map[netip.Addr]Destination3
 	service Service3
 }
 
@@ -120,10 +122,8 @@ type layer3 struct {
 
 	nic uint32
 
-	services map[threetuple]*l3service
+	services map[threetuple]*service3
 }
-
-type L3Destination = Destination3
 
 type Destination3 struct {
 	Address    netip.Addr
@@ -131,11 +131,11 @@ type Destination3 struct {
 	TunnelPort uint16
 }
 
-func (d *L3Destination) is4() bool {
+func (d *Destination3) is4() bool {
 	return d.Address.Is4()
 }
 
-func (d *L3Destination) as16() (r addr6) {
+func (d *Destination3) as16() (r addr6) {
 	if d.is4() {
 		ip := d.Address.As4()
 		copy(r[12:], ip[:])
@@ -145,32 +145,12 @@ func (d *L3Destination) as16() (r addr6) {
 	return
 }
 
-func (l *layer3) xSetDestination(v netip.Addr, port uint16, l3d L3Destination) {
-
-	l.natmap.add(v, l3d.Address)
-	l.natmap.index()
-
-	tuple := threetuple{address: v, port: port, protocol: TCP}
-
-	service := l.services[tuple]
-
-	if service == nil {
-		service = &l3service{dests: map[netip.Addr]L3Destination{}}
-		l.services[tuple] = service
-	}
-
-	service.dests[l3d.Address] = l3d
-	//l.recalc2()
-	//l.recalc3()
-	service.recalc(l)
-}
-
 type neighbor struct {
 	dev string
 	mac mac
 }
 
-func zhw6() map[netip.Addr]neighbor {
+func hw6() map[netip.Addr]neighbor {
 
 	hw6 := map[netip.Addr]neighbor{}
 
@@ -222,91 +202,12 @@ func zhw6() map[netip.Addr]neighbor {
 	return hw6
 }
 
-func (l *layer3) recalc2() {
+func (s *service3) recalc(l *layer3) {
 
 	hwaddr, _ := arp()
 	hwaddr6 := hw6()
 
-	for tuple, l3service := range l.services {
-		var dests []L3Destination
-		for _, v := range l3service.dests {
-			dests = append(dests, v)
-		}
-
-		var val bpf_destinations
-
-		for i, d := range dests {
-
-			var backend mac
-			var saddr addr6
-			as16 := d.as16()
-
-			if d.is4() {
-				var ip [4]byte
-				copy(ip[:], as16[12:])
-				copy(saddr[12:], l.saddr4[:])
-				backend = hwaddr[ip]
-			} else {
-				saddr = l.saddr6
-				if hw, ok := hwaddr6[d.Address]; ok {
-					backend = hw.mac
-				}
-			}
-
-			var h_dest mac
-			h_source := l.h_source
-
-			if d.TunnelType == LAYER2 {
-				h_dest = backend
-			} else {
-				h_dest = l.h_dest
-			}
-
-			var info bpf_destinfo
-			info.daddr = as16
-			info.saddr = saddr
-			info.dport = d.TunnelPort
-			info.sport = 0
-			info.method = d.TunnelType
-			info.flags = 0 // TODO
-			info.vlanid = l.vlanid
-			info.h_dest = h_dest
-			info.h_source = h_source
-			val.destinfo[i+1] = info
-		}
-
-		if len(dests) > 0 {
-			for i, _ := range val.hash {
-				val.hash[i] = byte((i % len(dests)) + 1)
-			}
-		}
-
-		var vip addr6
-
-		if tuple.address.Is4() {
-			ip := tuple.address.As4()
-			copy(vip[12:], ip[:])
-		} else {
-			vip = tuple.address.As16()
-		}
-
-		key := bpf_servicekey{
-			addr:  vip,
-			port:  tuple.port,
-			proto: uint16(tuple.protocol),
-		}
-
-		l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
-
-	}
-}
-
-func (s *l3service) recalc(l *layer3) {
-
-	hwaddr, _ := arp()
-	hwaddr6 := hw6()
-
-	var dests []L3Destination
+	var dests []Destination3
 	for _, v := range s.dests {
 		dests = append(dests, v)
 	}
@@ -360,17 +261,6 @@ func (s *l3service) recalc(l *layer3) {
 			val.hash[i] = byte((i % len(dests)) + 1)
 		}
 	}
-
-	/*
-		var vip addr6
-
-		if tuple.address.Is4() {
-			ip := tuple.address.As4()
-			copy(vip[12:], ip[:])
-		} else {
-			vip = tuple.address.As16()
-		}
-	*/
 
 	v := tuple.address
 	vip := as16(v)
@@ -438,67 +328,9 @@ func as16(a netip.Addr) (r [16]byte) {
 	return
 }
 
-func (l *layer3) recalc3() {
-
-	hwaddr, _ := arp()
-	hwaddr6 := hw6()
-
-	for tuple, l3service := range l.services {
-		var dests []L3Destination
-		for _, v := range l3service.dests {
-			dests = append(dests, v)
-		}
-
-		v := tuple.address
-		vip := as16(v)
-
-		l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
-
-		for _, d := range dests {
-			r := d.Address
-			rip := as16(r)
-
-			index := l.natmap.get(v, r)
-
-			var mac, nul mac
-			var nat [16]byte
-
-			if v.Is4() {
-				nat = l.ns.nat4(index)
-			} else {
-				nat = l.ns.nat6(index)
-			}
-
-			// get mac address of backend if local
-			if r.Is4() {
-				mac = hwaddr[r.As4()]
-			} else {
-				mac = hwaddr6[r].mac
-			}
-
-			// use the router as the next hop if not found locally and not a layer 2 service (otherwise we get a loop)
-			// TODO - compare RIP to local VLAN prefixes
-			if mac == nul && d.TunnelType != LAYER2 {
-				mac = l.h_dest
-			}
-
-			vip_rip := bpf_vip_rip{
-				vip:    vip,
-				rip:    rip,
-				port:   d.TunnelPort,
-				method: d.TunnelType,
-				hwaddr: mac,
-				vlanid: uint16(VLANID),
-			}
-
-			l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
-		}
-	}
-}
-
 func (l *layer3) Info() (Info, error) {
-	for t, l3service := range l.services {
-		for _, d := range l3service.dests {
+	for t, service3 := range l.services {
+		for _, d := range service3.dests {
 			vip := t.address
 			rip := d.Address
 			nat := l.ns.addr(l.natmap.get(vip, rip), vip.Is6())
@@ -643,7 +475,7 @@ func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
 		h_source: h_source,
 		saddr4:   saddr4,
 		saddr6:   saddr6,
-		services: map[threetuple]*l3service{},
+		services: map[threetuple]*service3{},
 
 		destinations:   destinations,
 		vips:           vips,
@@ -689,4 +521,35 @@ func clean_map(m xdp.Map, a map[netip.Addr]bool) {
 			m.DeleteElem(uP(&key))
 		}
 	}
+}
+
+func (l *layer3) deletion() {
+	now := time.Now()
+
+	vips := map[netip.Addr]bool{}
+	nats := map[netip.Addr]bool{}
+	nmap := map[[2]netip.Addr]bool{}
+
+	for k, v := range l.services {
+		vips[k.address] = true
+		for r, _ := range v.dests {
+			nmap[[2]netip.Addr{k.address, r}] = true
+		}
+	}
+
+	// update natmap
+	l.natmap.clean(nmap)
+
+	clean_map(l.vips, vips)
+	clean_map(l.vips, vips)
+
+	for k, v := range l.natmap.all() {
+		nat := l.ns.addr(v, k[0].Is6()) // k[0] is the vip
+		nats[nat] = true
+	}
+
+	clean_map(l.nat_to_vip_rip, nats)
+	clean_map(l.nat_to_vip_rip, nats)
+
+	log.Println("Clean-up took", time.Now().Sub(now))
 }

@@ -34,13 +34,16 @@ type Client3 interface {
 	Info() (Info, error)
 	Clean()
 
-	//Config() (Config, error)
+	Config() (Config, error)
 	SetConfig(Config) error
 
+	Services() ([]Service3Extended, error)
+	Service(Service3) (Service3Extended, error)
 	CreateService(Service3) error
 	UpdateService(Service3) error
 	RemoveService(Service3) error
 
+	Destinations(Service3) ([]Destination3Extended, error)
 	CreateDestination(Service3, Destination3) error
 	UpdateDestination(Service3, Destination3) error
 	RemoveDestination(Service3, Destination3) error
@@ -53,6 +56,14 @@ type Service3 struct {
 	Flags    Flags
 }
 
+type Service3Extended struct {
+	Service Service3
+}
+
+type Destination3Extended struct {
+	Destination Destination3
+}
+
 type Config struct {
 	Router [6]byte
 }
@@ -61,28 +72,68 @@ func New(interfaces ...string) (Client3, error) {
 	return Layer3(interfaces[0], mac{})
 }
 
+func (l *layer3) Clean() {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	l.deletion()
+}
+
+func (l *layer3) Config() (Config, error) {
+	return Config{}, nil
+}
+
 func (l *layer3) SetConfig(c Config) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
 	l.h_dest = c.Router
 	l.config()
 	return nil
+}
+
+func (l *layer3) Services() (r []Service3Extended, e error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	for _, v := range l.services {
+		r = append(r, Service3Extended{Service: v.service})
+	}
+
+	return
+}
+
+func (l *layer3) Service(s Service3) (Service3Extended, error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	t := threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
+
+	service, exists := l.services[t]
+
+	if !exists {
+		return Service3Extended{}, fmt.Errorf("Service does not exist")
+	}
+
+	return Service3Extended{Service: service.service}, nil
 }
 
 func (l *layer3) CreateService(s Service3) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	tt := threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
+	t := threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 
-	if _, exists := l.services[tt]; exists {
+	if _, exists := l.services[t]; exists {
 		return fmt.Errorf("Service exists")
 	}
 
-	service := &l3service{
-		dests:   map[netip.Addr]L3Destination{},
+	service := &service3{
+		dests:   map[netip.Addr]Destination3{},
 		service: s,
 	}
 
-	l.services[tt] = service
+	l.services[t] = service
 
 	service.recalc(l)
 
@@ -128,21 +179,41 @@ func (l *layer3) RemoveService(s Service3) error {
 		port:  t.port,
 		proto: uint16(t.protocol),
 	}
+
 	l.destinations.DeleteElem(uP(&key))
 
-	// clean up - TODO
+	l.deletion()
 	// remove all stats map entries - TODO
 
 	return nil
+}
+
+func (l *layer3) Destinations(s Service3) (r []Destination3Extended, e error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	t := threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
+
+	service, exists := l.services[t]
+
+	if !exists {
+		return nil, fmt.Errorf("Service does not exist")
+	}
+
+	for _, v := range service.dests {
+		r = append(r, Destination3Extended{Destination: v})
+	}
+
+	return
 }
 
 func (l *layer3) CreateDestination(s Service3, d Destination3) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	tt := threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
+	t := threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 
-	service, exists := l.services[tt]
+	service, exists := l.services[t]
 
 	if !exists {
 		return fmt.Errorf("Service does not exist")
@@ -205,38 +276,9 @@ func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
 
 	delete(service.dests, d.Address)
 
-	// check if there are more vip/rip on a different port clean natmap
-
 	service.recalc(l)
 
+	l.deletion()
+
 	return nil
-}
-
-func (l *layer3) Clean() {
-
-	vips := map[netip.Addr]bool{}
-	nmap := map[[2]netip.Addr]bool{}
-	nats := map[netip.Addr]bool{}
-
-	for k, v := range l.services {
-		vips[k.address] = true
-		for r, _ := range v.dests {
-			nmap[[2]netip.Addr{k.address, r}] = true
-		}
-	}
-
-	// update natmap
-	l.natmap.clean(nmap)
-
-	clean_map(l.vips, vips)
-	clean_map(l.vips, vips)
-
-	for k, v := range l.natmap.all() {
-		nat := l.ns.addr(v, k[0].Is6()) // k[0] is the vip
-		nats[nat] = true
-	}
-
-	clean_map(l.nat_to_vip_rip, nats)
-	clean_map(l.nat_to_vip_rip, nats)
-
 }
