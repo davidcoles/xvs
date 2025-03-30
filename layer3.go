@@ -145,7 +145,7 @@ func (d *L3Destination) as16() (r addr6) {
 	return
 }
 
-func (l *layer3) SetDestination(v netip.Addr, port uint16, l3d L3Destination) {
+func (l *layer3) xSetDestination(v netip.Addr, port uint16, l3d L3Destination) {
 
 	l.natmap.add(v, l3d.Address)
 	l.natmap.index()
@@ -170,7 +170,7 @@ type neighbor struct {
 	mac mac
 }
 
-func hw6() map[netip.Addr]neighbor {
+func zhw6() map[netip.Addr]neighbor {
 
 	hw6 := map[netip.Addr]neighbor{}
 
