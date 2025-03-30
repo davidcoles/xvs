@@ -101,6 +101,7 @@ func main() {
 			}
 
 			for _, rip := range rips {
+
 				tport := uint16(*tport4)
 
 				if service.Address.Is6() {
@@ -117,6 +118,21 @@ func main() {
 	}
 
 	client.Info()
+
+	client.Clean()
+
+	return
+
+	for _, vip := range vips {
+		for _, port := range ports {
+			service := xvs.Service3{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
+			client.RemoveService(service)
+		}
+	}
+
+	fmt.Println("XXXXXXXXXXX")
+
+	client.Clean()
 
 	fmt.Println("OK")
 }

@@ -134,6 +134,7 @@ type Destination3 struct {
 func (d *L3Destination) is4() bool {
 	return d.Address.Is4()
 }
+
 func (d *L3Destination) as16() (r addr6) {
 	if d.is4() {
 		ip := d.Address.As4()
@@ -669,5 +670,23 @@ func (l *layer3) config() {
 	//l.recalc3()
 	for _, s := range l.services {
 		s.recalc(l)
+	}
+}
+
+func clean_map(m xdp.Map, a map[netip.Addr]bool) {
+
+	b := map[[16]byte]bool{}
+
+	for k, _ := range a {
+		b[as16(k)] = true
+	}
+
+	var key, next [16]byte
+
+	for r := 0; r == 0; key = next {
+		r = m.GetNextKey(uP(&key), uP(&next))
+		if _, exists := b[key]; !exists {
+			m.DeleteElem(uP(&key))
+		}
 	}
 }
