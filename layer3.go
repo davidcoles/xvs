@@ -74,18 +74,19 @@ type bpf_vlaninfo struct {
 }
 
 type bpf_vip_rip struct {
-	daddr    [16]byte // rip
-	saddr    [16]byte // src
-	dport    uint16
-	sport    uint16
-	vlanid   uint16
-	method   TunnelType // uint8
-	flags    uint8
-	h_dest   [6]byte
-	h_source [6]byte
-	pad      [12]byte
-	vip      [16]byte
-	ext      [16]byte
+	destinfo bpf_destinfo
+	//daddr    [16]byte // rip
+	//saddr    [16]byte // src
+	//dport    uint16
+	//sport    uint16
+	//vlanid   uint16
+	//method   TunnelType // uint8
+	//flags    uint8
+	//h_dest   [6]byte
+	//h_source [6]byte
+	//pad      [12]byte
+	vip [16]byte
+	ext [16]byte
 }
 
 type addr4 = [4]byte
@@ -432,17 +433,19 @@ func (s *service3) recalc() {
 		}
 
 		vip_rip := bpf_vip_rip{
-			vip:      vip,
-			ext:      ext,
-			daddr:    rip,
-			saddr:    saddr,
-			dport:    d.TunnelPort,
-			sport:    0,
-			vlanid:   uint16(VLANID),
-			method:   d.TunnelType,
-			flags:    0,
-			h_dest:   mac,
-			h_source: h_source,
+			destinfo: bpf_destinfo{
+				daddr:    rip,
+				saddr:    saddr,
+				dport:    d.TunnelPort,
+				sport:    0,
+				vlanid:   uint16(VLANID),
+				method:   d.TunnelType,
+				flags:    0,
+				h_dest:   mac,
+				h_source: h_source,
+			},
+			vip: vip,
+			ext: ext,
 		}
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
