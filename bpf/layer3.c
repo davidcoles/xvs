@@ -191,7 +191,7 @@ const __u16 MTU = 1500;
 
 //const __u8 F_STICKY = 0x01;
 
-const __u8 F_CHECKSUM_DISABLE = 0x08;
+const __u8 F_CHECKSUM_DISABLE = 0x01;
 
 // tunnel flags xxxxcttt - x: unused, c: checksum-disable ttt: type
 // https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
@@ -235,6 +235,7 @@ struct fourtuple {
 };
 typedef struct fourtuple fourtuple_t;
 
+/*
 struct tunnel {
     addr_t daddr;
     addr_t saddr;
@@ -242,20 +243,16 @@ struct tunnel {
     __u16 sport;
     __u16 vlanid;
     __u8 type;
-    __u8 nochecksum : 1; // change to a flags field - essentially make this struct destinfo
-
+    __u8 flags; // change to a flags field - essentially make this struct destinfo
     __u8 h_dest[6];
     __u8 h_source[6];
 };
-typedef struct tunnel tunnel_t;
-
-#include "new.h"
-
+*/
 
 // will replace tunnel type
 struct destinfo {
-    struct addr daddr;
-    struct addr saddr;
+    addr_t daddr;
+    addr_t saddr;
     __u16 dport;
     __u16 sport;
     __u16 vlanid;
@@ -265,6 +262,13 @@ struct destinfo {
     __u8 h_source[6]; // local hw address
     __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
 };
+
+typedef struct destinfo tunnel_t;
+
+
+#include "new.h"
+
+
 
 struct vip_rip {
     struct destinfo destinfo;
@@ -286,7 +290,7 @@ typedef struct info info_t;
 
 
 struct servicekey {
-    struct addr addr;
+    addr_t addr;
     __be16 port;
     __u16 proto;
 };
@@ -582,8 +586,8 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     memcpy(t->h_dest, d.h_dest, 6);
     memcpy(t->h_source, d.h_source, 6);
     t->vlanid = d.vlanid;
-    t->type = d.method;
-    //t->flags = d.flags;
+    t->method = d.method;
+    t->flags = d.flags;
    
     __u8 type = d.method;
     
@@ -928,6 +932,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     __u16 sport = destinfo->sport;
     __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
     enum tunnel_type method = destinfo->method;
+    __u8 flags = destinfo->method;
 
 
     struct l4 ft = { .saddr = ext.addr4.addr, .daddr = rip.addr4.addr, .sport = tcp->source, .dport = tcp->dest };
@@ -935,8 +940,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     tunnel_t t = {
                   .sport = sport ? sport : (0x8000 | (l4_hash_(&ft) & 0x7fff)),
                   .dport = dport,
-                  .nochecksum = 1,
-                  .type = method,
+                  .flags = flags,
+                  .method = method,
                   .vlanid = vlanid,
     };
     t.daddr = destinfo->daddr;
@@ -1031,18 +1036,43 @@ int xdp_request_v4(struct xdp_md *ctx)
       return XDP_DROP;
 
 
+    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
+
     addr_t vip = vip_rip->vip;
-    //addr_t rip = destinfo->daddr;
+    addr_t ext = vip_rip->ext;
+    __be16 eph = tcp->source;
+    __be16 svc = tcp->dest;
+
+    /*
     __u16 dport = destinfo->dport;
     __u16 sport = destinfo->sport;
     __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
     enum tunnel_type method = destinfo->method;
+    __u8 flags = destinfo->flags;
+    
+    tunnel_t t = {
+		  .sport = sport ? sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff)),
+		  .dport = dport,
+		  .flags = flags,
+		  .method = method,
+		  .vlanid = vlanid,
+    };
+
+    t.daddr = destinfo->daddr;
+    t.saddr = destinfo->saddr;
     
 
+    memcpy(t.h_dest, destinfo->h_dest, 6);    
+    memcpy(t.h_source, destinfo->h_source, 6);
+    */
+
+    tunnel_t t = *destinfo;
+    t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
+    
     int overhead = 0;
     //int mtu = MTU;
 
-    switch (method) {
+    switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
     case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
     case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
@@ -1059,26 +1089,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
     */
 
-    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
-
-    __be16 eph = tcp->source;
-    __be16 svc = tcp->dest;
-
-    addr_t ext = vip_rip->ext;
-    
-    tunnel_t t = {
-		  .sport = sport ? sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff)),
-		  .dport = dport,
-		  .nochecksum = 1,
-		  .type = method,
-		  .vlanid = vlanid,
-    };
-
-    t.daddr = destinfo->daddr;
-    t.saddr = destinfo->saddr;
-
-    memcpy(t.h_dest, destinfo->h_dest, 6);    
-    memcpy(t.h_source, destinfo->h_source, 6);
     
     //bpf_printk("HERE %x:%x:%x\n", t.h_dest[3], t.h_dest[4], t.h_dest[5]);
 
@@ -1106,7 +1116,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     int is_ipv6 = 0;
     int action = XDP_DROP;
     
-    switch (method) {
+    switch (t.method) {
     case T_FOU:  action = send_fou(ctx, &t); break;
     case T_IPIP:	action = send_xinx(ctx, &t, is_ipv6); break;
     case T_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
@@ -1128,7 +1138,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
     //return bpf_redirect(vlaninfo->ifindex, 0);
-    return bpf_redirect_map(&redirect_map, vlanid, XDP_DROP);
+    return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }
 
 

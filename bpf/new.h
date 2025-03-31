@@ -611,7 +611,7 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
     udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
     udp->check = 0;
     
-    if (! t->nochecksum)
+    if (! (t->flags & F_CHECKSUM_DISABLE))
 	udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
     
     return 0;
@@ -637,7 +637,7 @@ int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
     udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
     udp->check = 0;
     
-    if (! t->nochecksum)
+    if (! (t->flags & F_CHECKSUM_DISABLE))
 	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
 
     return 0;
@@ -674,7 +674,7 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     gue->protocol = protocol;
     
-    if (! t->nochecksum)
+    if (! (t->flags & F_CHECKSUM_DISABLE))
 	udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
     
     return 0;
@@ -711,7 +711,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     
     gue->protocol = protocol;
     
-    if (! t->nochecksum)
+    if (! (t->flags & F_CHECKSUM_DISABLE))
 	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
 
     return 0;
