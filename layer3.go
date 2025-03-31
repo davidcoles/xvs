@@ -74,13 +74,18 @@ type bpf_vlaninfo struct {
 }
 
 type bpf_vip_rip struct {
-	vip    [16]byte
-	rip    [16]byte
-	port   uint16
-	method TunnelType // uint8
-	flags  uint8
-	hwaddr [6]byte
-	vlanid uint16
+	daddr    [16]byte // rip
+	saddr    [16]byte // src
+	dport    uint16
+	sport    uint16
+	vlanid   uint16
+	method   TunnelType // uint8
+	flags    uint8
+	h_dest   [6]byte
+	h_source [6]byte
+	pad      [12]byte
+	vip      [16]byte
+	ext      [16]byte
 }
 
 type addr4 = [4]byte
@@ -115,12 +120,6 @@ type layer3 struct {
 	nic uint32
 
 	services map[threetuple]*service3
-}
-
-type Destination3 struct {
-	Address    netip.Addr
-	TunnelType TunnelType
-	TunnelPort uint16
 }
 
 func (d *Destination3) is4() bool {
@@ -236,13 +235,21 @@ func (s *service3) update(service Service3) error {
 	return nil
 }
 
+func (s *service3) key() (k bpf_servicekey) {
+	k.addr = as16(s.service.Address)
+	k.port = s.service.Port
+	k.proto = uint16(s.service.Protocol)
+	return
+}
+
 func (s *service3) delete() error {
 
-	key := bpf_servicekey{
-		addr:  as16(s.service.Address),
-		port:  s.service.Port,
-		proto: uint16(s.service.Protocol),
-	}
+	//key := bpf_servicekey{
+	//	addr:  as16(s.service.Address),
+	//	port:  s.service.Port,
+	//	proto: uint16(s.service.Protocol),
+	//}
+	key := s.key()
 
 	s.layer3.destinations.DeleteElem(uP(&key))
 
@@ -367,11 +374,12 @@ func (s *service3) recalc() {
 	v := tuple.address
 	vip := as16(v)
 
-	key := bpf_servicekey{
-		addr:  vip,
-		port:  tuple.port,
-		proto: uint16(tuple.protocol),
-	}
+	//key := bpf_servicekey{
+	//	addr:  vip,
+	//	port:  tuple.port,
+	//	proto: uint16(tuple.protocol),
+	//}
+	key := s.key()
 
 	l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
 
@@ -407,13 +415,34 @@ func (s *service3) recalc() {
 			mac = l.h_dest
 		}
 
+		h_source := l.h_source
+
+		var saddr, ext addr6
+
+		if d.is4() {
+			copy(saddr[12:], l.saddr4[:])
+		} else {
+			saddr = l.saddr6
+		}
+
+		if v.Is4() {
+			copy(ext[12:], l.saddr4[:])
+		} else {
+			ext = l.saddr6
+		}
+
 		vip_rip := bpf_vip_rip{
-			vip:    vip,
-			rip:    rip,
-			port:   d.TunnelPort,
-			method: d.TunnelType,
-			hwaddr: mac,
-			vlanid: uint16(VLANID),
+			vip:      vip,
+			ext:      ext,
+			daddr:    rip,
+			saddr:    saddr,
+			dport:    d.TunnelPort,
+			sport:    0,
+			vlanid:   uint16(VLANID),
+			method:   d.TunnelType,
+			flags:    0,
+			h_dest:   mac,
+			h_source: h_source,
 		}
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)

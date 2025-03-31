@@ -66,6 +66,13 @@ type Service3Extended struct {
 	Service Service3
 }
 
+type Destination3 struct {
+	Address    netip.Addr
+	TunnelType TunnelType
+	TunnelPort uint16
+	Weight     uint8
+}
+
 type Destination3Extended struct {
 	Destination Destination3
 }
