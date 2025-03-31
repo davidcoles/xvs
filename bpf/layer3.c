@@ -236,22 +236,42 @@ struct fourtuple {
 typedef struct fourtuple fourtuple_t;
 
 struct tunnel {
-    addr_t saddr;
     addr_t daddr;
-    __u16 sport;
+    addr_t saddr;
     __u16 dport;
-    __u16 nochecksum : 1; // change to a flags field - essentially make this struct destinfo
-    __u16 type : 3;
+    __u16 sport;
+    __u16 vlanid;
+    __u8 type;
+    __u8 nochecksum : 1; // change to a flags field - essentially make this struct destinfo
 
     __u8 h_dest[6];
     __u8 h_source[6];
-    
-    __u16 vlanid;
-
 };
 typedef struct tunnel tunnel_t;
 
 #include "new.h"
+
+
+// will replace tunnel type
+struct destinfo {
+    struct addr daddr;
+    struct addr saddr;
+    __u16 dport;
+    __u16 sport;
+    __u16 vlanid;
+    __u8 method;
+    __u8 flags; // no_udp_checksum
+    __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
+    __u8 h_source[6]; // local hw address
+    __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
+};
+
+struct vip_rip {
+    struct destinfo destinfo;
+    addr_t vip;
+    addr_t ext;
+};
+
 
 
 struct info {
@@ -273,26 +293,6 @@ struct servicekey {
 
 
 typedef __u8 mac[6];
-
-// will replace tunnel type
-struct destinfo {
-    struct addr daddr;
-    struct addr saddr;
-    __u16 dport;
-    __u16 sport;
-    __u16 vlanid;
-    __u8 method;
-    __u8 flags; // no_udp_checksum
-    __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
-    __u8 h_source[6]; // local hw address
-    __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
-};
-
-struct vip_rip {
-    struct destinfo destinfo;
-    addr_t vip;
-    addr_t ext;
-};
 
 
 struct destinations {
@@ -1032,7 +1032,7 @@ int xdp_request_v4(struct xdp_md *ctx)
 
 
     addr_t vip = vip_rip->vip;
-    addr_t rip = destinfo->daddr;
+    //addr_t rip = destinfo->daddr;
     __u16 dport = destinfo->dport;
     __u16 sport = destinfo->sport;
     __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
@@ -1074,10 +1074,9 @@ int xdp_request_v4(struct xdp_md *ctx)
 		  .vlanid = vlanid,
     };
 
-    t.daddr = rip;
+    t.daddr = destinfo->daddr;
     t.saddr = destinfo->saddr;
 
-    
     memcpy(t.h_dest, destinfo->h_dest, 6);    
     memcpy(t.h_source, destinfo->h_source, 6);
     
