@@ -30,15 +30,6 @@ func init() {
 	}
 }
 
-//TunnelType
-/*
-const LAYER2 uint8 = bpf.T_LAYER2
-const FOU uint8 = bpf.T_FOU
-const GRE uint8 = bpf.T_GRE
-const GUE uint8 = bpf.T_GUE
-const IPIP uint8 = bpf.T_IPIP
-*/
-
 const LAYER2 TunnelType = bpf.T_LAYER2
 const FOU TunnelType = bpf.T_FOU
 const GRE TunnelType = bpf.T_GRE
@@ -104,6 +95,7 @@ type threetuple struct {
 type service3 struct {
 	dests   map[netip.Addr]Destination3
 	service Service3
+	layer3  *layer3
 }
 
 type layer3 struct {
@@ -200,6 +192,28 @@ func hw6() map[netip.Addr]neighbor {
 	}
 
 	return hw6
+}
+
+func (s *service3) delete(l *layer3) {
+	// remove service entry
+	key := bpf_servicekey{
+		addr:  as16(s.service.Address),
+		port:  s.service.Port,
+		proto: uint16(s.service.Protocol),
+	}
+
+	l.destinations.DeleteElem(uP(&key))
+
+	delete(l.services, s.service.key())
+
+	l.deletion()
+}
+
+func (s *service3) deldest(l *layer3, d Destination3) error {
+	delete(s.dests, d.Address)
+	s.recalc(l)
+	l.deletion()
+	return nil
 }
 
 func (s *service3) recalc(l *layer3) {
@@ -326,18 +340,6 @@ func as16(a netip.Addr) (r [16]byte) {
 	ip := a.As4()
 	copy(r[12:], ip[:])
 	return
-}
-
-func (l *layer3) Info() (Info, error) {
-	for t, service3 := range l.services {
-		for _, d := range service3.dests {
-			vip := t.address
-			rip := d.Address
-			nat := l.ns.addr(l.natmap.get(vip, rip), vip.Is6())
-			fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
-		}
-	}
-	return Info{}, nil
 }
 
 func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {

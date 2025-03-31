@@ -20,7 +20,7 @@ struct gue_hdr {
     __be16 flags;
 };
 
-
+/*
 struct geneve_hdr {
     __u8 ver : 2;
     __u8 opt_len : 6;
@@ -34,11 +34,12 @@ struct geneve_hdr {
     __be32 vni;// : 24;
     //__be32 reserved : 8;
 };
+*/
 
 const __u8 GRE_OVERHEAD = sizeof(struct gre_hdr);
 const __u8 FOU_OVERHEAD = sizeof(struct udphdr);
 const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
-const __u8 GENEVE_OVERHEAD = sizeof(struct ethhdr) + sizeof(struct udphdr) + sizeof(struct geneve_hdr);
+//const __u8 GENEVE_OVERHEAD = sizeof(struct ethhdr) + sizeof(struct udphdr) + sizeof(struct geneve_hdr);
 
 static __always_inline
 int nul6(struct in6_addr *a) 
