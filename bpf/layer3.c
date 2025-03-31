@@ -293,7 +293,8 @@ struct vip_rip {
     addr_t vip;
     addr_t ext;
 };
-    
+
+
 struct xvip_rip {
     addr_t xdaddr; // rip
     addr_t xsaddr; // src;
