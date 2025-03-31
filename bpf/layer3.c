@@ -804,8 +804,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     default:
 	return XDP_PASS;
     }
-
-	    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);    
+    
+    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);    
 
     // no default here - handle all cases explicitly
     switch (result) {
@@ -928,31 +928,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     struct l4 ft = { .saddr = ext.addr4.addr, .daddr = vip.addr4.addr, .sport = tcp->source, .dport = tcp->dest }; // FIXME
 
-
-    /*
-    addr_t rip = destinfo->daddr;    
-    __u16 dport = destinfo->dport;
-    __u16 sport = destinfo->sport;
-    __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
-    enum tunnel_type method = destinfo->method;
-    __u8 flags = destinfo->method;
-    tunnel_t t = {
-                  .sport = sport ? sport : (0x8000 | (l4_hash_(&ft) & 0x7fff)),
-                  .dport = dport,
-                  .flags = flags,
-                  .method = method,
-                  .vlanid = vlanid,
-    };
-    t.daddr = destinfo->daddr;
-    t.saddr = destinfo->saddr;
-    
-    memcpy(t.h_dest, destinfo->h_dest, 6);
-    memcpy(t.h_source, destinfo->h_source, 6);
-    */
-
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
-
 
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     
@@ -1046,29 +1023,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
 
-    /*
-    __u16 dport = destinfo->dport;
-    __u16 sport = destinfo->sport;
-    __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
-    enum tunnel_type method = destinfo->method;
-    __u8 flags = destinfo->flags;
-    
-    tunnel_t t = {
-		  .sport = sport ? sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff)),
-		  .dport = dport,
-		  .flags = flags,
-		  .method = method,
-		  .vlanid = vlanid,
-    };
-
-    t.daddr = destinfo->daddr;
-    t.saddr = destinfo->saddr;
-    
-
-    memcpy(t.h_dest, destinfo->h_dest, 6);    
-    memcpy(t.h_source, destinfo->h_source, 6);
-    */
-
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
     
@@ -1120,11 +1074,11 @@ int xdp_request_v4(struct xdp_md *ctx)
     int action = XDP_DROP;
     
     switch (t.method) {
-    case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_IPIP:	action = send_xinx(ctx, &t, is_ipv6); break;
-    case T_GRE:	action = send_gre(ctx, &t, is_ipv6); break;
-    case T_GUE:	action = send_gue(ctx, &t, is_ipv6); break;
-    case T_LAYER2:  action = send_l2(ctx, &t); break;
+    case T_FOU:    action = send_fou(ctx, &t); break;
+    case T_IPIP:   action = send_xinx(ctx, &t, is_ipv6); break;
+    case T_GRE:	   action = send_gre(ctx, &t, is_ipv6); break;
+    case T_GUE:	   action = send_gue(ctx, &t, is_ipv6); break;
+    case T_LAYER2: action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)
