@@ -295,21 +295,6 @@ struct vip_rip {
 };
 
 
-struct xvip_rip {
-    addr_t xdaddr; // rip
-    addr_t xsaddr; // src;
-    __u16 xdport;
-    __u16 xsport;
-    __u16 xvlanid;
-    __u8 xmethod;
-    __u8 xflags;
-    __u8 xh_dest[6];
-    __u8 xh_source[6];
-    __u8 xpad[12];
-    addr_t vip;
-    addr_t ext;
-};
-
 struct destinations {
     struct destinfo destinfo[256];
     __u8 hash[8192];
@@ -936,21 +921,13 @@ int xdp_request_v6(struct xdp_md *ctx) {
     addr_t ext = vip_rip->ext;
 
     
-    //__u16 dport = vip_rip->dport;
-    //__u16 sport = vip_rip->sport;
-    //__u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
-    //enum tunnel_type method = vip_rip->method;
+    __be16 eph = tcp->source;
+    __be16 svc = tcp->dest;
+    addr_t rip = destinfo->daddr;    
     __u16 dport = destinfo->dport;
     __u16 sport = destinfo->sport;
     __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
     enum tunnel_type method = destinfo->method;
-
-    
-    __be16 eph = tcp->source;
-    __be16 svc = tcp->dest;
-    //addr_t rip = vip_rip->daddr;
-    addr_t rip = destinfo->daddr;    
-
 
 
     struct l4 ft = { .saddr = ext.addr4.addr, .daddr = rip.addr4.addr, .sport = tcp->source, .dport = tcp->dest };
@@ -962,12 +939,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
                   .type = method,
                   .vlanid = vlanid,
     };
-    t.daddr = rip;
-    //t.saddr = vip_rip->saddr;
+    t.daddr = destinfo->daddr;
     t.saddr = destinfo->saddr;
     
-    //memcpy(t.h_dest, vip_rip->h_dest, 6);
-    //memcpy(t.h_source, vip_rip->h_source, 6);
     memcpy(t.h_dest, destinfo->h_dest, 6);
     memcpy(t.h_source, destinfo->h_source, 6);
 
@@ -1033,20 +1007,6 @@ int xdp_request_v4(struct xdp_md *ctx)
 
     struct destinfo *destinfo = (void *) vip_rip;
     
-    addr_t vip = vip_rip->vip;
-
-    //addr_t rip = vip_rip->daddr;
-    //__u16 dport = vip_rip->dport;
-    //__u16 sport = vip_rip->sport;
-    //__u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
-    //enum tunnel_type method = vip_rip->method;
-    addr_t rip = destinfo->daddr;
-    __u16 dport = destinfo->dport;
-    __u16 sport = destinfo->sport;
-    __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
-    enum tunnel_type method = destinfo->method;
-
-    
     if (ip->version != 4)
 	return XDP_DROP;
     
@@ -1070,6 +1030,14 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (tcp + 1 > data_end)
       return XDP_DROP;
 
+
+    addr_t vip = vip_rip->vip;
+    addr_t rip = destinfo->daddr;
+    __u16 dport = destinfo->dport;
+    __u16 sport = destinfo->sport;
+    __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
+    enum tunnel_type method = destinfo->method;
+    
 
     int overhead = 0;
     //int mtu = MTU;
