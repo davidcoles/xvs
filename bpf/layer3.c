@@ -923,20 +923,19 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
-
-    
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
+
+    struct l4 ft = { .saddr = ext.addr4.addr, .daddr = vip.addr4.addr, .sport = tcp->source, .dport = tcp->dest }; // FIXME
+
+
+    /*
     addr_t rip = destinfo->daddr;    
     __u16 dport = destinfo->dport;
     __u16 sport = destinfo->sport;
     __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
     enum tunnel_type method = destinfo->method;
     __u8 flags = destinfo->method;
-
-
-    struct l4 ft = { .saddr = ext.addr4.addr, .daddr = rip.addr4.addr, .sport = tcp->source, .dport = tcp->dest };
-    
     tunnel_t t = {
                   .sport = sport ? sport : (0x8000 | (l4_hash_(&ft) & 0x7fff)),
                   .dport = dport,
@@ -949,6 +948,10 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     memcpy(t.h_dest, destinfo->h_dest, 6);
     memcpy(t.h_source, destinfo->h_source, 6);
+    */
+
+    tunnel_t t = *destinfo;
+    t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
 
 
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
@@ -961,7 +964,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     int action = XDP_DROP;
 
-    switch (method) {
+    switch (t.method) {
     case T_FOU:  action = send_fou(ctx, &t); break;
     case T_IPIP: action = send_xinx(ctx, &t, 1); break;
     case T_GRE:  action = send_gre(ctx, &t, 1); break;
@@ -983,7 +986,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
 
     //return bpf_redirect(vlaninfo->ifindex, 0);
-    return bpf_redirect_map(&redirect_map, vlanid, XDP_DROP);
+    return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }
 
 int xdp_request_v4(struct xdp_md *ctx)
