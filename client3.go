@@ -47,6 +47,8 @@ type Client3 interface {
 	CreateDestination(Service3, Destination3) error
 	UpdateDestination(Service3, Destination3) error
 	RemoveDestination(Service3, Destination3) error
+
+	SetService(Service3, []Destination3) error
 }
 
 func (s *Service3) key() threetuple {
@@ -73,7 +75,7 @@ type Config struct {
 }
 
 func New(interfaces ...string) (Client3, error) {
-	return Layer3(interfaces[0], mac{})
+	return newClient(interfaces[0], mac{})
 }
 
 func (l *layer3) Info() (Info, error) {
@@ -92,7 +94,7 @@ func (l *layer3) Clean() {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	l.deletion()
+	l.clean()
 }
 
 func (l *layer3) Config() (Config, error) {
@@ -122,17 +124,17 @@ func (l *layer3) Services() (r []Service3Extended, e error) {
 	return
 }
 
-func (l *layer3) Service(s Service3) (Service3Extended, error) {
+func (l *layer3) Service(s Service3) (r Service3Extended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
 	service, exists := l.services[s.key()]
 
 	if !exists {
-		return Service3Extended{}, fmt.Errorf("Service does not exist")
+		return r, fmt.Errorf("Service does not exist")
 	}
 
-	return Service3Extended{Service: service.service}, nil
+	return service.extend(), nil
 }
 
 func (l *layer3) CreateService(s Service3) error {
@@ -143,14 +145,7 @@ func (l *layer3) CreateService(s Service3) error {
 		return fmt.Errorf("Service exists")
 	}
 
-	service := &service3{
-		dests:   map[netip.Addr]Destination3{},
-		service: s,
-	}
-
-	l.services[s.key()] = service
-
-	service.recalc(l)
+	l.createService(s)
 
 	return nil
 }
@@ -165,11 +160,7 @@ func (l *layer3) UpdateService(s Service3) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	service.service = s
-
-	service.recalc(l)
-
-	return nil
+	return service.update(s)
 }
 
 func (l *layer3) RemoveService(s Service3) error {
@@ -182,9 +173,7 @@ func (l *layer3) RemoveService(s Service3) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	service.delete(l)
-
-	return nil
+	return service.delete()
 }
 
 func (l *layer3) Destinations(s Service3) (r []Destination3Extended, e error) {
@@ -197,11 +186,7 @@ func (l *layer3) Destinations(s Service3) (r []Destination3Extended, e error) {
 		return nil, fmt.Errorf("Service does not exist")
 	}
 
-	for _, v := range service.dests {
-		r = append(r, Destination3Extended{Destination: v})
-	}
-
-	return
+	return service.destinations()
 }
 
 func (l *layer3) CreateDestination(s Service3, d Destination3) error {
@@ -214,20 +199,7 @@ func (l *layer3) CreateDestination(s Service3, d Destination3) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	if _, exists := service.dests[d.Address]; exists {
-		return fmt.Errorf("Destination exists")
-	}
-
-	service.dests[d.Address] = d
-
-	l.natmap.add(s.Address, d.Address)
-	l.natmap.index()
-
-	// TODO - add stats map eniires
-
-	service.recalc(l)
-
-	return nil
+	return service.createDestination(d)
 }
 
 func (l *layer3) UpdateDestination(s Service3, d Destination3) error {
@@ -240,15 +212,7 @@ func (l *layer3) UpdateDestination(s Service3, d Destination3) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	if _, exists := service.dests[d.Address]; !exists {
-		return fmt.Errorf("Destination does not exist")
-	}
-
-	service.dests[d.Address] = d
-
-	service.recalc(l)
-
-	return nil
+	return service.updateDestination(d)
 }
 
 func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
@@ -261,9 +225,20 @@ func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	if _, exists := service.dests[d.Address]; !exists {
-		return fmt.Errorf("Destination does not exist")
+	return service.removeDestination(d)
+}
+
+func (l *layer3) SetService(s Service3, ds []Destination3) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		l.createService(s, ds...)
+	} else {
+		service.set(s, ds...)
 	}
 
-	return service.deldest(l, d)
+	return nil
 }

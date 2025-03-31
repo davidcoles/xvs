@@ -194,29 +194,117 @@ func hw6() map[netip.Addr]neighbor {
 	return hw6
 }
 
-func (s *service3) delete(l *layer3) {
-	// remove service entry
+func (s *service3) set(service Service3, ds ...Destination3) error {
+	s.service = service
+
+	m := map[netip.Addr]Destination3{}
+
+	for _, d := range ds {
+		m[d.Address] = d
+		s.layer3.natmap.add(s.service.Address, d.Address)
+		s.layer3.natmap.index()
+	}
+
+	s.dests = m
+	s.recalc()
+	s.layer3.clean()
+	return nil
+}
+
+func (l *layer3) createService(s Service3, ds ...Destination3) *service3 {
+
+	service := &service3{
+		dests:   map[netip.Addr]Destination3{},
+		service: s,
+		layer3:  l,
+	}
+
+	service.set(s, ds...)
+
+	l.services[s.key()] = service
+
+	return service
+}
+
+func (s *service3) extend() Service3Extended {
+	return Service3Extended{Service: s.service}
+}
+
+func (s *service3) update(service Service3) error {
+	s.service = service
+	s.recalc()
+	return nil
+}
+
+func (s *service3) delete() error {
+
 	key := bpf_servicekey{
 		addr:  as16(s.service.Address),
 		port:  s.service.Port,
 		proto: uint16(s.service.Protocol),
 	}
 
-	l.destinations.DeleteElem(uP(&key))
+	s.layer3.destinations.DeleteElem(uP(&key))
 
-	delete(l.services, s.service.key())
+	delete(s.layer3.services, s.service.key())
 
-	l.deletion()
-}
+	s.layer3.clean()
 
-func (s *service3) deldest(l *layer3, d Destination3) error {
-	delete(s.dests, d.Address)
-	s.recalc(l)
-	l.deletion()
 	return nil
 }
 
-func (s *service3) recalc(l *layer3) {
+func (s *service3) removeDestination(d Destination3) error {
+	if _, exists := s.dests[d.Address]; !exists {
+		return fmt.Errorf("Destination does not exist")
+	}
+
+	delete(s.dests, d.Address)
+	s.recalc()
+	s.layer3.clean()
+	return nil
+}
+
+func (s *service3) updateDestination(d Destination3) error {
+
+	if _, exists := s.dests[d.Address]; !exists {
+		return fmt.Errorf("Destination does not exist")
+	}
+
+	s.dests[d.Address] = d
+
+	s.recalc()
+
+	return nil
+}
+
+func (s *service3) createDestination(d Destination3) error {
+
+	if _, exists := s.dests[d.Address]; exists {
+		return fmt.Errorf("Destination exists")
+	}
+
+	s.dests[d.Address] = d
+
+	s.layer3.natmap.add(s.service.Address, d.Address)
+	s.layer3.natmap.index()
+
+	// TODO - add stats map eniires
+
+	s.recalc()
+
+	return nil
+}
+
+func (s *service3) destinations() (r []Destination3Extended, e error) {
+	for _, v := range s.dests {
+		r = append(r, Destination3Extended{Destination: v})
+	}
+	return
+}
+
+func (s *service3) recalc() {
+
+	l := s.layer3
 
 	hwaddr, _ := arp()
 	hwaddr6 := hw6()
@@ -342,7 +430,7 @@ func as16(a netip.Addr) (r [16]byte) {
 	return
 }
 
-func Layer3(ifname string, h_dest [6]byte) (*layer3, error) {
+func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	iface, err := net.InterfaceByName(ifname)
 
@@ -500,10 +588,9 @@ func (l *layer3) config() {
 	}
 
 	l.vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
-	//l.recalc2()
-	//l.recalc3()
+
 	for _, s := range l.services {
-		s.recalc(l)
+		s.recalc()
 	}
 }
 
@@ -525,7 +612,7 @@ func clean_map(m xdp.Map, a map[netip.Addr]bool) {
 	}
 }
 
-func (l *layer3) deletion() {
+func (l *layer3) clean() {
 	now := time.Now()
 
 	vips := map[netip.Addr]bool{}
