@@ -289,16 +289,22 @@ struct destinfo {
 };
 
 struct vip_rip {
-    addr_t daddr; // rip
-    addr_t saddr; // src;
-    __u16 dport;
-    __u16 sport;
-    __u16 vlanid;
-    __u8 method;
-    __u8 flags;
-    __u8 h_dest[6];
-    __u8 h_source[6];
-    __u8 pad[12];
+    struct destinfo destinfo;
+    addr_t vip;
+    addr_t ext;
+};
+    
+struct xvip_rip {
+    addr_t xdaddr; // rip
+    addr_t xsaddr; // src;
+    __u16 xdport;
+    __u16 xsport;
+    __u16 xvlanid;
+    __u8 xmethod;
+    __u8 xflags;
+    __u8 xh_dest[6];
+    __u8 xh_source[6];
+    __u8 xpad[12];
     addr_t vip;
     addr_t ext;
 };
@@ -921,31 +927,30 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (!vip_rip)
         return XDP_PASS;
 
-
+    struct destinfo *destinfo = (void *) vip_rip;
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
     addr_t vip = vip_rip->vip;
-    addr_t rip = vip_rip->daddr;
-    __u16 dport = vip_rip->dport;
-    __u16 sport = vip_rip->sport;
-    __u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
-    enum tunnel_type method = vip_rip->method;
+    addr_t ext = vip_rip->ext;
 
-    /*
-    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &vlanid);
-
-    if (!vlaninfo)
-	return XDP_DROP;
     
-    if (!vlaninfo->ifindex) // FIXME - in case of single nic/no vlan setup?
-	return XDP_DROP;
-    */
+    //__u16 dport = vip_rip->dport;
+    //__u16 sport = vip_rip->sport;
+    //__u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
+    //enum tunnel_type method = vip_rip->method;
+    __u16 dport = destinfo->dport;
+    __u16 sport = destinfo->sport;
+    __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
+    enum tunnel_type method = destinfo->method;
+
     
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
-    //addr_t ext = { .addr6 = vlaninfo->source_ipv6 };
-    addr_t ext = vip_rip->ext;
+    //addr_t rip = vip_rip->daddr;
+    addr_t rip = destinfo->daddr;    
+
+
 
     struct l4 ft = { .saddr = ext.addr4.addr, .daddr = rip.addr4.addr, .sport = tcp->source, .dport = tcp->dest };
     
@@ -956,22 +961,14 @@ int xdp_request_v6(struct xdp_md *ctx) {
                   .type = method,
                   .vlanid = vlanid,
     };
-    //t.saddr = is_addr4(&ext) ? vlaninfo->source_ipv4 : vlaninfo->source_ipv6;
     t.daddr = rip;
-
-    /*
-    if (is_addr4(&rip)) {
-	t.saddr.addr4.addr = vlaninfo->source_ipv4;
-    } else {
-	t.saddr.addr6 = vlaninfo->source_ipv6;
-    }
-    */
-
-    t.saddr = vip_rip->saddr;
+    //t.saddr = vip_rip->saddr;
+    t.saddr = destinfo->saddr;
     
-    memcpy(t.h_dest, vip_rip->h_dest, 6);
-    //memcpy(t.h_source, vlaninfo->hwaddr, 6);
-    memcpy(t.h_source, vip_rip->h_source, 6);
+    //memcpy(t.h_dest, vip_rip->h_dest, 6);
+    //memcpy(t.h_source, vip_rip->h_source, 6);
+    memcpy(t.h_dest, destinfo->h_dest, 6);
+    memcpy(t.h_source, destinfo->h_source, 6);
 
 
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
@@ -1006,7 +1003,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
 
     //return bpf_redirect(vlaninfo->ifindex, 0);
-    return bpf_redirect_map(&redirect_map, vip_rip->vlanid, XDP_DROP);
+    return bpf_redirect_map(&redirect_map, vlanid, XDP_DROP);
 }
 
 int xdp_request_v4(struct xdp_md *ctx)
@@ -1033,22 +1030,21 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (!vip_rip)
     	return XDP_PASS;
 
-    addr_t vip = vip_rip->vip;
-    addr_t rip = vip_rip->daddr;
-    __u16 dport = vip_rip->dport;
-    __u16 sport = vip_rip->sport;
-    __u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
-    enum tunnel_type method = vip_rip->method;
-
-    /*
-    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &vlanid);
-
-    if (!vlaninfo)
-	return XDP_DROP;
+    struct destinfo *destinfo = (void *) vip_rip;
     
-    if (!vlaninfo->ifindex) // FIXME - in case of single nic/no vlan setup?
-	return XDP_DROP;
-    */
+    addr_t vip = vip_rip->vip;
+
+    //addr_t rip = vip_rip->daddr;
+    //__u16 dport = vip_rip->dport;
+    //__u16 sport = vip_rip->sport;
+    //__u32 vlanid = vip_rip->vlanid; // convert to 32bit to be used as a map key
+    //enum tunnel_type method = vip_rip->method;
+    addr_t rip = destinfo->daddr;
+    __u16 dport = destinfo->dport;
+    __u16 sport = destinfo->sport;
+    __u32 vlanid = destinfo->vlanid; // convert to 32bit to be used as a map key
+    enum tunnel_type method = destinfo->method;
+
     
     if (ip->version != 4)
 	return XDP_DROP;
@@ -1098,7 +1094,7 @@ int xdp_request_v4(struct xdp_md *ctx)
 
     __be16 eph = tcp->source;
     __be16 svc = tcp->dest;
-    //addr_t ext = { .addr4.addr = vlaninfo->source_ipv4 };
+
     addr_t ext = vip_rip->ext;
     
     tunnel_t t = {
@@ -1108,22 +1104,13 @@ int xdp_request_v4(struct xdp_md *ctx)
 		  .type = method,
 		  .vlanid = vlanid,
     };
-    //t.saddr = ext;
-    t.daddr = rip;
 
-    /*
-    if (is_addr4(&rip)) {
-	t.saddr.addr4.addr = vlaninfo->source_ipv4;
-    } else {
-	t.saddr.addr6 = vlaninfo->source_ipv6;
-    }
-    */
-    t.saddr = vip_rip->saddr;
+    t.daddr = rip;
+    t.saddr = destinfo->saddr;
 
     
-    memcpy(t.h_dest, vip_rip->h_dest, 6);    
-    //memcpy(t.h_source, vlaninfo->hwaddr, 6);
-    memcpy(t.h_source, vip_rip->h_source, 6);
+    memcpy(t.h_dest, destinfo->h_dest, 6);    
+    memcpy(t.h_source, destinfo->h_source, 6);
     
     //bpf_printk("HERE %x:%x:%x\n", t.h_dest[3], t.h_dest[4], t.h_dest[5]);
 
@@ -1173,7 +1160,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
     //return bpf_redirect(vlaninfo->ifindex, 0);
-    return bpf_redirect_map(&redirect_map, vip_rip->vlanid, XDP_DROP);
+    return bpf_redirect_map(&redirect_map, vlanid, XDP_DROP);
 }
 
 
