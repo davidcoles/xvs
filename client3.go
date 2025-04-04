@@ -86,14 +86,17 @@ func New(interfaces ...string) (Client3, error) {
 }
 
 func (l *layer3) Info() (Info, error) {
-	for t, service3 := range l.services {
-		for _, d := range service3.dests {
-			vip := t.address
-			rip := d.Address
-			nat := l.ns.addr(l.natmap.get(vip, rip), vip.Is6())
-			fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
+	/*
+		for t, service3 := range l.services {
+			for _, d := range service3.dests {
+				vip := t.address
+				rip := d.Address
+				nat := l.ns.addr(l.natmap.get(vip, rip), vip.Is6())
+				fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
+			}
 		}
-	}
+	*/
+	l.foo()
 	return Info{}, nil
 }
 

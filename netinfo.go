@@ -1,0 +1,231 @@
+package xvs
+
+import (
+	"fmt"
+	"net"
+	"net/netip"
+)
+
+type netinfo struct {
+	vinfo4  vinfo
+	vinfo6  vinfo
+	l2info4 l2info
+	l2info6 l2info
+	l3info4 l3info
+	l3info6 l3info
+	hwinfo  hwinfo
+	rtinfo  rtinfo
+}
+
+type fu struct {
+	ifindex  uint32
+	h_source mac
+	saddr    netip.Addr
+}
+
+type hwinfo = map[netip.Addr]mac
+type l2info = map[uint16]fu
+type l3info = map[uint16]mac
+type vinfo = map[uint16]netip.Prefix
+type rtinfo = map[netip.Prefix]uint16
+
+func (n *netinfo) info(a netip.Addr) (ninfo, bool) {
+	if a.Is4() {
+		return n.info2(a, n.vinfo4, n.l2info4, n.l3info4)
+	}
+
+	return n.info2(a, n.vinfo6, n.l2info6, n.l3info6)
+}
+
+func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, bool) {
+	var vlan uint16
+	var bits int
+	var f fu
+	var h_dest mac
+	var l3 bool
+	var gw netip.Prefix
+
+	for id, p := range vinfo {
+		if p.Contains(a) && p.Bits() > bits {
+			bits = p.Bits()
+			vlan = id
+		}
+	}
+
+	if vlan != 0 {
+		// local device
+		f = l2info[vlan]
+		h_dest = n.hwinfo[a]
+	} else {
+		// not local, work out routing and send
+
+		l3 = true
+		bits = 0
+
+		for p, id := range n.rtinfo {
+			if p.Contains(a) && p.Bits() > bits {
+				bits = p.Bits()
+				vlan = id
+				h_dest = l3info[id]
+			}
+		}
+
+		if vlan == 0 {
+			for id, mac := range l3info {
+				if id > vlan {
+					vlan = id
+					h_dest = mac
+				}
+			}
+		}
+
+		f = l2info[vlan]
+		gw = vinfo[vlan]
+	}
+
+	fmt.Println("INFO", vlan, a, f.saddr, h_dest.String(), f.h_source.String(), f.ifindex, l3, gw)
+
+	return ninfo{
+		saddr:    f.saddr,
+		h_source: f.h_source,
+		ifindex:  f.ifindex,
+		daddr:    a,
+		h_dest:   h_dest,
+		vlanid:   vlan,
+		gw:       gw.Addr(),
+	}, l3
+}
+
+type ninfo struct {
+	saddr    netip.Addr
+	daddr    netip.Addr
+	h_source mac
+	h_dest   mac
+	vlanid   uint16
+	ifindex  uint32
+	gw       netip.Addr
+}
+
+func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
+
+	hw := n.hw()
+	n.hwinfo = hw
+
+	n.vinfo4 = vlan4
+	n.vinfo6 = vlan6
+	n.rtinfo = rtinfo
+
+	l2info4, l3info4 := n.config2(vlan4, hw)
+	l2info6, l3info6 := n.config2(vlan6, hw)
+
+	fmt.Println("INFO4", l2info4, l3info4)
+	fmt.Println("INFO6", l2info6, l3info6)
+
+	n.l2info4 = l2info4
+	n.l2info6 = l2info6
+	n.l3info4 = l3info4
+	n.l3info6 = l3info6
+
+}
+
+func (n *netinfo) config2(vlan4 map[uint16]netip.Prefix, hw map[netip.Addr]mac) (l2info, l3info) {
+
+	foo := map[uint16]fu{}
+	l3 := map[uint16]mac{}
+
+	for id, prefix := range vlan4 {
+
+		// identify which interface we will use for health probes on this vlan,
+		// the address that we should use as source IP, and the source MAC to use
+		if i, a := n.bestInterface(prefix.Masked()); i != nil {
+
+			f := fu{
+				ifindex: uint32(i.Index),
+				saddr:   a,
+			}
+
+			if len(i.HardwareAddr) == 6 {
+				copy(f.h_source[:], i.HardwareAddr[:])
+			}
+
+			foo[id] = f
+
+			// l3 eligible
+			if prefix.Masked() != prefix {
+				l3[id] = hw[prefix.Addr()] // look up mac for address
+			}
+		}
+	}
+
+	return foo, l3
+}
+
+func (n *netinfo) hw() map[netip.Addr]mac {
+
+	r := map[netip.Addr]mac{}
+
+	arp, _ := arp()
+
+	for a, m := range arp {
+		r[netip.AddrFrom4(a)] = m
+	}
+
+	for a, n := range hw6() {
+		r[a] = n.mac
+	}
+
+	return r
+}
+
+func (n *netinfo) bestInterface(prefix netip.Prefix) (*net.Interface, netip.Addr) {
+	var ok bool
+	var bits int
+	var best net.Interface
+	var foo netip.Addr
+
+	ipv6 := prefix.Addr().Is6()
+
+	if ifaces, err := net.Interfaces(); err == nil {
+
+		for _, i := range ifaces {
+
+			if i.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+
+			if i.Flags&net.FlagUp == 0 {
+				continue
+			}
+
+			if i.Flags&net.FlagBroadcast == 0 {
+				continue
+			}
+
+			if len(i.HardwareAddr) != 6 {
+				continue
+			}
+
+			if addr, err := i.Addrs(); err == nil {
+				for _, a := range addr {
+					cidr := a.String()
+
+					if p, err := netip.ParsePrefix(cidr); err == nil && p.Addr().Is6() == ipv6 {
+
+						if p.Overlaps(prefix) && p.Bits() > bits {
+							ok = true
+							best = i
+							foo = p.Addr()
+							fmt.Println("BEST", i.Name)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !ok {
+		return nil, foo
+	}
+
+	return &best, foo
+}

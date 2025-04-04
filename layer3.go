@@ -117,6 +117,7 @@ type layer3 struct {
 	ns             *newns
 	natmap         natmap6
 	mutex          sync.Mutex
+	netinfo        *netinfo
 
 	nic uint32
 
@@ -244,20 +245,10 @@ func (s *service3) key() (k bpf_servicekey) {
 }
 
 func (s *service3) delete() error {
-
-	//key := bpf_servicekey{
-	//	addr:  as16(s.service.Address),
-	//	port:  s.service.Port,
-	//	proto: uint16(s.service.Protocol),
-	//}
 	key := s.key()
-
 	s.layer3.destinations.DeleteElem(uP(&key))
-
 	delete(s.layer3.services, s.service.key())
-
 	s.layer3.clean()
-
 	return nil
 }
 
@@ -328,6 +319,9 @@ func (s *service3) recalc() {
 
 	for i, d := range dests {
 
+		ni, l3 := l.netinfo.info(d.Address)
+		fmt.Println("RECALC", ni, l3)
+
 		var backend mac
 		var saddr addr6
 		as16 := d.as16()
@@ -375,11 +369,6 @@ func (s *service3) recalc() {
 	v := tuple.address
 	vip := as16(v)
 
-	//key := bpf_servicekey{
-	//	addr:  vip,
-	//	port:  tuple.port,
-	//	proto: uint16(tuple.protocol),
-	//}
 	key := s.key()
 
 	l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
@@ -497,6 +486,12 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	fmt.Println(prefix4, prefix6)
 
+	vlan4 := map[uint16]netip.Prefix{101: prefix4}
+	vlan6 := map[uint16]netip.Prefix{101: prefix6}
+
+	ni := &netinfo{}
+	ni.config(vlan4, vlan6, nil)
+
 	saddr4 := prefix4.Addr().As4()
 	saddr6 := prefix6.Addr().As16()
 
@@ -604,10 +599,54 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		nat_to_vip_rip: nat_to_vip_rip,
 		vlan_info:      vlan_info,
 
-		nic:    nic,
-		ns:     ns,
-		natmap: natmap6{},
+		nic:     nic,
+		ns:      ns,
+		natmap:  natmap6{},
+		netinfo: ni,
 	}, nil
+}
+
+func (l *layer3) foo() {
+
+	// single interface, no vlans - TX
+	// multiple interfaces bonded, no vlans - TX
+	// multiple interfaces bonded, with vlans - TX
+	// multiple access interfaces - REDIRECT
+
+	vlan4 := map[uint16]netip.Prefix{}
+	vlan6 := map[uint16]netip.Prefix{}
+	route := map[netip.Prefix]uint16{}
+
+	v4 := netip.MustParsePrefix("10.73.35.254/24")
+	v6 := netip.MustParsePrefix("fd6e:eec8:76ac:ac1d:100::1/64")
+
+	route[netip.MustParsePrefix("10.123.190.0/24")] = 100
+
+	vlan4[100] = v4
+	vlan6[100] = v6
+
+	n := netinfo{}
+
+	n.config(vlan4, vlan6, route)
+
+	n.info(netip.MustParseAddr("10.73.35.156"))
+	n.info(netip.MustParseAddr("10.123.190.202"))
+	n.info(netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::2"))
+	n.info(netip.MustParseAddr("fd6e:eec8:76ac:beef::1"))
+
+	/*
+		internal := bpf_vlaninfo{
+			source_ipv4: ns.ipv4(),
+			source_ipv6: ns.ipv6(),
+			ifindex:     uint32(ns.a.idx),
+			hwaddr:      ns.b.mac,
+			router:      ns.a.mac,
+		}
+
+		fmt.Println("VETH", internal.source_ipv4, internal.source_ipv6)
+
+		vlan_info.UpdateElem(uP(&VETH32), uP(&internal), xdp.BPF_ANY)
+	*/
 }
 
 func (l *layer3) config() {

@@ -119,8 +119,6 @@ func main() {
 		}
 	}
 
-	client.Info()
-
 	services, _ := client.Services()
 
 	for _, service := range services {
@@ -145,6 +143,8 @@ func main() {
 
 		client.Clean()
 	}
+
+	client.Info()
 
 	fmt.Println("OK")
 }

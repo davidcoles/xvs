@@ -193,7 +193,6 @@ const __u16 MTU = 1500;
 
 const __u8 F_CHECKSUM_DISABLE = 0x01;
 
-// tunnel flags xxxxcttt - x: unused, c: checksum-disable ttt: type
 // https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 enum lookup_result {
@@ -243,7 +242,7 @@ struct tunnel {
     __u16 sport;
     __u16 vlanid;
     __u8 type;
-    __u8 flags; // change to a flags field - essentially make this struct destinfo
+    __u8 flags;
     __u8 h_dest[6];
     __u8 h_source[6];
 };
@@ -276,28 +275,13 @@ struct vip_rip {
     addr_t ext;
 };
 
-
-
-struct info {
-    __u16 sticky : 1;
-    __u16 syn : 1;
-    __u16 ack : 1;
-    __u16 fin : 1;
-    __u16 rst : 1;
-
-};
-typedef struct info info_t;
-
-
 struct servicekey {
     addr_t addr;
     __be16 port;
     __u16 proto;
 };
 
-
 typedef __u8 mac[6];
-
 
 struct destinations {
     struct destinfo destinfo[256];
