@@ -24,7 +24,7 @@ func main() {
 
 	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
 	sticky := flag.Bool("s", false, "Sticky")
-	tunnel := flag.String("t", "layer2", "Tunnel type layer2|fou|gre|gue|ipip")
+	tunnel := flag.String("t", "none", "Tunnel type none|fou|gre|gue|ipip")
 	tport4 := flag.Uint("4", 9999, "Port to use for FOU/GUE on IPv4")
 	tport6 := flag.Uint("6", 6666, "Port to use for FOU/GUE on IPv6")
 
@@ -46,7 +46,7 @@ func main() {
 	tun := xvs.LAYER2
 
 	switch *tunnel {
-	case "layer2":
+	case "none":
 		tun = xvs.LAYER2
 	case "fou":
 		tun = xvs.FOU

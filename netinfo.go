@@ -110,6 +110,13 @@ func (n ninfo) String() string {
 	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex)
 }
 
+func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
+	if v6 {
+		return n.vinfo6[id].Addr()
+	}
+	return n.vinfo4[id].Addr()
+}
+
 func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 
 	hw := n.hw()
