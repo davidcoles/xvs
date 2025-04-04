@@ -356,51 +356,13 @@ func (s *service3) recalc() {
 			nat = l.ns.nat6(index)
 		}
 
-		//var ext addr6
-		//if v.Is4() {
-		//	copy(ext[12:], l.saddr4[:])
-		//} else {
-		//	ext = l.saddr6
-		//}
-
-		//rip := as16(r)
-
-		//var h_dest, nul mac
-
-		// get mac address of backend if local
-		//if r.Is4() {
-		//	h_dest = hwaddr[r.As4()]
-		//} else {
-		//	h_dest = hwaddr6[r].mac
-		//}
-
-		// use the router as the next hop if not found locally and not a layer 2 service (otherwise we get a loop)
-		// TODO - compare RIP to local VLAN prefixes
-		//if h_dest == nul && d.TunnelType != LAYER2 {
-		//	h_dest = l.h_dest
-		//}
-
-		//h_source := l.h_source
-
-		//var saddr addr6
-		//if d.is4() {
-		//	copy(saddr[12:], l.saddr4[:])
-		//} else {
-		//	saddr = l.saddr6
-		//}
-
 		ni, l3 := l.netinfo.info(d.Address)
-		//var i2 bpf_destinfo
-		//i2.daddr = as16(ni.daddr)
-		//i2.saddr = as16(ni.saddr)
-		//i2.vlanid = ni.vlanid
-		//i2.h_dest = ni.h_dest
-		//i2.h_source = ni.h_source
-		//i2.dport = d.TunnelPort
-		//i2.sport = 0
-		//i2.method = d.TunnelType
-		//i2.flags = 0 // TODO
+
 		fmt.Println("NAT", ni, l3)
+
+		if d.TunnelType == LAYER2 && l3 {
+			log.Fatal("LOOP", ni)
+		}
 
 		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
@@ -419,18 +381,6 @@ func (s *service3) recalc() {
 			vip: vip,
 			ext: ext,
 		}
-
-		//fmt.Println("XXX", ext, as16(ex), ni.gw)
-
-		if d.TunnelType == LAYER2 && l3 {
-			log.Fatal("LOOP", ni)
-		}
-
-		//if ni.h_source != h_source || ni.h_dest != h_dest {
-		//	log.Fatal("OOPS", ni.h_source, h_source, ni.h_dest, h_dest)
-		//}
-
-		//vip_rip.destinfo = i2
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 	}
