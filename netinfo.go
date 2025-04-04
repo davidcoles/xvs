@@ -37,6 +37,13 @@ func (n *netinfo) info(a netip.Addr) (ninfo, bool) {
 	return n.info2(a, n.vinfo6, n.l2info6, n.l3info6)
 }
 
+func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
+	if v6 {
+		return n.l2info6[id].saddr
+	}
+	return n.l2info4[id].saddr
+}
+
 func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, bool) {
 	var vlan uint16
 	var bits int
@@ -81,6 +88,8 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 
 		f = l2info[vlan]
 		gw = vinfo[vlan]
+
+		fmt.Println("XXXXXXXXXX", l2info[vlan].saddr)
 	}
 
 	//fmt.Println("INFO", vlan, a, f.saddr, h_dest.String(), f.h_source.String(), f.ifindex, l3, gw)
@@ -93,6 +102,7 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 		h_dest:   h_dest,
 		vlanid:   vlan,
 		gw:       gw.Addr(),
+		//ext:      l2info[vlan].saddr,
 	}, l3
 }
 
@@ -104,13 +114,14 @@ type ninfo struct {
 	vlanid   uint16
 	ifindex  uint32
 	gw       netip.Addr
+	//ext      netip.Addr
 }
 
 func (n ninfo) String() string {
 	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex)
 }
 
-func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
+func (n *netinfo) xxxxextx(id uint16, v6 bool) netip.Addr {
 	if v6 {
 		return n.vinfo6[id].Addr()
 	}
@@ -129,8 +140,8 @@ func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 	l2info4, l3info4 := n.config2(vlan4, hw)
 	l2info6, l3info6 := n.config2(vlan6, hw)
 
-	//fmt.Println("INFO4", l2info4, l3info4)
-	//fmt.Println("INFO6", l2info6, l3info6)
+	fmt.Println("INFO4", l2info4, l3info4)
+	fmt.Println("INFO6", l2info6, l3info6)
 
 	n.l2info4 = l2info4
 	n.l2info6 = l2info6
@@ -226,7 +237,7 @@ func (n *netinfo) bestInterface(prefix netip.Prefix) (*net.Interface, netip.Addr
 							ok = true
 							best = i
 							foo = p.Addr()
-							//fmt.Println("BEST", i.Name)
+							fmt.Println("BEST", i.Name, prefix)
 						}
 					}
 				}

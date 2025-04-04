@@ -295,9 +295,6 @@ func (s *service3) recalc() {
 
 	l := s.layer3
 
-	//hwaddr, _ := arp()
-	//hwaddr6 := hw6()
-
 	var dests []Destination3
 	for _, v := range s.dests {
 		dests = append(dests, v)
@@ -309,17 +306,21 @@ func (s *service3) recalc() {
 
 	for i, d := range dests {
 		ni, l3 := l.netinfo.info(d.Address)
-		var i2 bpf_destinfo
-		i2.daddr = as16(ni.daddr)
-		i2.saddr = as16(ni.saddr)
-		i2.vlanid = ni.vlanid
-		i2.h_dest = ni.h_dest
-		i2.h_source = ni.h_source
-		i2.dport = d.TunnelPort
-		i2.sport = 0
-		i2.method = d.TunnelType
-		i2.flags = 0 // TODO
+
+		i2 := bpf_destinfo{
+			daddr:    as16(ni.daddr),
+			saddr:    as16(ni.saddr),
+			vlanid:   ni.vlanid,
+			h_dest:   ni.h_dest,
+			h_source: ni.h_source,
+			dport:    d.TunnelPort,
+			sport:    0,
+			method:   d.TunnelType,
+			flags:    0, // TODO
+		}
+
 		val.destinfo[i+1] = i2
+
 		fmt.Println("FWD", ni, l3)
 
 		if d.TunnelType == LAYER2 && l3 {
@@ -345,26 +346,28 @@ func (s *service3) recalc() {
 	l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
 
 	for _, d := range dests {
-		r := d.Address
-		index := l.natmap.get(v, r)
+
+		ni, l3 := l.netinfo.info(d.Address)
+		index := l.natmap.get(v, d.Address)
 
 		var nat [16]byte
-
 		if v.Is4() {
 			nat = l.ns.nat4(index)
 		} else {
 			nat = l.ns.nat6(index)
 		}
 
-		ni, l3 := l.netinfo.info(d.Address)
-
-		fmt.Println("NAT", ni, l3)
+		//var ext [16]byte
+		//if v.Is4() {
+		//	ext = as16(l.netinfo.l2info4[ni.vlanid].saddr)
+		//} else {
+		//	ext = as16(l.netinfo.l2info6[ni.vlanid].saddr)
+		//}
+		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
 		if d.TunnelType == LAYER2 && l3 {
 			log.Fatal("LOOP", ni)
 		}
-
-		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
 		vip_rip := bpf_vip_rip{
 			destinfo: bpf_destinfo{
@@ -381,6 +384,8 @@ func (s *service3) recalc() {
 			vip: vip,
 			ext: ext,
 		}
+
+		fmt.Println("NAT", ni, l3, ni.gw, ext, vip)
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 	}
@@ -443,6 +448,9 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	vlan4 := map[uint16]netip.Prefix{uint16(VLANID): prefix4}
 	vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
+
+	vlan4 = map[uint16]netip.Prefix{uint16(VLANID): netip.MustParsePrefix("10.73.35.254/24")}
+	//vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
 
 	ni := &netinfo{}
 	ni.config(vlan4, vlan6, nil)
