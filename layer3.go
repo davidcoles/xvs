@@ -75,18 +75,8 @@ type bpf_vlaninfo struct {
 
 type bpf_vip_rip struct {
 	destinfo bpf_destinfo
-	//daddr    [16]byte // rip
-	//saddr    [16]byte // src
-	//dport    uint16
-	//sport    uint16
-	//vlanid   uint16
-	//method   TunnelType // uint8
-	//flags    uint8
-	//h_dest   [6]byte
-	//h_source [6]byte
-	//pad      [12]byte
-	vip [16]byte
-	ext [16]byte
+	vip      [16]byte
+	ext      [16]byte
 }
 
 type addr4 = [4]byte
@@ -318,46 +308,61 @@ func (s *service3) recalc() {
 	var val bpf_destinations
 
 	for i, d := range dests {
+		/*
+			var backend mac
+			var saddr addr6
+			as16 := d.as16()
 
-		ni, l3 := l.netinfo.info(d.Address)
-		fmt.Println("RECALC", ni, l3)
-
-		var backend mac
-		var saddr addr6
-		as16 := d.as16()
-
-		if d.is4() {
-			var ip [4]byte
-			copy(ip[:], as16[12:])
-			copy(saddr[12:], l.saddr4[:])
-			backend = hwaddr[ip]
-		} else {
-			saddr = l.saddr6
-			if hw, ok := hwaddr6[d.Address]; ok {
-				backend = hw.mac
+			if d.is4() {
+				var ip [4]byte
+				copy(ip[:], as16[12:])
+				copy(saddr[12:], l.saddr4[:])
+				backend = hwaddr[ip]
+			} else {
+				saddr = l.saddr6
+				if hw, ok := hwaddr6[d.Address]; ok {
+					backend = hw.mac
+				}
 			}
+
+			var h_dest mac
+			h_source := l.h_source
+
+			if d.TunnelType == LAYER2 {
+				h_dest = backend
+			} else {
+				h_dest = l.h_dest
+			}
+
+			var info bpf_destinfo
+			info.daddr = as16
+			info.saddr = saddr
+			info.dport = d.TunnelPort
+			info.sport = 0
+			info.method = d.TunnelType
+			info.flags = 0 // TODO
+			info.vlanid = l.vlanid
+			info.h_dest = h_dest
+			info.h_source = h_source
+			val.destinfo[i+1] = info
+		*/
+		ni, l3 := l.netinfo.info(d.Address)
+		var i2 bpf_destinfo
+		i2.daddr = _as16(ni.daddr)
+		i2.saddr = _as16(ni.saddr)
+		i2.vlanid = ni.vlanid
+		i2.h_dest = ni.h_dest
+		i2.h_source = ni.h_source
+		i2.dport = d.TunnelPort
+		i2.sport = 0
+		i2.method = d.TunnelType
+		i2.flags = 0 // TODO
+		val.destinfo[i+1] = i2
+		fmt.Println("FWD", ni, l3)
+
+		if d.TunnelType == LAYER2 && l3 {
+			log.Fatal("LOOP", ni)
 		}
-
-		var h_dest mac
-		h_source := l.h_source
-
-		if d.TunnelType == LAYER2 {
-			h_dest = backend
-		} else {
-			h_dest = l.h_dest
-		}
-
-		var info bpf_destinfo
-		info.daddr = as16
-		info.saddr = saddr
-		info.dport = d.TunnelPort
-		info.sport = 0
-		info.method = d.TunnelType
-		info.flags = 0 // TODO
-		info.vlanid = l.vlanid
-		info.h_dest = h_dest
-		info.h_source = h_source
-		val.destinfo[i+1] = info
 	}
 
 	if len(dests) > 0 {
@@ -378,12 +383,13 @@ func (s *service3) recalc() {
 	l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
 
 	for _, d := range dests {
+
 		r := d.Address
-		rip := as16(r)
+		//rip := as16(r)
 
 		index := l.natmap.get(v, r)
 
-		var mac, nul mac
+		var h_dest, nul mac
 		var nat [16]byte
 
 		if v.Is4() {
@@ -394,26 +400,28 @@ func (s *service3) recalc() {
 
 		// get mac address of backend if local
 		if r.Is4() {
-			mac = hwaddr[r.As4()]
+			h_dest = hwaddr[r.As4()]
 		} else {
-			mac = hwaddr6[r].mac
+			h_dest = hwaddr6[r].mac
 		}
 
 		// use the router as the next hop if not found locally and not a layer 2 service (otherwise we get a loop)
 		// TODO - compare RIP to local VLAN prefixes
-		if mac == nul && d.TunnelType != LAYER2 {
-			mac = l.h_dest
+		if h_dest == nul && d.TunnelType != LAYER2 {
+			h_dest = l.h_dest
 		}
 
 		h_source := l.h_source
 
-		var saddr, ext addr6
+		var saddr addr6
 
 		if d.is4() {
 			copy(saddr[12:], l.saddr4[:])
 		} else {
 			saddr = l.saddr6
 		}
+
+		var ext addr6
 
 		if v.Is4() {
 			copy(ext[12:], l.saddr4[:])
@@ -422,26 +430,61 @@ func (s *service3) recalc() {
 		}
 
 		vip_rip := bpf_vip_rip{
-			destinfo: bpf_destinfo{
-				daddr:    rip,
-				saddr:    saddr,
-				dport:    d.TunnelPort,
-				sport:    0,
-				vlanid:   uint16(VLANID),
-				method:   d.TunnelType,
-				flags:    0,
-				h_dest:   mac,
-				h_source: h_source,
-			},
+			/*
+				destinfo: bpf_destinfo{
+					daddr:    rip,
+					saddr:    saddr,
+					dport:    d.TunnelPort,
+					sport:    0,
+					vlanid:   uint16(VLANID),
+					method:   d.TunnelType,
+					flags:    0,
+					h_dest:   h_dest,
+					h_source: h_source,
+				},
+			*/
 			vip: vip,
 			ext: ext,
 		}
+
+		ni, l3 := l.netinfo.info(d.Address)
+		var i2 bpf_destinfo
+		i2.daddr = as16(ni.daddr)
+		i2.saddr = as16(ni.saddr)
+		i2.vlanid = ni.vlanid
+		i2.h_dest = ni.h_dest
+		i2.h_source = ni.h_source
+		i2.dport = d.TunnelPort
+		i2.sport = 0
+		i2.method = d.TunnelType
+		i2.flags = 0 // TODO
+		fmt.Println("NAT", ni, l3)
+
+		if d.TunnelType == LAYER2 && l3 {
+			log.Fatal("LOOP", ni)
+		}
+
+		if ni.h_source != h_source || ni.h_dest != h_dest {
+			log.Fatal("OOPS", ni.h_source, h_source, ni.h_dest, h_dest)
+		}
+
+		vip_rip.destinfo = i2 // replace all of that
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 	}
 }
 
 func as16(a netip.Addr) (r [16]byte) {
+	if a.Is6() {
+		return a.As16()
+	}
+
+	ip := a.As4()
+	copy(r[12:], ip[:])
+	return
+}
+
+func _as16(a netip.Addr) (r [16]byte) {
 	if a.Is6() {
 		return a.As16()
 	}
@@ -486,8 +529,8 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	fmt.Println(prefix4, prefix6)
 
-	vlan4 := map[uint16]netip.Prefix{101: prefix4}
-	vlan6 := map[uint16]netip.Prefix{101: prefix6}
+	vlan4 := map[uint16]netip.Prefix{uint16(VLANID): prefix4}
+	vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
 
 	ni := &netinfo{}
 	ni.config(vlan4, vlan6, nil)

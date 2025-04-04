@@ -333,9 +333,9 @@ struct {
 /**********************************************************************/
 
 struct vlaninfo {
-    __u32 source_ipv4;
-    struct in6_addr source_ipv6;
-    __u32 ifindex;
+    __u32 xsource_ipv4;
+    struct in6_addr xsource_ipv6;
+    __u32 xifindex;
     __u8 hwaddr[6]; // interface's MAC
     __u8 router[6]; // router's MAC (peer's address in the case of veth (4095))
 };
@@ -370,7 +370,8 @@ struct five_tuple {
 
 struct addr_port_time {
     __u64 time;
-    addr_t addr;
+    addr_t nat;
+    addr_t src;
     __be16 port;
     __be16 pad[3];
 };
@@ -894,7 +895,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     if (tcp + 1 > data_end)
         return XDP_DROP;
-    
+
+    addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
 
@@ -942,7 +944,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     rep.daddr = ext; // ???? upsets verifier if in declaration above
 
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
-    map.addr = nat; // ??? upsets verifier if in declaration above
+    map.nat = nat; // ??? upsets verifier if in declaration above
+    map.src = src; // ??? upsets verifier if in declaration above    
 
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
 
@@ -968,6 +971,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (ip + 1 > data_end)
 	return XDP_PASS;
 
+    addr_t src = { .addr4.addr = ip->saddr };
     addr_t nat = { .addr4.addr = ip->daddr };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
 
@@ -1074,7 +1078,8 @@ int xdp_request_v4(struct xdp_md *ctx)
     rep.daddr = ext; // ???? upsets verifier if in declaration above
     
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
-    map.addr = nat; // ??? upsets verifier if in declaration above
+    map.nat = nat; // ??? upsets verifier if in declaration above
+    map.src = src; // ??? upsets verifier if in declaration above    
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
@@ -1149,8 +1154,10 @@ int xdp_reply_v6(struct xdp_md *ctx)
     
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     
-    ip6->ip6_src = match->addr.addr6;
-    ip6->ip6_dst = vlaninfo->source_ipv6;
+    //ip6->ip6_src = match->addr.addr6;
+    ip6->ip6_src = match->nat.addr6; // reply comes from the NAT addr
+    //ip6->ip6_dst = vlaninfo->source_ipv6;
+    ip6->ip6_dst = match->src.addr6; // to the internal NETNS address
     tcp->dest = match->port;
 
     struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
@@ -1235,8 +1242,10 @@ int xdp_reply_v4(struct xdp_md *ctx)
     if (!vlaninfo)
 	return XDP_DROP;    
 
-    ip->saddr = match->addr.addr4.addr;
-    ip->daddr = vlaninfo->source_ipv4;
+    //ip->saddr = match->addr.addr4.addr;
+    ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
+    //ip->daddr = vlaninfo->source_ipv4;
+    ip->daddr = match->src.addr4.addr; // to the internal NETNS address
     tcp->dest = match->port;
 
     /**********************************************************************/

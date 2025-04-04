@@ -83,7 +83,7 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 		gw = vinfo[vlan]
 	}
 
-	fmt.Println("INFO", vlan, a, f.saddr, h_dest.String(), f.h_source.String(), f.ifindex, l3, gw)
+	//fmt.Println("INFO", vlan, a, f.saddr, h_dest.String(), f.h_source.String(), f.ifindex, l3, gw)
 
 	return ninfo{
 		saddr:    f.saddr,
@@ -106,6 +106,10 @@ type ninfo struct {
 	gw       netip.Addr
 }
 
+func (n ninfo) String() string {
+	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex)
+}
+
 func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 
 	hw := n.hw()
@@ -118,8 +122,8 @@ func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 	l2info4, l3info4 := n.config2(vlan4, hw)
 	l2info6, l3info6 := n.config2(vlan6, hw)
 
-	fmt.Println("INFO4", l2info4, l3info4)
-	fmt.Println("INFO6", l2info6, l3info6)
+	//fmt.Println("INFO4", l2info4, l3info4)
+	//fmt.Println("INFO6", l2info6, l3info6)
 
 	n.l2info4 = l2info4
 	n.l2info6 = l2info6
@@ -215,7 +219,7 @@ func (n *netinfo) bestInterface(prefix netip.Prefix) (*net.Interface, netip.Addr
 							ok = true
 							best = i
 							foo = p.Addr()
-							fmt.Println("BEST", i.Name)
+							//fmt.Println("BEST", i.Name)
 						}
 					}
 				}
