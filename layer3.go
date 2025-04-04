@@ -390,37 +390,34 @@ func (s *service3) recalc() {
 		//}
 
 		ni, l3 := l.netinfo.info(d.Address)
-		var i2 bpf_destinfo
-		i2.daddr = as16(ni.daddr)
-		i2.saddr = as16(ni.saddr)
-		i2.vlanid = ni.vlanid
-		i2.h_dest = ni.h_dest
-		i2.h_source = ni.h_source
-		i2.dport = d.TunnelPort
-		i2.sport = 0
-		i2.method = d.TunnelType
-		i2.flags = 0 // TODO
+		//var i2 bpf_destinfo
+		//i2.daddr = as16(ni.daddr)
+		//i2.saddr = as16(ni.saddr)
+		//i2.vlanid = ni.vlanid
+		//i2.h_dest = ni.h_dest
+		//i2.h_source = ni.h_source
+		//i2.dport = d.TunnelPort
+		//i2.sport = 0
+		//i2.method = d.TunnelType
+		//i2.flags = 0 // TODO
 		fmt.Println("NAT", ni, l3)
 
-		ex := l.netinfo.ext(ni.vlanid, v.Is6())
+		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
 		vip_rip := bpf_vip_rip{
-			/*
-				destinfo: bpf_destinfo{
-					daddr:    rip,
-					saddr:    saddr,
-					dport:    d.TunnelPort,
-					sport:    0,
-					vlanid:   uint16(VLANID),
-					method:   d.TunnelType,
-					flags:    0,
-					h_dest:   h_dest,
-					h_source: h_source,
-				},
-			*/
+			destinfo: bpf_destinfo{
+				daddr:    as16(ni.daddr),
+				saddr:    as16(ni.saddr),
+				dport:    d.TunnelPort,
+				sport:    0,
+				vlanid:   ni.vlanid,
+				method:   d.TunnelType,
+				flags:    0,
+				h_dest:   ni.h_dest,
+				h_source: ni.h_source,
+			},
 			vip: vip,
-			//ext: ext,
-			ext: as16(ex),
+			ext: ext,
 		}
 
 		//fmt.Println("XXX", ext, as16(ex), ni.gw)
@@ -433,7 +430,7 @@ func (s *service3) recalc() {
 		//	log.Fatal("OOPS", ni.h_source, h_source, ni.h_dest, h_dest)
 		//}
 
-		vip_rip.destinfo = i2
+		//vip_rip.destinfo = i2
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 	}
