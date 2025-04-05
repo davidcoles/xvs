@@ -103,7 +103,6 @@ type layer3 struct {
 	vips           xdp.Map
 	vlan_info      xdp.Map
 	redirect_map   xdp.Map
-	redirect_map6  xdp.Map
 	saddr4         [4]byte
 	saddr6         [16]byte
 	ns             *newns
@@ -293,6 +292,10 @@ func (s *service3) destinations() (r []Destination3Extended, e error) {
 	return
 }
 
+func (l *layer3) nat(v, r netip.Addr) netip.Addr {
+	return l.ns.addr(l.natmap.get(v, r), v.Is6())
+}
+
 func (s *service3) recalc() {
 
 	l := s.layer3
@@ -359,14 +362,15 @@ func (s *service3) recalc() {
 			log.Fatal("NAT", err, ni)
 		}
 
-		index := l.natmap.get(v, d.Address)
+		//index := l.natmap.get(v, d.Address)
+		//var nat [16]byte
+		//if v.Is4() {
+		//	nat = l.ns.nat4(index)
+		//} else {
+		//	nat = l.ns.nat6(index)
+		//}
 
-		var nat [16]byte
-		if v.Is4() {
-			nat = l.ns.nat4(index)
-		} else {
-			nat = l.ns.nat6(index)
-		}
+		nat := as16(l.nat(v, d.Address))
 
 		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
@@ -490,12 +494,6 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	redirect_map6, err := x.FindMap("redirect_map6", 4, 4)
-
-	if err != nil {
-		return nil, err
-	}
-
 	vips, err := x.FindMap("vips", 16, 4)
 
 	if err != nil {
@@ -575,12 +573,10 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		nat_to_vip_rip: nat_to_vip_rip,
 		vlan_info:      vlan_info,
 		redirect_map:   redirect_map,
-		redirect_map6:  redirect_map6,
-
-		nic:     nic,
-		ns:      ns,
-		natmap:  natmap6{},
-		netinfo: ni,
+		nic:            nic,
+		ns:             ns,
+		natmap:         natmap6{},
+		netinfo:        ni,
 	}, nil
 }
 
@@ -596,10 +592,6 @@ func (l *layer3) foo(vlan4, vlan6 map[uint16]netip.Prefix) {
 		f := l.netinfo.l2info4[uint16(i)]
 		nic := f.ifindex
 		l.redirect_map.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
-
-		f = l.netinfo.l2info6[uint16(i)]
-		nic = f.ifindex
-		l.redirect_map6.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 	}
 
 	return

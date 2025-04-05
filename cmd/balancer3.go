@@ -73,13 +73,13 @@ func main() {
 	vlan4 := map[uint16]netip.Prefix{}
 	vlan6 := map[uint16]netip.Prefix{}
 
-	for i, p := range vlan {
+	for _, p := range vlan {
 		prefix := netip.MustParsePrefix(p)
-		fmt.Println("BAL", i, prefix)
+		fmt.Println("BAL", prefix)
 		if prefix.Addr().Is6() {
-			vlan6[uint16(i+1)] = prefix
+			vlan6[uint16(1)] = prefix
 		} else {
-			vlan4[uint16(i+1)] = prefix
+			vlan4[uint16(1)] = prefix
 		}
 	}
 
