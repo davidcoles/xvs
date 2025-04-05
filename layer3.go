@@ -102,6 +102,8 @@ type layer3 struct {
 	nat_to_vip_rip xdp.Map
 	vips           xdp.Map
 	vlan_info      xdp.Map
+	redirect_map   xdp.Map
+	redirect_map6  xdp.Map
 	saddr4         [4]byte
 	saddr6         [16]byte
 	ns             *newns
@@ -449,11 +451,13 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	fmt.Println(prefix4, prefix6)
 
-	vlan4 := map[uint16]netip.Prefix{uint16(VLANID): prefix4}
-	vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
-
-	vlan4 = map[uint16]netip.Prefix{uint16(VLANID): netip.MustParsePrefix("10.73.35.254/24")}
+	//vlan4 := map[uint16]netip.Prefix{uint16(VLANID): prefix4}
 	//vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
+	//vlan4 = map[uint16]netip.Prefix{uint16(VLANID): netip.MustParsePrefix("10.73.35.254/24")}
+
+	vlan4 := map[uint16]netip.Prefix{}
+	vlan6 := map[uint16]netip.Prefix{}
+	vlan4 = map[uint16]netip.Prefix{}
 
 	ni := &netinfo{}
 	ni.config(vlan4, vlan6, nil)
@@ -481,6 +485,12 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 	}
 
 	redirect_map, err := x.FindMap("redirect_map", 4, 4)
+
+	if err != nil {
+		return nil, err
+	}
+
+	redirect_map6, err := x.FindMap("redirect_map6", 4, 4)
 
 	if err != nil {
 		return nil, err
@@ -564,6 +574,8 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		vips:           vips,
 		nat_to_vip_rip: nat_to_vip_rip,
 		vlan_info:      vlan_info,
+		redirect_map:   redirect_map,
+		redirect_map6:  redirect_map6,
 
 		nic:     nic,
 		ns:      ns,
@@ -572,47 +584,25 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 	}, nil
 }
 
-func (l *layer3) foo() {
+func (l *layer3) foo(vlan4, vlan6 map[uint16]netip.Prefix) {
 
-	// single interface, no vlans - TX
-	// multiple interfaces bonded, no vlans - TX
-	// multiple interfaces bonded, with vlans - TX
-	// multiple access interfaces - REDIRECT
-
-	vlan4 := map[uint16]netip.Prefix{}
-	vlan6 := map[uint16]netip.Prefix{}
 	route := map[netip.Prefix]uint16{}
 
-	v4 := netip.MustParsePrefix("10.73.35.254/24")
-	v6 := netip.MustParsePrefix("fd6e:eec8:76ac:ac1d:100::1/64")
+	fmt.Println("FOO", vlan4, vlan6)
 
-	route[netip.MustParsePrefix("10.123.190.0/24")] = 100
+	l.netinfo.config(vlan4, vlan6, route)
 
-	vlan4[100] = v4
-	vlan6[100] = v6
+	for i := uint32(1); i < 4095; i++ {
+		f := l.netinfo.l2info4[uint16(i)]
+		nic := f.ifindex
+		l.redirect_map.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 
-	n := netinfo{}
+		f = l.netinfo.l2info6[uint16(i)]
+		nic = f.ifindex
+		l.redirect_map6.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
+	}
 
-	n.config(vlan4, vlan6, route)
-
-	n.info(netip.MustParseAddr("10.73.35.156"))
-	n.info(netip.MustParseAddr("10.123.190.202"))
-	n.info(netip.MustParseAddr("fd6e:eec8:76ac:ac1d:100::2"))
-	n.info(netip.MustParseAddr("fd6e:eec8:76ac:beef::1"))
-
-	/*
-		internal := bpf_vlaninfo{
-			source_ipv4: ns.ipv4(),
-			source_ipv6: ns.ipv6(),
-			ifindex:     uint32(ns.a.idx),
-			hwaddr:      ns.b.mac,
-			router:      ns.a.mac,
-		}
-
-		fmt.Println("VETH", internal.source_ipv4, internal.source_ipv6)
-
-		vlan_info.UpdateElem(uP(&VETH32), uP(&internal), xdp.BPF_ANY)
-	*/
+	return
 }
 
 func (l *layer3) config() {

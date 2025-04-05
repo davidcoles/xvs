@@ -21,6 +21,7 @@ func (i *list) Set(value string) error { *i = append(*i, value); return nil }
 func main() {
 	var vips list
 	var serv list
+	var vlan list
 
 	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
 	sticky := flag.Bool("s", false, "Sticky")
@@ -30,6 +31,7 @@ func main() {
 
 	flag.Var(&vips, "v", "extra vips")
 	flag.Var(&serv, "p", "ports to add to vips")
+	flag.Var(&vlan, "V", "VLANs")
 
 	flag.Parse()
 
@@ -68,7 +70,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	client.SetConfig(xvs.Config{Router: h_dest})
+	vlan4 := map[uint16]netip.Prefix{}
+	vlan6 := map[uint16]netip.Prefix{}
+
+	for i, p := range vlan {
+		prefix := netip.MustParsePrefix(p)
+		fmt.Println("BAL", i, prefix)
+		if prefix.Addr().Is6() {
+			vlan6[uint16(i+1)] = prefix
+		} else {
+			vlan4[uint16(i+1)] = prefix
+		}
+	}
+
+	client.SetConfig(xvs.Config{Router: h_dest, VLAN4: vlan4, VLAN6: vlan6})
 
 	vips = append(vips, vip)
 

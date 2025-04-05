@@ -18,14 +18,16 @@ type netinfo struct {
 }
 
 type fu struct {
-	ifindex  uint32
-	h_source mac
-	saddr    netip.Addr
+	ifindex uint32
+	hw      mac
+	ip      netip.Addr
 }
 
 type hwinfo = map[netip.Addr]mac
 type l2info = map[uint16]fu
-type l3info = map[uint16]mac
+
+//type l3info = map[uint16]mac
+type l3info = map[uint16]fu
 type vinfo = map[uint16]netip.Prefix
 type rtinfo = map[netip.Prefix]uint16
 
@@ -39,9 +41,9 @@ func (n *netinfo) info(a netip.Addr) (ninfo, error) {
 
 func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
 	if v6 {
-		return n.l2info6[id].saddr
+		return n.l2info6[id].ip
 	}
-	return n.l2info4[id].saddr
+	return n.l2info4[id].ip
 }
 
 func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, error) {
@@ -73,15 +75,23 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 			if p.Contains(a) && p.Bits() > bits {
 				bits = p.Bits()
 				vlan = id
-				h_dest = l3info[id]
+
+				x, ok := l3info[id]
+				if !ok {
+					return ninfo{}, fmt.Errorf("Desination unreachable")
+				}
+				h_dest = x.hw
+				gw = x.ip
 			}
 		}
 
 		if vlan == 0 {
-			for id, mac := range l3info {
+			for id, x := range l3info {
 				if id > vlan {
 					vlan = id
-					h_dest = mac
+					//h_dest = mac
+					h_dest = x.hw
+					gw = x.ip
 				}
 			}
 		}
@@ -101,8 +111,8 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 	}
 
 	return ninfo{
-		saddr:    f.saddr,
-		h_source: f.h_source,
+		saddr:    f.ip,
+		h_source: f.hw,
 		ifindex:  f.ifindex,
 		daddr:    a,
 		h_dest:   h_dest,
@@ -159,7 +169,7 @@ func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 func (n *netinfo) config2(vlan4 map[uint16]netip.Prefix, hw map[netip.Addr]mac) (l2info, l3info) {
 
 	foo := map[uint16]fu{}
-	l3 := map[uint16]mac{}
+	l3 := map[uint16]fu{}
 
 	for id, prefix := range vlan4 {
 
@@ -169,18 +179,20 @@ func (n *netinfo) config2(vlan4 map[uint16]netip.Prefix, hw map[netip.Addr]mac) 
 
 			f := fu{
 				ifindex: uint32(i.Index),
-				saddr:   a,
+				ip:      a,
 			}
 
 			if len(i.HardwareAddr) == 6 {
-				copy(f.h_source[:], i.HardwareAddr[:])
+				copy(f.hw[:], i.HardwareAddr[:])
 			}
 
 			foo[id] = f
 
 			// l3 eligible
 			if prefix.Masked() != prefix {
-				l3[id] = hw[prefix.Addr()] // look up mac for address
+				//l3[id] = hw[prefix.Addr()] // look up mac for address
+				mac := hw[prefix.Addr()]
+				l3[id] = fu{hw: mac, ip: prefix.Addr()}
 			}
 		}
 	}

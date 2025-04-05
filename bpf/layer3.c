@@ -414,6 +414,13 @@ struct {
     __uint(max_entries, 4096);
 } redirect_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 4096);
+} redirect_map6 SEC(".maps");
+
 /**********************************************************************/
 
 static __always_inline
@@ -949,6 +956,10 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
 
+    if (!is_addr4(&(t.daddr))) {
+	return bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
+    }
+    
     //return bpf_redirect(vlaninfo->ifindex, 0);
     return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }
@@ -1083,6 +1094,10 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
+    if (!is_addr4(&(t.daddr))) {
+	return bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
+    }
+
     //return bpf_redirect(vlaninfo->ifindex, 0);
     return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }

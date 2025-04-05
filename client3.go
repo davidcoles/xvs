@@ -79,6 +79,8 @@ type Destination3Extended struct {
 
 type Config struct {
 	Router [6]byte
+	VLAN4  map[uint16]netip.Prefix
+	VLAN6  map[uint16]netip.Prefix
 }
 
 func New(interfaces ...string) (Client3, error) {
@@ -96,7 +98,6 @@ func (l *layer3) Info() (Info, error) {
 			}
 		}
 	*/
-	l.foo()
 	return Info{}, nil
 }
 
@@ -117,6 +118,8 @@ func (l *layer3) Config() (Config, error) {
 func (l *layer3) SetConfig(c Config) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
+
+	l.foo(c.VLAN4, c.VLAN6)
 
 	l.h_dest = c.Router
 	l.config()
