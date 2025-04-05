@@ -305,7 +305,11 @@ func (s *service3) recalc() {
 	var val bpf_destinations
 
 	for i, d := range dests {
-		ni, l3 := l.netinfo.info(d.Address)
+		ni, err := l.netinfo.info(d.Address)
+
+		if err != nil {
+			log.Fatal("FWD", err)
+		}
 
 		i2 := bpf_destinfo{
 			daddr:    as16(ni.daddr),
@@ -321,9 +325,9 @@ func (s *service3) recalc() {
 
 		val.destinfo[i+1] = i2
 
-		fmt.Println("FWD", ni, l3)
+		fmt.Println("FWD", ni)
 
-		if d.TunnelType == LAYER2 && l3 {
+		if d.TunnelType == LAYER2 && ni.l3 {
 			log.Fatal("LOOP", ni)
 		}
 	}
@@ -347,7 +351,12 @@ func (s *service3) recalc() {
 
 	for _, d := range dests {
 
-		ni, l3 := l.netinfo.info(d.Address)
+		ni, err := l.netinfo.info(d.Address)
+
+		if err != nil {
+			log.Fatal("NAT", err, ni)
+		}
+
 		index := l.natmap.get(v, d.Address)
 
 		var nat [16]byte
@@ -357,15 +366,9 @@ func (s *service3) recalc() {
 			nat = l.ns.nat6(index)
 		}
 
-		//var ext [16]byte
-		//if v.Is4() {
-		//	ext = as16(l.netinfo.l2info4[ni.vlanid].saddr)
-		//} else {
-		//	ext = as16(l.netinfo.l2info6[ni.vlanid].saddr)
-		//}
 		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
-		if d.TunnelType == LAYER2 && l3 {
+		if d.TunnelType == LAYER2 && ni.l3 {
 			log.Fatal("LOOP", ni)
 		}
 
@@ -385,7 +388,7 @@ func (s *service3) recalc() {
 			ext: ext,
 		}
 
-		fmt.Println("NAT", ni, l3, ni.gw, ext, vip)
+		fmt.Println("NAT", ni, ext, vip)
 
 		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 	}

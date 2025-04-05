@@ -29,7 +29,7 @@ type l3info = map[uint16]mac
 type vinfo = map[uint16]netip.Prefix
 type rtinfo = map[netip.Prefix]uint16
 
-func (n *netinfo) info(a netip.Addr) (ninfo, bool) {
+func (n *netinfo) info(a netip.Addr) (ninfo, error) {
 	if a.Is4() {
 		return n.info2(a, n.vinfo4, n.l2info4, n.l3info4)
 	}
@@ -44,13 +44,13 @@ func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
 	return n.l2info4[id].saddr
 }
 
-func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, bool) {
+func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, error) {
 	var vlan uint16
 	var bits int
 	var f fu
 	var h_dest mac
 	var l3 bool
-	var gw netip.Prefix
+	var gw netip.Addr
 
 	for id, p := range vinfo {
 		if p.Contains(a) && p.Bits() > bits {
@@ -64,7 +64,7 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 		f = l2info[vlan]
 		h_dest = n.hwinfo[a]
 	} else {
-		// not local, work out routing and send
+		// not local, work out routing
 
 		l3 = true
 		bits = 0
@@ -86,13 +86,19 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 			}
 		}
 
+		if vlan == 0 {
+			return ninfo{}, fmt.Errorf("Desination unreachable")
+		}
+
+		g, ok := vinfo[vlan]
+
+		if !ok {
+			return ninfo{}, fmt.Errorf("Desination unreachable")
+		}
+
+		gw = g.Addr()
 		f = l2info[vlan]
-		gw = vinfo[vlan]
-
-		fmt.Println("XXXXXXXXXX", l2info[vlan].saddr)
 	}
-
-	//fmt.Println("INFO", vlan, a, f.saddr, h_dest.String(), f.h_source.String(), f.ifindex, l3, gw)
 
 	return ninfo{
 		saddr:    f.saddr,
@@ -101,9 +107,9 @@ func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info)
 		daddr:    a,
 		h_dest:   h_dest,
 		vlanid:   vlan,
-		gw:       gw.Addr(),
-		//ext:      l2info[vlan].saddr,
-	}, l3
+		gw:       gw,
+		l3:       l3,
+	}, nil
 }
 
 type ninfo struct {
@@ -114,11 +120,11 @@ type ninfo struct {
 	vlanid   uint16
 	ifindex  uint32
 	gw       netip.Addr
-	//ext      netip.Addr
+	l3       bool
 }
 
 func (n ninfo) String() string {
-	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex)
+	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d %v:%s}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex, n.l3, n.gw)
 }
 
 func (n *netinfo) xxxxextx(id uint16, v6 bool) netip.Addr {
