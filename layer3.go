@@ -22,12 +22,13 @@ import (
 
 //go:embed bpf/layer3.o.gz
 var layer3_gz []byte
-var layer3_o []byte
 
-func init() {
-	if z, err := gzip.NewReader(bytes.NewReader(layer3_gz)); err == nil {
-		layer3_o, _ = ioutil.ReadAll(z)
+func layer3_o() ([]byte, error) {
+	z, err := gzip.NewReader(bytes.NewReader(layer3_gz))
+	if err != nil {
+		return nil, err
 	}
+	return ioutil.ReadAll(z)
 }
 
 const NONE TunnelType = bpf.T_NONE
@@ -38,7 +39,6 @@ const IPIP TunnelType = bpf.T_IPIP
 
 const F_STICKY uint8 = bpf.F_STICKY
 
-var VLANID uint32 = 100
 var VETH32 uint32 = 4095
 var ZERO uint32 = 0
 
@@ -98,10 +98,10 @@ type layer3 struct {
 	netinfo  *netinfo
 	netns    *newns
 
-	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
-	vips           xdp.Map
 	redirect_map   xdp.Map
+	destinations   xdp.Map
+	vips           xdp.Map
 }
 
 func (d *Destination3) is4() bool {
@@ -176,6 +176,24 @@ func hw6() map[netip.Addr]neighbor {
 }
 
 func (s *service3) set(service Service3, ds ...Destination3) error {
+	s.service = service
+
+	m := map[netip.Addr]Destination3{}
+
+	for _, d := range ds {
+		m[d.Address] = d
+		s.layer3.natmap.add(s.service.Address, d.Address)
+	}
+
+	s.dests = m
+	s.layer3.natmap.index()
+	s.layer3.clean()
+
+	s.recalc()
+	return nil
+}
+
+func (s *service3) set_old(service Service3, ds ...Destination3) error {
 	s.service = service
 
 	m := map[netip.Addr]Destination3{}
@@ -341,7 +359,8 @@ func (s *service3) recalc() {
 
 	/**********************************************************************/
 
-	l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
+	//l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
+	l.vips.UpdateElem(uP(&vip), uP(&ZERO), xdp.BPF_ANY) // value is not used
 
 	for _, d := range dests {
 
@@ -404,7 +423,13 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	var native bool
 
-	x, err := xdp.LoadBpfFile(layer3_o)
+	bpf_file, err := layer3_o()
+
+	if err != nil {
+		return nil, err
+	}
+
+	x, err := xdp.LoadBpfFile(bpf_file)
 
 	if err != nil {
 		return nil, err
@@ -471,10 +496,10 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		natmap:   natmap6{},
 		netinfo:  ni,
 
-		destinations:   destinations,
-		vips:           vips,
 		nat_to_vip_rip: nat_to_vip_rip,
 		redirect_map:   redirect_map,
+		destinations:   destinations,
+		vips:           vips,
 	}, nil
 }
 

@@ -138,6 +138,8 @@ func main() {
 		}
 	}
 
+	client.Info()
+
 	if *remove != 0 {
 
 		time.Sleep(time.Duration(*remove) * time.Second)
@@ -152,9 +154,9 @@ func main() {
 		}
 
 		client.Clean()
-	}
+		client.Info()
 
-	client.Info()
+	}
 
 	fmt.Println("OK")
 }
