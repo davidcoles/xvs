@@ -332,6 +332,18 @@ struct {
 
 /**********************************************************************/
 
+struct netns {
+    __u8 a[6];
+    __u8 b[6];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct netns);
+    __uint(max_entries, 1);
+} netns SEC(".maps");
+    
 struct vlaninfo {
     __u32 xsource_ipv4;
     struct in6_addr xsource_ipv6;
@@ -350,7 +362,7 @@ struct {
     __type(key, __u32); // "VLAN" ID
     __type(value, struct vlaninfo);
     __uint(max_entries, 4096);
-} vlan_info SEC(".maps");
+} xvlan_info SEC(".maps");
 
 
 struct {
@@ -616,6 +628,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
             return NOT_A_VIP;
 	
 	// source was a VIP - send to netns via veth interface
+	/*
         struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
 	
 	if (!vlaninfo)
@@ -624,6 +637,15 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
         // set correct MAC address for veth pair
         memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
 	memcpy(eth->h_source, vlaninfo->router, 6);
+	*/
+
+	struct netns *ns = bpf_map_lookup_elem(&netns, &ZERO);
+
+	if (!ns)
+	    return NOT_FOUND;
+	memcpy(eth->h_dest, ns->b, 6);
+	memcpy(eth->h_source, ns->a, 6);
+	
         return PROBE_REPLY;
     }
     
@@ -688,6 +710,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	    return NOT_A_VIP;
 	
 	// source was a VIP - send to netns via veth interface
+	/*
 	struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
 	
 	if (!vlaninfo)
@@ -695,7 +718,17 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	
 	// set correct MAC address for veth pair
 	memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
-	memcpy(eth->h_source, vlaninfo->router, 6);	    
+	memcpy(eth->h_source, vlaninfo->router, 6);
+	*/
+
+	struct netns *ns = bpf_map_lookup_elem(&netns, &ZERO);
+	
+        if (!ns)
+            return NOT_FOUND;
+	
+        memcpy(eth->h_dest, ns->b, 6);
+        memcpy(eth->h_source, ns->a, 6);
+	
 	return PROBE_REPLY;
     }
 
@@ -1147,10 +1180,9 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
-    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-    
-    if (!vlaninfo)
-	return XDP_DROP;    
+    //struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+    //if (!vlaninfo)
+    //	return XDP_DROP;    
 
     
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
@@ -1238,10 +1270,9 @@ int xdp_reply_v4(struct xdp_md *ctx)
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
-    struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-    
-    if (!vlaninfo)
-	return XDP_DROP;    
+    //struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
+    //if (!vlaninfo)
+    //	return XDP_DROP;    
 
     //ip->saddr = match->addr.addr4.addr;
     ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr

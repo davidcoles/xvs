@@ -40,6 +40,7 @@ const F_STICKY uint8 = bpf.F_STICKY
 
 var VLANID uint32 = 100
 var VETH32 uint32 = 4095
+var ZERO uint32 = 0
 
 type bpf_destinfo struct {
 	daddr    addr6
@@ -73,6 +74,11 @@ type bpf_vlaninfo struct {
 	router      [6]byte
 }
 
+type bpf_netns struct {
+	a [6]byte
+	b [6]byte
+}
+
 type bpf_vip_rip struct {
 	destinfo bpf_destinfo
 	vip      [16]byte
@@ -104,8 +110,8 @@ type layer3 struct {
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
 	vips           xdp.Map
-	vlan_info      xdp.Map
-	redirect_map   xdp.Map
+	//vlan_info      xdp.Map
+	redirect_map xdp.Map
 }
 
 func (d *Destination3) is4() bool {
@@ -355,16 +361,7 @@ func (s *service3) recalc() {
 			log.Fatal("NAT", err, ni)
 		}
 
-		//index := l.natmap.get(v, d.Address)
-		//var nat [16]byte
-		//if v.Is4() {
-		//	nat = l.netns.nat4(index)
-		//} else {
-		//	nat = l.netns.nat6(index)
-		//}
-
 		nat := as16(l.nat(v, d.Address))
-
 		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
 		if d.TunnelType == NONE && ni.l3 {
@@ -463,13 +460,21 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	vlan_info, err := x.FindMap("vlan_info", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
+	/*
+		vlan_info, err := x.FindMap("vlan_info", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
+
+		if err != nil {
+			return nil, err
+		}
+	*/
+
+	ns, err := nat3(x, "xdp_request", "xdp_reply") // checks
 
 	if err != nil {
 		return nil, err
 	}
 
-	ns, err := nat3(x, "xdp_request", "xdp_reply") // checks
+	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
 
 	if err != nil {
 		return nil, err
@@ -479,21 +484,28 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	internal := bpf_vlaninfo{
-		source_ipv4: ns.ipv4(),
-		source_ipv6: ns.ipv6(),
-		ifindex:     uint32(ns.a.idx),
-		hwaddr:      ns.b.mac,
-		router:      ns.a.mac,
+	nss := bpf_netns{
+		a: ns.a.mac,
+		b: ns.b.mac,
 	}
 
-	fmt.Println("VETH", internal.source_ipv4, internal.source_ipv6)
+	fmt.Println("VETH", nss.a, nss.b)
 
-	vlan_info.UpdateElem(uP(&VETH32), uP(&internal), xdp.BPF_ANY)
+	netns.UpdateElem(uP(&ZERO), uP(&nss), xdp.BPF_ANY)
 
-	/**********************************************************************/
+	/*
+		internal := bpf_vlaninfo{
+			source_ipv4: ns.ipv4(),
+			source_ipv6: ns.ipv6(),
+			ifindex:     uint32(ns.a.idx),
+			hwaddr:      ns.b.mac,
+			router:      ns.a.mac,
+		}
 
-	//redirect_map.UpdateElem(uP(&VLANID), uP(&nic), xdp.BPF_ANY)
+		fmt.Println("VETH", internal.source_ipv4, internal.source_ipv6)
+
+		vlan_info.UpdateElem(uP(&VETH32), uP(&internal), xdp.BPF_ANY)
+	*/
 
 	var ns_nic uint32 = uint32(ns.a.idx)
 
@@ -509,8 +521,8 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		destinations:   destinations,
 		vips:           vips,
 		nat_to_vip_rip: nat_to_vip_rip,
-		vlan_info:      vlan_info,
-		redirect_map:   redirect_map,
+		//vlan_info:      vlan_info,
+		redirect_map: redirect_map,
 	}, nil
 }
 

@@ -171,12 +171,6 @@ func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
 		}
 	}
 
-	n.config_(vlan4, vlan6, rtinfo)
-	return nil
-}
-
-func (n *netinfo) config_(vlan4, vlan6 vinfo, rtinfo rtinfo) {
-
 	hw := n.hw()
 	n.hwinfo = hw
 
@@ -195,6 +189,7 @@ func (n *netinfo) config_(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 	n.l3info4 = l3info4
 	n.l3info6 = l3info6
 
+	return nil
 }
 
 func (n *netinfo) config2(vlan4 map[uint16]netip.Prefix, hw map[netip.Addr]mac) (l2info, l3info) {
