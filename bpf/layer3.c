@@ -213,9 +213,9 @@ struct addr4 {
     __be32 addr;
 };
 
-struct addr6 {
-    __u8 addr[16];
-};
+//struct addr6 {
+//    __u8 addr[16];
+//};
 
 struct addr {
     union {
@@ -233,20 +233,6 @@ struct fourtuple {
     __be16 dport;
 };
 typedef struct fourtuple fourtuple_t;
-
-/*
-struct tunnel {
-    addr_t daddr;
-    addr_t saddr;
-    __u16 dport;
-    __u16 sport;
-    __u16 vlanid;
-    __u8 type;
-    __u8 flags;
-    __u8 h_dest[6];
-    __u8 h_source[6];
-};
-*/
 
 // will replace tunnel type
 struct destinfo {
@@ -344,27 +330,6 @@ struct {
     __uint(max_entries, 1);
 } netns SEC(".maps");
     
-struct vlaninfo {
-    __u32 xsource_ipv4;
-    struct in6_addr xsource_ipv6;
-    __u32 xifindex;
-    __u8 hwaddr[6]; // interface's MAC - only used fo NETNS
-    __u8 router[6]; // router's MAC (peer's address in the case of veth (4095))
-};
-
-struct nat_info {
-    __u16 vlanid;
-    __u8 hwaddr[6]; // L2 MAC address of backend
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32); // "VLAN" ID
-    __type(value, struct vlaninfo);
-    __uint(max_entries, 4096);
-} xvlan_info SEC(".maps");
-
-
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t); // nat
@@ -407,8 +372,8 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u8[16]);
-    __type(value, __u32); // VLAN ID
+    __type(key, addr_t);
+    __type(value, __u32); // value no longer used
     __uint(max_entries, 4096);
 } vips SEC(".maps");
 
@@ -575,7 +540,8 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (!index)
 	return NOT_FOUND;
 
-    struct destinfo d = service->destinfo[index];
+    //struct destinfo d = service->destinfo[index];
+    /*
     t->daddr = d.daddr;
     t->saddr = d.saddr;
     t->dport = d.dport;
@@ -585,8 +551,12 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     t->vlanid = d.vlanid;
     t->method = d.method;
     t->flags = d.flags;
-   
-    __u8 type = d.method;
+    */
+
+    *t = service->destinfo[index];
+    t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
+    enum tunnel_type type = t->method;
+
     
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
@@ -594,9 +564,9 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     switch (type) {
     case T_FOU:  return LAYER3_FOU;
     case T_GRE:  return LAYER3_GRE;
-    case T_IPIP: return LAYER3_IPIP;
     case T_GUE:  return LAYER3_GUE;
-    case T_LAYER2:  return LAYER2_DSR;
+    case T_IPIP: return LAYER3_IPIP;
+    case T_NONE: return LAYER2_DSR;
     }
     
    return NOT_FOUND;
@@ -628,21 +598,11 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
             return NOT_A_VIP;
 	
 	// source was a VIP - send to netns via veth interface
-	/*
-        struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-	
-	if (!vlaninfo)
-            return NOT_FOUND;
-	
-        // set correct MAC address for veth pair
-        memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
-	memcpy(eth->h_source, vlaninfo->router, 6);
-	*/
-
 	struct netns *ns = bpf_map_lookup_elem(&netns, &ZERO);
 
-	if (!ns)
+	if (!ns || nulmac(ns->a) || nulmac(ns->b))
 	    return NOT_FOUND;
+	
 	memcpy(eth->h_dest, ns->b, 6);
 	memcpy(eth->h_source, ns->a, 6);
 	
@@ -710,20 +670,9 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	    return NOT_A_VIP;
 	
 	// source was a VIP - send to netns via veth interface
-	/*
-	struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-	
-	if (!vlaninfo)
-	    return NOT_FOUND;
-	
-	// set correct MAC address for veth pair
-	memcpy(eth->h_dest, vlaninfo->hwaddr, 6);
-	memcpy(eth->h_source, vlaninfo->router, 6);
-	*/
-
 	struct netns *ns = bpf_map_lookup_elem(&netns, &ZERO);
 	
-        if (!ns)
+        if (!ns || nulmac(ns->a) || nulmac(ns->b))
             return NOT_FOUND;
 	
         memcpy(eth->h_dest, ns->b, 6);
@@ -962,10 +911,10 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     switch (t.method) {
     case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_IPIP: action = send_xinx(ctx, &t, 1); break;
     case T_GRE:  action = send_gre(ctx, &t, 1); break;
     case T_GUE:  action = send_gue(ctx, &t, 1); break;
-    case T_LAYER2:  action = send_l2(ctx, &t); break;
+    case T_IPIP: action = send_xinx(ctx, &t, 1); break;
+    case T_NONE: action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)
@@ -1055,7 +1004,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
     case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
     case T_IPIP: overhead = sizeof(struct iphdr);  break;
-    case T_LAYER2: break;
+    case T_NONE: break;
     }
     
 
@@ -1095,11 +1044,11 @@ int xdp_request_v4(struct xdp_md *ctx)
     int action = XDP_DROP;
     
     switch (t.method) {
-    case T_FOU:    action = send_fou(ctx, &t); break;
-    case T_IPIP:   action = send_xinx(ctx, &t, is_ipv6); break;
-    case T_GRE:	   action = send_gre(ctx, &t, is_ipv6); break;
-    case T_GUE:	   action = send_gue(ctx, &t, is_ipv6); break;
-    case T_LAYER2: action = send_l2(ctx, &t); break;
+    case T_FOU:  action = send_fou(ctx, &t); break;
+    case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
+    case T_GUE:	 action = send_gue(ctx, &t, is_ipv6); break;
+    case T_IPIP: action = send_xinx(ctx, &t, is_ipv6); break;
+    case T_NONE: action = send_l2(ctx, &t); break;
     }
 
     if (action != XDP_TX)
@@ -1180,16 +1129,9 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
-    //struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-    //if (!vlaninfo)
-    //	return XDP_DROP;    
-
-    
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     
-    //ip6->ip6_src = match->addr.addr6;
     ip6->ip6_src = match->nat.addr6; // reply comes from the NAT addr
-    //ip6->ip6_dst = vlaninfo->source_ipv6;
     ip6->ip6_dst = match->src.addr6; // to the internal NETNS address
     tcp->dest = match->port;
 
@@ -1270,13 +1212,7 @@ int xdp_reply_v4(struct xdp_md *ctx)
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
-    //struct vlaninfo *vlaninfo = bpf_map_lookup_elem(&vlan_info, &NETNS);
-    //if (!vlaninfo)
-    //	return XDP_DROP;    
-
-    //ip->saddr = match->addr.addr4.addr;
     ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
-    //ip->daddr = vlaninfo->source_ipv4;
     ip->daddr = match->src.addr4.addr; // to the internal NETNS address
     tcp->dest = match->port;
 

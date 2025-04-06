@@ -30,7 +30,7 @@ func init() {
 	}
 }
 
-const NONE TunnelType = bpf.T_LAYER2
+const NONE TunnelType = bpf.T_NONE
 const FOU TunnelType = bpf.T_FOU
 const GRE TunnelType = bpf.T_GRE
 const GUE TunnelType = bpf.T_GUE
@@ -43,8 +43,8 @@ var VETH32 uint32 = 4095
 var ZERO uint32 = 0
 
 type bpf_destinfo struct {
-	daddr    addr6
-	saddr    addr6
+	daddr    addr16
+	saddr    addr16
 	dport    uint16
 	sport    uint16
 	vlanid   uint16
@@ -61,17 +61,9 @@ type bpf_destinations struct {
 }
 
 type bpf_servicekey struct {
-	addr  addr6
+	addr  addr16
 	port  uint16
 	proto uint16
-}
-
-type bpf_vlaninfo struct {
-	source_ipv4 [4]byte
-	source_ipv6 [16]byte
-	ifindex     uint32
-	hwaddr      [6]byte
-	router      [6]byte
 }
 
 type bpf_netns struct {
@@ -81,12 +73,11 @@ type bpf_netns struct {
 
 type bpf_vip_rip struct {
 	destinfo bpf_destinfo
-	vip      [16]byte
-	ext      [16]byte
+	vip      addr16
+	ext      addr16
 }
 
-type addr4 = [4]byte
-type addr6 = [16]byte
+type addr16 [16]byte
 
 type threetuple struct {
 	address  netip.Addr
@@ -110,15 +101,14 @@ type layer3 struct {
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
 	vips           xdp.Map
-	//vlan_info      xdp.Map
-	redirect_map xdp.Map
+	redirect_map   xdp.Map
 }
 
 func (d *Destination3) is4() bool {
 	return d.Address.Is4()
 }
 
-func (d *Destination3) as16() (r addr6) {
+func (d *Destination3) as16() (r addr16) {
 	if d.is4() {
 		ip := d.Address.As4()
 		copy(r[12:], ip[:])
@@ -390,17 +380,7 @@ func (s *service3) recalc() {
 	}
 }
 
-func as16(a netip.Addr) (r [16]byte) {
-	if a.Is6() {
-		return a.As16()
-	}
-
-	ip := a.As4()
-	copy(r[12:], ip[:])
-	return
-}
-
-func _as16(a netip.Addr) (r [16]byte) {
+func as16(a netip.Addr) (r addr16) {
 	if a.Is6() {
 		return a.As16()
 	}
@@ -460,21 +440,13 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	/*
-		vlan_info, err := x.FindMap("vlan_info", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
-
-		if err != nil {
-			return nil, err
-		}
-	*/
-
-	ns, err := nat3(x, "xdp_request", "xdp_reply") // checks
+	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
 
 	if err != nil {
 		return nil, err
 	}
 
-	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
+	ns, err := nat3(x, "xdp_request", "xdp_reply") // checks
 
 	if err != nil {
 		return nil, err
@@ -484,28 +456,9 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	nss := bpf_netns{
-		a: ns.a.mac,
-		b: ns.b.mac,
-	}
+	fmt.Println("VETH", ns.a.mac.String(), ns.b.mac.String())
 
-	fmt.Println("VETH", nss.a, nss.b)
-
-	netns.UpdateElem(uP(&ZERO), uP(&nss), xdp.BPF_ANY)
-
-	/*
-		internal := bpf_vlaninfo{
-			source_ipv4: ns.ipv4(),
-			source_ipv6: ns.ipv6(),
-			ifindex:     uint32(ns.a.idx),
-			hwaddr:      ns.b.mac,
-			router:      ns.a.mac,
-		}
-
-		fmt.Println("VETH", internal.source_ipv4, internal.source_ipv6)
-
-		vlan_info.UpdateElem(uP(&VETH32), uP(&internal), xdp.BPF_ANY)
-	*/
+	netns.UpdateElem(uP(&ZERO), uP(&(bpf_netns{a: ns.a.mac, b: ns.b.mac})), xdp.BPF_ANY)
 
 	var ns_nic uint32 = uint32(ns.a.idx)
 
@@ -521,8 +474,7 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		destinations:   destinations,
 		vips:           vips,
 		nat_to_vip_rip: nat_to_vip_rip,
-		//vlan_info:      vlan_info,
-		redirect_map: redirect_map,
+		redirect_map:   redirect_map,
 	}, nil
 }
 
@@ -538,9 +490,9 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 	}
 
 	for i, p := range vlan6 {
-		x := vlans[i]
-		x[1] = p
-		vlans[i] = x
+		v := vlans[i]
+		v[1] = p
+		vlans[i] = v
 	}
 
 	//l.netinfo.config(vlan4, vlan6, route)
@@ -567,13 +519,13 @@ func (l *layer3) config() {
 
 func clean_map(m xdp.Map, a map[netip.Addr]bool) {
 
-	b := map[[16]byte]bool{}
+	b := map[addr16]bool{}
 
 	for k, _ := range a {
 		b[as16(k)] = true
 	}
 
-	var key, next [16]byte
+	var key, next addr16
 
 	for r := 0; r == 0; key = next {
 		r = m.GetNextKey(uP(&key), uP(&next))
