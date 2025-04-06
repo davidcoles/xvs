@@ -78,9 +78,8 @@ type Destination3Extended struct {
 }
 
 type Config struct {
-	Router [6]byte
-	VLAN4  map[uint16]netip.Prefix
-	VLAN6  map[uint16]netip.Prefix
+	VLAN4 map[uint16]netip.Prefix
+	VLAN6 map[uint16]netip.Prefix
 }
 
 func New(interfaces ...string) (Client3, error) {

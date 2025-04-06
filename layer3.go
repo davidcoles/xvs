@@ -427,45 +427,53 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	nic := uint32(iface.Index)
 
-	var prefix4 netip.Prefix
-	var prefix6 netip.Prefix
+	/*
+		var prefix4 netip.Prefix
+		var prefix6 netip.Prefix
 
-	addrs, _ := iface.Addrs()
-	for _, a := range addrs {
-		prefix := netip.MustParsePrefix(a.String())
-		addr := prefix.Addr()
+		addrs, _ := iface.Addrs()
+		for _, a := range addrs {
+			prefix := netip.MustParsePrefix(a.String())
+			addr := prefix.Addr()
 
-		if !addr.IsGlobalUnicast() {
-			continue
+			if !addr.IsGlobalUnicast() {
+				continue
+			}
+
+			if addr.Is4() {
+				prefix4 = prefix
+			} else {
+				prefix6 = prefix
+			}
 		}
 
-		if addr.Is4() {
-			prefix4 = prefix
-		} else {
-			prefix6 = prefix
-		}
-	}
+		fmt.Println(prefix4, prefix6)
+	*/
 
-	fmt.Println(prefix4, prefix6)
+	ni := &netinfo{}
 
 	//vlan4 := map[uint16]netip.Prefix{uint16(VLANID): prefix4}
 	//vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
 	//vlan4 = map[uint16]netip.Prefix{uint16(VLANID): netip.MustParsePrefix("10.73.35.254/24")}
 
-	vlan4 := map[uint16]netip.Prefix{}
-	vlan6 := map[uint16]netip.Prefix{}
-	vlan4 = map[uint16]netip.Prefix{}
+	/*
+			vlan4 := map[uint16]netip.Prefix{}
+			vlan6 := map[uint16]netip.Prefix{}
+			vlan4 = map[uint16]netip.Prefix{}
 
-	ni := &netinfo{}
-	ni.config(vlan4, vlan6, nil)
+			ni.config_(vlan4, vlan6, nil)
 
-	saddr4 := prefix4.Addr().As4()
-	saddr6 := prefix6.Addr().As16()
+		saddr4 := prefix4.Addr().As4()
+		saddr6 := prefix6.Addr().As16()
 
-	var h_source mac
-	copy(h_source[:], iface.HardwareAddr[:])
+	*/
 
-	fmt.Println("MAC", h_source.String())
+	/*
+		var h_source mac
+		copy(h_source[:], iface.HardwareAddr[:])
+
+		fmt.Println("MAC", h_source.String())
+	*/
 
 	var native bool
 
@@ -521,17 +529,19 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	vlaninfo := bpf_vlaninfo{
-		source_ipv4: saddr4,
-		source_ipv6: saddr6,
-		ifindex:     nic,
-		hwaddr:      h_source,
-		router:      h_dest,
-	}
+	/*
+		vlaninfo := bpf_vlaninfo{
+			source_ipv4: saddr4,
+			source_ipv6: saddr6,
+			ifindex:     nic,
+			hwaddr:      h_source,
+			router:      h_dest,
+		}
 
-	fmt.Println("VLAN", vlaninfo.source_ipv4, vlaninfo.source_ipv6)
+		fmt.Println("VLAN", vlaninfo.source_ipv4, vlaninfo.source_ipv6)
 
-	vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
+		vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
+	*/
 
 	internal := bpf_vlaninfo{
 		source_ipv4: ns.ipv4(),
@@ -571,10 +581,9 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 
 	route := map[netip.Prefix]uint16{}
-
-	fmt.Println("FOO", vlan4, vlan6)
-
 	vlans := map[uint16][2]netip.Prefix{}
+
+	// TODO - check that v4 and v6 both map to the same interface
 
 	for i, p := range vlan4 {
 		vlans[i] = [2]netip.Prefix{p}
@@ -587,7 +596,7 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 	}
 
 	//l.netinfo.config(vlan4, vlan6, route)
-	err := l.netinfo.config_(vlans, route)
+	err := l.netinfo.config(vlans, route)
 
 	if err != nil {
 		return err
@@ -603,18 +612,6 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 }
 
 func (l *layer3) config() {
-	/*
-		vlaninfo := bpf_vlaninfo{
-			source_ipv4: l.saddr4,
-			source_ipv6: l.saddr6,
-			ifindex:     l.nic,
-			hwaddr:      l.h_source,
-			router:      l.h_dest,
-		}
-
-		l.vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
-	*/
-
 	for _, s := range l.services {
 		s.recalc()
 	}

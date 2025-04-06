@@ -139,7 +139,7 @@ func (n ninfo) String() string {
 
 type vinfo2 = map[uint16][2]netip.Prefix
 
-func (n *netinfo) config_(vlans vinfo2, rtinfo rtinfo) error {
+func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
 
 	vlan4 := vinfo{}
 	vlan6 := vinfo{}
@@ -171,11 +171,11 @@ func (n *netinfo) config_(vlans vinfo2, rtinfo rtinfo) error {
 		}
 	}
 
-	n.config(vlan4, vlan6, rtinfo)
+	n.config_(vlan4, vlan6, rtinfo)
 	return nil
 }
 
-func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
+func (n *netinfo) config_(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 
 	hw := n.hw()
 	n.hwinfo = hw

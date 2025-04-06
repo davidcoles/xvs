@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -38,12 +37,8 @@ func main() {
 	args := flag.Args()
 
 	iface := args[0]
-	dmac, _ := net.ParseMAC(args[1])
-	vip := args[2]
-	rips := args[3:]
-
-	var h_dest [6]byte
-	copy(h_dest[:], dmac[:])
+	vip := args[1]
+	rips := args[2:]
 
 	tun := xvs.NONE
 
@@ -83,7 +78,7 @@ func main() {
 		}
 	}
 
-	client.SetConfig(xvs.Config{Router: h_dest, VLAN4: vlan4, VLAN6: vlan6})
+	client.SetConfig(xvs.Config{VLAN4: vlan4, VLAN6: vlan6})
 
 	vips = append(vips, vip)
 
