@@ -137,6 +137,44 @@ func (n ninfo) String() string {
 	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d %v:%s}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex, n.l3, n.gw)
 }
 
+type vinfo2 = map[uint16][2]netip.Prefix
+
+func (n *netinfo) config_(vlans vinfo2, rtinfo rtinfo) error {
+
+	vlan4 := vinfo{}
+	vlan6 := vinfo{}
+
+	for id, pair := range vlans {
+		a := pair[0]
+		b := pair[1]
+
+		if a.IsValid() && b.IsValid() {
+			if a.Addr().Is6() == b.Addr().Is6() {
+				return fmt.Errorf("Can't have two addresses of the same family")
+			}
+		}
+
+		if a.IsValid() {
+			if a.Addr().Is6() {
+				vlan6[id] = a
+			} else {
+				vlan4[id] = a
+			}
+		}
+
+		if b.IsValid() {
+			if b.Addr().Is6() {
+				vlan6[id] = b
+			} else {
+				vlan4[id] = b
+			}
+		}
+	}
+
+	n.config(vlan4, vlan6, rtinfo)
+	return nil
+}
+
 func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) {
 
 	hw := n.hw()

@@ -45,11 +45,11 @@ func main() {
 	var h_dest [6]byte
 	copy(h_dest[:], dmac[:])
 
-	tun := xvs.LAYER2
+	tun := xvs.NONE
 
 	switch *tunnel {
 	case "none":
-		tun = xvs.LAYER2
+		tun = xvs.NONE
 	case "fou":
 		tun = xvs.FOU
 	case "gre":

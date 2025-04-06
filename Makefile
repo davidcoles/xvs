@@ -13,7 +13,7 @@ cmd/balancer:
 
 cmd/balancer3:
 	cd bpf && $(MAKE) libbpf/bpf/libbpf.a bpf.o.gz
-	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -o balancer3 balancer3.go
+	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -race -o balancer3 balancer3.go
 
 clean:
 	rm -f cmd/balancer

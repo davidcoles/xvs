@@ -30,7 +30,7 @@ func init() {
 	}
 }
 
-const LAYER2 TunnelType = bpf.T_LAYER2
+const NONE TunnelType = bpf.T_LAYER2
 const FOU TunnelType = bpf.T_FOU
 const GRE TunnelType = bpf.T_GRE
 const GUE TunnelType = bpf.T_GUE
@@ -95,24 +95,17 @@ type service3 struct {
 }
 
 type layer3 struct {
-	vlanid         uint16
-	h_dest         mac
-	h_source       mac
+	services map[threetuple]*service3
+	mutex    sync.Mutex
+	natmap   natmap6
+	netinfo  *netinfo
+	netns    *newns
+
 	destinations   xdp.Map
 	nat_to_vip_rip xdp.Map
 	vips           xdp.Map
 	vlan_info      xdp.Map
 	redirect_map   xdp.Map
-	saddr4         [4]byte
-	saddr6         [16]byte
-	ns             *newns
-	natmap         natmap6
-	mutex          sync.Mutex
-	netinfo        *netinfo
-
-	nic uint32
-
-	services map[threetuple]*service3
 }
 
 func (d *Destination3) is4() bool {
@@ -293,7 +286,7 @@ func (s *service3) destinations() (r []Destination3Extended, e error) {
 }
 
 func (l *layer3) nat(v, r netip.Addr) netip.Addr {
-	return l.ns.addr(l.natmap.get(v, r), v.Is6())
+	return l.netns.addr(l.natmap.get(v, r), v.Is6())
 }
 
 func (s *service3) recalc() {
@@ -332,7 +325,7 @@ func (s *service3) recalc() {
 
 		fmt.Println("FWD", ni)
 
-		if d.TunnelType == LAYER2 && ni.l3 {
+		if d.TunnelType == NONE && ni.l3 {
 			log.Fatal("LOOP", ni)
 		}
 	}
@@ -365,16 +358,16 @@ func (s *service3) recalc() {
 		//index := l.natmap.get(v, d.Address)
 		//var nat [16]byte
 		//if v.Is4() {
-		//	nat = l.ns.nat4(index)
+		//	nat = l.netns.nat4(index)
 		//} else {
-		//	nat = l.ns.nat6(index)
+		//	nat = l.netns.nat6(index)
 		//}
 
 		nat := as16(l.nat(v, d.Address))
 
 		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
 
-		if d.TunnelType == LAYER2 && ni.l3 {
+		if d.TunnelType == NONE && ni.l3 {
 			log.Fatal("LOOP", ni)
 		}
 
@@ -561,32 +554,44 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
-		vlanid:   uint16(VLANID),
-		h_dest:   h_dest,
-		h_source: h_source,
-		saddr4:   saddr4,
-		saddr6:   saddr6,
+
 		services: map[threetuple]*service3{},
+		netns:    ns,
+		natmap:   natmap6{},
+		netinfo:  ni,
 
 		destinations:   destinations,
 		vips:           vips,
 		nat_to_vip_rip: nat_to_vip_rip,
 		vlan_info:      vlan_info,
 		redirect_map:   redirect_map,
-		nic:            nic,
-		ns:             ns,
-		natmap:         natmap6{},
-		netinfo:        ni,
 	}, nil
 }
 
-func (l *layer3) foo(vlan4, vlan6 map[uint16]netip.Prefix) {
+func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 
 	route := map[netip.Prefix]uint16{}
 
 	fmt.Println("FOO", vlan4, vlan6)
 
-	l.netinfo.config(vlan4, vlan6, route)
+	vlans := map[uint16][2]netip.Prefix{}
+
+	for i, p := range vlan4 {
+		vlans[i] = [2]netip.Prefix{p}
+	}
+
+	for i, p := range vlan6 {
+		x := vlans[i]
+		x[1] = p
+		vlans[i] = x
+	}
+
+	//l.netinfo.config(vlan4, vlan6, route)
+	err := l.netinfo.config_(vlans, route)
+
+	if err != nil {
+		return err
+	}
 
 	for i := uint32(1); i < 4095; i++ {
 		f := l.netinfo.l2info4[uint16(i)]
@@ -594,19 +599,21 @@ func (l *layer3) foo(vlan4, vlan6 map[uint16]netip.Prefix) {
 		l.redirect_map.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 	}
 
-	return
+	return nil
 }
 
 func (l *layer3) config() {
-	vlaninfo := bpf_vlaninfo{
-		source_ipv4: l.saddr4,
-		source_ipv6: l.saddr6,
-		ifindex:     l.nic,
-		hwaddr:      l.h_source,
-		router:      l.h_dest,
-	}
+	/*
+		vlaninfo := bpf_vlaninfo{
+			source_ipv4: l.saddr4,
+			source_ipv6: l.saddr6,
+			ifindex:     l.nic,
+			hwaddr:      l.h_source,
+			router:      l.h_dest,
+		}
 
-	l.vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
+		l.vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
+	*/
 
 	for _, s := range l.services {
 		s.recalc()
@@ -652,7 +659,7 @@ func (l *layer3) clean() {
 	clean_map(l.vips, vips)
 
 	for k, v := range l.natmap.all() {
-		nat := l.ns.addr(v, k[0].Is6()) // k[0] is the vip
+		nat := l.netns.addr(v, k[0].Is6()) // k[0] is the vip
 		nats[nat] = true
 	}
 

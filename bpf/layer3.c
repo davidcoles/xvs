@@ -336,7 +336,7 @@ struct vlaninfo {
     __u32 xsource_ipv4;
     struct in6_addr xsource_ipv6;
     __u32 xifindex;
-    __u8 hwaddr[6]; // interface's MAC
+    __u8 hwaddr[6]; // interface's MAC - only used fo NETNS
     __u8 router[6]; // router's MAC (peer's address in the case of veth (4095))
 };
 
