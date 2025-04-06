@@ -421,59 +421,9 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	if len(iface.HardwareAddr) != 6 {
-		return nil, fmt.Errorf("Nope")
-	}
-
 	nic := uint32(iface.Index)
 
-	/*
-		var prefix4 netip.Prefix
-		var prefix6 netip.Prefix
-
-		addrs, _ := iface.Addrs()
-		for _, a := range addrs {
-			prefix := netip.MustParsePrefix(a.String())
-			addr := prefix.Addr()
-
-			if !addr.IsGlobalUnicast() {
-				continue
-			}
-
-			if addr.Is4() {
-				prefix4 = prefix
-			} else {
-				prefix6 = prefix
-			}
-		}
-
-		fmt.Println(prefix4, prefix6)
-	*/
-
 	ni := &netinfo{}
-
-	//vlan4 := map[uint16]netip.Prefix{uint16(VLANID): prefix4}
-	//vlan6 := map[uint16]netip.Prefix{uint16(VLANID): prefix6}
-	//vlan4 = map[uint16]netip.Prefix{uint16(VLANID): netip.MustParsePrefix("10.73.35.254/24")}
-
-	/*
-			vlan4 := map[uint16]netip.Prefix{}
-			vlan6 := map[uint16]netip.Prefix{}
-			vlan4 = map[uint16]netip.Prefix{}
-
-			ni.config_(vlan4, vlan6, nil)
-
-		saddr4 := prefix4.Addr().As4()
-		saddr6 := prefix6.Addr().As16()
-
-	*/
-
-	/*
-		var h_source mac
-		copy(h_source[:], iface.HardwareAddr[:])
-
-		fmt.Println("MAC", h_source.String())
-	*/
 
 	var native bool
 
@@ -529,20 +479,6 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 		return nil, err
 	}
 
-	/*
-		vlaninfo := bpf_vlaninfo{
-			source_ipv4: saddr4,
-			source_ipv6: saddr6,
-			ifindex:     nic,
-			hwaddr:      h_source,
-			router:      h_dest,
-		}
-
-		fmt.Println("VLAN", vlaninfo.source_ipv4, vlaninfo.source_ipv6)
-
-		vlan_info.UpdateElem(uP(&VLANID), uP(&vlaninfo), xdp.BPF_ANY)
-	*/
-
 	internal := bpf_vlaninfo{
 		source_ipv4: ns.ipv4(),
 		source_ipv6: ns.ipv6(),
@@ -557,7 +493,7 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 
 	/**********************************************************************/
 
-	redirect_map.UpdateElem(uP(&VLANID), uP(&nic), xdp.BPF_ANY)
+	//redirect_map.UpdateElem(uP(&VLANID), uP(&nic), xdp.BPF_ANY)
 
 	var ns_nic uint32 = uint32(ns.a.idx)
 
