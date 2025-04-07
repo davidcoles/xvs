@@ -20,25 +20,25 @@ func (i *list) Set(value string) error { *i = append(*i, value); return nil }
 func main() {
 	var vips list
 	var serv list
-	var vlan list
 
 	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
 	sticky := flag.Bool("s", false, "Sticky")
 	tunnel := flag.String("t", "none", "Tunnel type none|fou|gre|gue|ipip")
 	tport4 := flag.Uint("4", 9999, "Port to use for FOU/GUE on IPv4")
 	tport6 := flag.Uint("6", 6666, "Port to use for FOU/GUE on IPv6")
+	extra := flag.String("V", "", "Extra VLAN")
 
 	flag.Var(&vips, "v", "extra vips")
 	flag.Var(&serv, "p", "ports to add to vips")
-	flag.Var(&vlan, "V", "VLANs")
 
 	flag.Parse()
 
 	args := flag.Args()
 
-	iface := args[0]
-	vip := args[1]
-	rips := args[2:]
+	vlan := args[0]
+	iface := args[1]
+	vip := args[2]
+	rips := args[3:]
 
 	tun := xvs.NONE
 
@@ -65,20 +65,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	vlan4 := map[uint16]netip.Prefix{}
-	vlan6 := map[uint16]netip.Prefix{}
+	pair := [2]netip.Prefix{netip.MustParsePrefix(vlan)}
 
-	for _, p := range vlan {
-		prefix := netip.MustParsePrefix(p)
-		fmt.Println("BAL", prefix)
-		if prefix.Addr().Is6() {
-			vlan6[uint16(1)] = prefix
-		} else {
-			vlan4[uint16(1)] = prefix
-		}
+	if *extra != "" {
+		pair[1] = netip.MustParsePrefix(*extra)
 	}
 
-	client.SetConfig(xvs.Config{VLAN4: vlan4, VLAN6: vlan6})
+	vlans := map[uint16][2]netip.Prefix{1: pair}
+
+	client.SetConfig(xvs.Config{VLANs: vlans})
 
 	vips = append(vips, vip)
 

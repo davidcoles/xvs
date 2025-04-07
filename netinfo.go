@@ -1,9 +1,12 @@
 package xvs
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"net/netip"
+	"os/exec"
+	"regexp"
 )
 
 type netinfo struct {
@@ -236,7 +239,7 @@ func (n *netinfo) hw() map[netip.Addr]mac {
 		r[netip.AddrFrom4(a)] = m
 	}
 
-	for a, n := range hw6() {
+	for a, n := range n.hw6() {
 		r[a] = n.mac
 	}
 
@@ -294,4 +297,56 @@ func (n *netinfo) bestInterface(prefix netip.Prefix) (*net.Interface, netip.Addr
 	}
 
 	return &best, foo
+}
+
+func (n *netinfo) hw6() map[netip.Addr]neighbor {
+
+	hw6 := map[netip.Addr]neighbor{}
+
+	cmd := exec.Command("/bin/sh", "-c", "ip -6 neighbor show")
+	_, _ = cmd.StdinPipe()
+	//stderr, _ := cmd.StderrPipe()
+	stdout, _ := cmd.StdoutPipe()
+
+	re := regexp.MustCompile(`^(\S+)\s+dev\s+(\S+)\s+lladdr\s+(\S+)\s+(\S+)$`)
+
+	if err := cmd.Start(); err != nil {
+		return nil
+	}
+
+	defer stdout.Close()
+
+	s := bufio.NewScanner(stdout)
+
+	for s.Scan() {
+		line := s.Text()
+
+		m := re.FindStringSubmatch(line)
+
+		if len(m) != 5 {
+			continue
+		}
+
+		addr, err := netip.ParseAddr(m[1])
+
+		if err != nil {
+			continue
+		}
+
+		dev := m[2]
+
+		hw, err := net.ParseMAC(m[3])
+
+		if err != nil || len(hw) != 6 {
+			continue
+		}
+
+		var mac mac
+
+		copy(mac[:], hw[:])
+
+		hw6[addr] = neighbor{dev: dev, mac: mac}
+	}
+
+	return hw6
 }

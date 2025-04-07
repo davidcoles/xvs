@@ -1,7 +1,6 @@
 package xvs
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	_ "embed"
@@ -10,8 +9,6 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"os/exec"
-	"regexp"
 	"sync"
 	"time"
 	"unsafe"
@@ -32,10 +29,10 @@ func layer3_o() ([]byte, error) {
 }
 
 const NONE TunnelType = bpf.T_NONE
-const FOU TunnelType = bpf.T_FOU
-const GRE TunnelType = bpf.T_GRE
-const GUE TunnelType = bpf.T_GUE
 const IPIP TunnelType = bpf.T_IPIP
+const GRE TunnelType = bpf.T_GRE
+const FOU TunnelType = bpf.T_FOU
+const GUE TunnelType = bpf.T_GUE
 
 const F_STICKY uint8 = bpf.F_STICKY
 
@@ -121,58 +118,6 @@ func (d *Destination3) as16() (r addr16) {
 type neighbor struct {
 	dev string
 	mac mac
-}
-
-func hw6() map[netip.Addr]neighbor {
-
-	hw6 := map[netip.Addr]neighbor{}
-
-	cmd := exec.Command("/bin/sh", "-c", "ip -6 neighbor show")
-	_, _ = cmd.StdinPipe()
-	//stderr, _ := cmd.StderrPipe()
-	stdout, _ := cmd.StdoutPipe()
-
-	re := regexp.MustCompile(`^(\S+)\s+dev\s+(\S+)\s+lladdr\s+(\S+)\s+(\S+)$`)
-
-	if err := cmd.Start(); err != nil {
-		return nil
-	}
-
-	defer stdout.Close()
-
-	s := bufio.NewScanner(stdout)
-
-	for s.Scan() {
-		line := s.Text()
-
-		m := re.FindStringSubmatch(line)
-
-		if len(m) != 5 {
-			continue
-		}
-
-		addr, err := netip.ParseAddr(m[1])
-
-		if err != nil {
-			continue
-		}
-
-		dev := m[2]
-
-		hw, err := net.ParseMAC(m[3])
-
-		if err != nil || len(hw) != 6 {
-			continue
-		}
-
-		var mac mac
-
-		copy(mac[:], hw[:])
-
-		hw6[addr] = neighbor{dev: dev, mac: mac}
-	}
-
-	return hw6
 }
 
 func (s *service3) set(service Service3, ds ...Destination3) error {
@@ -312,10 +257,7 @@ func (s *service3) recalc() {
 		dests = append(dests, v)
 	}
 
-	tuple := threetuple{address: s.service.Address, port: s.service.Port, protocol: s.service.Protocol}
-
 	var val bpf_destinations
-
 	for i, d := range dests {
 		ni, err := l.netinfo.info(d.Address)
 
@@ -350,8 +292,7 @@ func (s *service3) recalc() {
 		}
 	}
 
-	v := tuple.address
-	vip := as16(v)
+	vip := as16(s.service.Address)
 
 	key := s.key()
 
@@ -370,8 +311,8 @@ func (s *service3) recalc() {
 			log.Fatal("NAT", err, ni)
 		}
 
-		nat := as16(l.nat(v, d.Address))
-		ext := as16(l.netinfo.ext(ni.vlanid, v.Is6()))
+		nat := as16(l.nat(s.service.Address, d.Address))
+		ext := as16(l.netinfo.ext(ni.vlanid, s.service.Address.Is6()))
 
 		if d.TunnelType == NONE && ni.l3 {
 			log.Fatal("LOOP", ni)
@@ -490,7 +431,6 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
-
 		services: map[threetuple]*service3{},
 		netns:    ns,
 		natmap:   natmap6{},
@@ -503,24 +443,10 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 	}, nil
 }
 
-func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
+func (l *layer3) vlans(vlans map[uint16][2]netip.Prefix) error {
 
 	route := map[netip.Prefix]uint16{}
-	vlans := map[uint16][2]netip.Prefix{}
 
-	// TODO - check that v4 and v6 both map to the same interface
-
-	for i, p := range vlan4 {
-		vlans[i] = [2]netip.Prefix{p}
-	}
-
-	for i, p := range vlan6 {
-		v := vlans[i]
-		v[1] = p
-		vlans[i] = v
-	}
-
-	//l.netinfo.config(vlan4, vlan6, route)
 	err := l.netinfo.config(vlans, route)
 
 	if err != nil {

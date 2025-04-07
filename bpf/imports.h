@@ -39,10 +39,10 @@ enum {
 
 enum tunnel_type {
 		  T_NONE  = 0,
-		  T_FOU   = 1,
+		  T_IPIP  = 1,
 		  T_GRE   = 2,
-		  T_GUE   = 3,
-		  T_IPIP  = 4,
+		  T_FOU   = 3,
+		  T_GUE   = 4,
 		  //T_FOU_GRE = 5, // maybe
 };
 
