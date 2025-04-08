@@ -28,11 +28,13 @@ func layer3_o() ([]byte, error) {
 	return ioutil.ReadAll(z)
 }
 
-const NONE TunnelType = bpf.T_NONE
-const IPIP TunnelType = bpf.T_IPIP
-const GRE TunnelType = bpf.T_GRE
-const FOU TunnelType = bpf.T_FOU
-const GUE TunnelType = bpf.T_GUE
+const (
+	NONE TunnelType = bpf.T_NONE
+	IPIP TunnelType = bpf.T_IPIP
+	GRE  TunnelType = bpf.T_GRE
+	FOU  TunnelType = bpf.T_FOU
+	GUE  TunnelType = bpf.T_GUE
+)
 
 const F_STICKY uint8 = bpf.F_STICKY
 
@@ -427,7 +429,6 @@ func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
 	netns.UpdateElem(uP(&ZERO), uP(&(bpf_netns{a: ns.a.mac, b: ns.b.mac})), xdp.BPF_ANY)
 
 	var ns_nic uint32 = uint32(ns.a.idx)
-
 	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{

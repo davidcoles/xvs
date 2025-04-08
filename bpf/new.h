@@ -41,6 +41,17 @@ const __u8 FOU_OVERHEAD = sizeof(struct udphdr);
 const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 //const __u8 GENEVE_OVERHEAD = sizeof(struct ethhdr) + sizeof(struct udphdr) + sizeof(struct geneve_hdr);
 
+// magic code from https://mejedi.dev/posts/ebpf-dereference-of-modified-ctx-ptr-disallowed/
+static __always_inline void *xdp_data_end(const struct xdp_md *ctx) {
+   void *data_end;
+
+   asm("%[res] = *(u32 *)(%[base] + %[offset])"
+       : [res]"=r"(data_end)
+       : [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data_end)), "m"(*ctx));
+
+   return data_end;
+}
+
 static __always_inline
 int nul6(struct in6_addr *a) 
 {
@@ -175,7 +186,7 @@ int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
     }
     
     if (p->ip + 1 > data_end)
-    return -1;
+	return -1;
 
     *(p->eth) = p->eth_copy;
     if (p->vlan) *(p->vlan) = p->vlan_copy;
@@ -454,10 +465,13 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 	p->eth->h_proto = bpf_htons(ETH_P_IP);
     }
 
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    
     void *payload = (void *) (p->ip + 1);
     
-    if (payload + overhead > (void *)(long)ctx->data_end)
-	return -1;
+    if (payload + overhead > data_end)
+    	return -1;
     
     // Update the outer IP header to send to the FOU target
     int tot_len = sizeof(struct iphdr) + overhead + orig_len;
@@ -485,7 +499,10 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 
     struct gre_hdr *gre = (void *) (p.ip + 1);
 
-    if (gre + 1 > (void *)(long)ctx->data_end)
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    
+    if (gre + 1 > data_end)
         return -1;
     
     gre->crv = 0;
@@ -535,7 +552,9 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 
     struct ip6_hdr *new = (void *) p->ip;
 
-    void *data_end = (void *)(long)ctx->data_end;
+    
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
     
     if (new + 1 > data_end)
         return -1;
@@ -555,14 +574,14 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 }
 
 
-//static __always_inline
+static __always_inline
 int push_6in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
     return push_xin6(ctx, t, &p, IPPROTO_IPV6, 0);
 }
 
-//static __always_inline
+static __always_inline
 int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 {
     struct pointers p = {};
@@ -570,7 +589,7 @@ int push_4in6(struct xdp_md *ctx, tunnel_t *t)
 }
 
 
-//static __always_inline
+static __always_inline
 int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
@@ -582,7 +601,10 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 
     struct gre_hdr *gre = (void *) ((struct ip6_hdr *) p.ip + 1);
 
-    if (gre + 1 > (void *)(long)ctx->data_end)
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    
+    if (gre + 1 > data_end)
     	return -1;
 
     gre->crv = 0;
@@ -591,7 +613,7 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
     return 0;
 }
 
-//static __always_inline
+static __always_inline
 int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 {
     struct pointers p = {};
@@ -603,7 +625,9 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 
     struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
 
-    if (udp + 1 > (void *)(long)ctx->data_end)
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    if (udp + 1 > data_end)
         return -1;
 
     udp->source = bpf_htons(t->sport);
@@ -612,13 +636,13 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
     udp->check = 0;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+	udp->check = udp6_checksum((void *) p.ip, udp, data_end);
     
     return 0;
 }
 
 
-//static __always_inline
+static __always_inline
 int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
 {
     struct pointers p = {};
@@ -628,8 +652,11 @@ int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
 	return -1;
 
     struct udphdr *udp = (void *) (p.ip + 1);
-
-    if (udp + 1 > (void *)(long)ctx->data_end)
+    
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    
+    if (udp + 1 > data_end)
         return -1;
 
     udp->source = bpf_htons(t->sport);
@@ -638,12 +665,12 @@ int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
     udp->check = 0;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+	udp->check = udp4_checksum((void *) p.ip, udp, data_end);
 
     return 0;
 }
 
-//static __always_inline
+static __always_inline
 int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
@@ -655,7 +682,10 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
 
-    if (udp + 1 > (void *)(long)ctx->data_end)
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    
+    if (udp + 1 > data_end)
         return -1;
 
     udp->source = bpf_htons(t->sport);
@@ -665,7 +695,7 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
      struct gue_hdr *gue = (void *) (udp + 1);
 
-    if (gue + 1 > (void *)(long)ctx->data_end)
+    if (gue + 1 > data_end)
         return -1;
 
     *((__be32 *) gue) = 0;
@@ -675,13 +705,13 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     gue->protocol = protocol;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp6_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+	udp->check = udp6_checksum((void *) p.ip, udp, data_end);
     
     return 0;
 }
 
 
-//static __always_inline
+static __always_inline
 int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
@@ -692,7 +722,10 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     struct udphdr *udp = (void *) (p.ip + 1);
 
-    if (udp + 1 > (void *)(long)ctx->data_end)
+    //void *data_end = (void *)(long)ctx->data_end;
+    void *data_end = xdp_data_end(ctx);
+    
+    if (udp + 1 > data_end)
         return -1;
 
     udp->source = bpf_htons(t->sport);
@@ -702,7 +735,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     struct gue_hdr *gue = (void *) (udp + 1);
     
-    if (gue + 1 > (void *)(long)ctx->data_end)
+    if (gue + 1 > data_end)
 	return -1;
 
     *((__be32 *) gue) = 0;
@@ -712,8 +745,44 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     gue->protocol = protocol;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp4_checksum((void *) p.ip, udp, (void *)(long)ctx->data_end);
+	udp->check = udp4_checksum((void *) p.ip, udp, data_end);
 
     return 0;
 }
 
+
+
+
+
+/**********************************************************************/
+static __always_inline
+int send_fou(struct xdp_md *ctx, tunnel_t *t)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+
+    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
+}
+
+static __always_inline
+int send_fou4(struct xdp_md *ctx, tunnel_t *t)
+{
+    return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_fou6(struct xdp_md *ctx, tunnel_t *t)
+{
+    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+{
+    __u8 protocol = is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP;
+    
+    if (is_addr4(&(t->daddr)))
+	return push_gue4(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    
+    return push_gue6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+}

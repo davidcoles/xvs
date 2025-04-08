@@ -183,9 +183,7 @@ const __u8 F_CALCULATE_CHECKSUM = 1;
 #define VERSION 1
 #define SECOND_NS 1000000000l
 
-
 const __u32 NETNS = 4095;
-
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 
@@ -250,6 +248,10 @@ struct destinfo {
 
 typedef struct destinfo tunnel_t;
 
+static __always_inline
+int is_addr4(struct addr *a) {
+    return (!(a->addr4.pad1) && !(a->addr4.pad2) && !(a->addr4.pad3)) ? 1 : 0;
+}
 
 #include "new.h"
 
@@ -393,10 +395,6 @@ struct {
 
 /**********************************************************************/
 
-static __always_inline
-int is_addr4(struct addr *a) {
-    return (!(a->addr4.pad1) && !(a->addr4.pad2) && !(a->addr4.pad3)) ? 1 : 0;
-}
 
 static __always_inline
 int send_l2(struct xdp_md *ctx, tunnel_t *t)
@@ -404,25 +402,6 @@ int send_l2(struct xdp_md *ctx, tunnel_t *t)
     return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
-static __always_inline
-int send_fou(struct xdp_md *ctx, tunnel_t *t)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
-}
-
-static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    __u8 protocol = is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP;
-    
-    if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_gue6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
-}
 
 static __always_inline
 int send_xinx(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
@@ -572,7 +551,7 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
    return NOT_FOUND;
 }
 
-//static __always_inline
+static __always_inline
 enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -636,12 +615,12 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
     return lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
 }
 
-//static __always_inline
+static __always_inline
 enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
-    
+
     if (eth + 1 > data_end)
         return NOT_FOUND;
     
@@ -722,7 +701,7 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
 
 
-//static __always_inline
+static __always_inline
 int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)    
 {
 
@@ -757,6 +736,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	next_header = vlan + 1;
     }
 
+    __builtin_memset(t, 0, sizeof(tunnel_t));
+    
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	is_ipv6 = 1;
@@ -771,8 +752,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     default:
 	return XDP_PASS;
     }
-    
-    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);    
+
+    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
     // no default here - handle all cases explicitly
     switch (result) {
@@ -785,6 +766,11 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case NOT_FOUND: return XDP_DROP;
     case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
     }
+
+    //if (d_is_4) {
+    //	bpf_printk("It's a 4 from me\n");
+    //}
+
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
@@ -814,10 +800,10 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     }
     
     switch (result) {
-    case LAYER3_FOU:    return send_fou(ctx, t);
     case LAYER3_IPIP:   return send_xinx(ctx, t, is_ipv6);
     case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6);
-    case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6);
+    case LAYER3_FOU:    return send_fou(ctx, t);
+	//case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6); // TODO - breaks verifier on 22.04
     default:
 	break;
     }
@@ -842,6 +828,7 @@ void update(fourtuple_t *key, tunnel_t *t)
 
 
 // urgh, need to set up veth interfaces with ipv6 addresses first, of course
+static __always_inline
 int xdp_request_v6(struct xdp_md *ctx) {
     
     void *data_end = (void *)(long)ctx->data_end;
@@ -910,11 +897,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     int action = XDP_DROP;
 
     switch (t.method) {
-    case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_GRE:  action = send_gre(ctx, &t, 1); break;
-    case T_GUE:  action = send_gue(ctx, &t, 1); break;
-    case T_IPIP: action = send_xinx(ctx, &t, 1); break;
     case T_NONE: action = send_l2(ctx, &t); break;
+    case T_IPIP: action = send_xinx(ctx, &t, 1); break;
+    case T_GRE:  action = send_gre(ctx, &t, 1); break;
+    case T_FOU:  action = send_fou(ctx, &t); break;
+    case T_GUE:  action = send_gue(ctx, &t, 1); break;
     }
 
     if (action != XDP_TX)
@@ -935,6 +922,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }
 
+static __always_inline
 int xdp_request_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -1005,6 +993,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
     case T_IPIP: overhead = sizeof(struct iphdr);  break;
     case T_NONE: break;
+    default: return XDP_DROP;
     }
     
 
@@ -1044,11 +1033,11 @@ int xdp_request_v4(struct xdp_md *ctx)
     int action = XDP_DROP;
     
     switch (t.method) {
-    case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
-    case T_GUE:	 action = send_gue(ctx, &t, is_ipv6); break;
-    case T_IPIP: action = send_xinx(ctx, &t, is_ipv6); break;
     case T_NONE: action = send_l2(ctx, &t); break;
+    case T_IPIP: action = send_xinx(ctx, &t, is_ipv6); break;
+    case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
+    case T_FOU:  action = send_fou(ctx, &t); break;
+    case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
     }
 
     if (action != XDP_TX)
@@ -1070,7 +1059,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }
 
-
+static __always_inline
 int xdp_reply_v6(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -1141,6 +1130,7 @@ int xdp_reply_v6(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
+static __always_inline
 int xdp_reply_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -1267,6 +1257,7 @@ int xdp_pass(struct xdp_md *ctx)
 SEC("xdp")
 int xdp_reply(struct xdp_md *ctx)
 {
+    //return XDP_PASS;
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     
@@ -1288,7 +1279,6 @@ int xdp_reply(struct xdp_md *ctx)
 SEC("xdp")
 int xdp_request(struct xdp_md *ctx)
 {
-
     // TODO - have probes set from host side to NAT addresses via
     // veth, process on ns side and TX *back* to through veth, host
     // side veth then forwards out to the destination. Returning
