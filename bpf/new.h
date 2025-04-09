@@ -812,7 +812,8 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     gue->protocol = protocol;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp4_checksum((void *) p.ip, udp, data_end); // change p.ip to ip and the verifier kvetches ... weird.
+	udp->check = udp4_checksum((void *) p.ip, udp, data_end);
+    // change p.ip to ip and the verifier kvetches when compiled on jammy ... weird.    
 
     return 0;
 }
