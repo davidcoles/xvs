@@ -52,6 +52,56 @@ static __always_inline void *xdp_data_end(const struct xdp_md *ctx) {
    return data_end;
 }
 
+static __always_inline void *xdp_data(const struct xdp_md *ctx) {
+   void *data;
+
+   asm("%[res] = *(u32 *)(%[base] + %[offset])"
+       : [res]"=r"(data)
+       : [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data)), "m"(*ctx));
+
+   return data;
+}
+
+static __always_inline
+void *ipptr(void *data, void *data_end)
+{
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+	return NULL;
+    
+    struct iphdr *ip = (void *)(eth + 1);
+
+    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+	ip = ip + sizeof(struct vlan_hdr); // don't do ip += ... otherwise we get a verifier issue
+    }
+
+    if (ip + 1 > data_end)
+	return NULL;
+    
+    return ip;
+}
+
+static __always_inline
+void *ip6ptr(void *data, void *data_end)
+{
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+	return NULL;
+    
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+
+    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+	ip6 = ip6 + sizeof(struct vlan_hdr);
+    }
+
+    if (ip6 + 1 > data_end)
+	return NULL;
+    
+    return ip6;
+}
+
 static __always_inline
 int nul6(struct in6_addr *a) 
 {
@@ -307,8 +357,16 @@ int frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu, __u8 *buffer)
     if ((iplen = frag_needed_trim(ctx, &p)) < 0)	
 	return -1;
 
+    
+    void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-    struct icmphdr *icmp = (void *)(p.ip + 1);
+
+    struct iphdr *ip = ipptr(data, data_end);
+
+    if (!ip)
+        return -1;
+
+    struct icmphdr *icmp = (void *) (ip + 1);
     
     if (icmp + 1 > data_end)
 	return -1;
@@ -651,11 +709,16 @@ int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
     if (orig_len < 0)
 	return -1;
 
-    struct udphdr *udp = (void *) (p.ip + 1);
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
     
-    //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    struct iphdr *ip = ipptr(data, data_end);
     
+    if (!ip)
+        return -1;
+    
+    struct udphdr *udp = (void *) (ip + 1);
+     
     if (udp + 1 > data_end)
         return -1;
 
@@ -665,7 +728,7 @@ int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
     udp->check = 0;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp4_checksum((void *) p.ip, udp, data_end);
+	udp->check = udp4_checksum((void *) ip, udp, data_end);
 
     return 0;
 }
@@ -710,7 +773,6 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     return 0;
 }
 
-
 static __always_inline
 int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
@@ -719,15 +781,20 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     if (orig_len < 0)
 	return -1;
+    
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
 
-    struct udphdr *udp = (void *) (p.ip + 1);
+    struct iphdr *ip = ipptr(data, data_end);
 
-    //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    if (!ip)
+	return -1;
+    
+    struct udphdr *udp = (void *) (ip + 1);
     
     if (udp + 1 > data_end)
         return -1;
-
+    
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
     udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
@@ -745,7 +812,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     gue->protocol = protocol;
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
-	udp->check = udp4_checksum((void *) p.ip, udp, data_end);
+	udp->check = udp4_checksum((void *) p.ip, udp, data_end); // change p.ip to ip and the verifier kvetches ... weird.
 
     return 0;
 }

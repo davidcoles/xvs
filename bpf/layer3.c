@@ -435,6 +435,7 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 static __always_inline
 int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
 {
+    return XDP_ABORTED;
     // should probably rate limit sending frag_needed - calculating checksum is slow
     // could have a token queue refilled from userspace every second?
     return (frag_needed4(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
@@ -709,7 +710,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     
     struct vlan_hdr *vlan = NULL;
     
-    if (next_proto == ETH_P_8021Q) {
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {
 	return XDP_PASS; // not yet fully implmented
 	vlan = next_header;
 	
