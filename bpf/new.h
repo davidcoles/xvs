@@ -43,13 +43,14 @@ const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 
 // magic code from https://mejedi.dev/posts/ebpf-dereference-of-modified-ctx-ptr-disallowed/
 static __always_inline void *xdp_data_end(const struct xdp_md *ctx) {
-   void *data_end;
-
-   asm("%[res] = *(u32 *)(%[base] + %[offset])"
-       : [res]"=r"(data_end)
-       : [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data_end)), "m"(*ctx));
-
-   return data_end;
+    //return (void *)(long)ctx->data_end;
+    void *data_end;
+    
+    asm("%[res] = *(u32 *)(%[base] + %[offset])"
+	: [res]"=r"(data_end)
+	: [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data_end)), "m"(*ctx));
+    
+    return data_end;
 }
 
 static __always_inline void *xdp_data(const struct xdp_md *ctx) {
@@ -685,6 +686,7 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 
     //void *data_end = (void *)(long)ctx->data_end;
     void *data_end = xdp_data_end(ctx);
+    
     if (udp + 1 > data_end)
         return -1;
 
