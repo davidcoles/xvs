@@ -751,11 +751,6 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
     }
 
-    //if (d_is_4) {
-    //	bpf_printk("It's a 4 from me\n");
-    //}
-
-
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
     // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
     // Also check if packet is too large to encapsulate
@@ -969,7 +964,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
     
     int overhead = 0;
-    //int mtu = MTU;
+    int mtu = MTU;
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
@@ -979,7 +974,10 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_NONE: break;
     default: return XDP_DROP;
     }
-    
+
+    if ((data_end - (void *) ip) + overhead > mtu) {
+	return XDP_DROP;
+    }
 
     /*
     if ((data_end - (void *) ip) + overhead > mtu) {

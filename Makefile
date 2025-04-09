@@ -44,5 +44,5 @@ bookworm-amd64:
 	ln -s /usr/lib/go-1.19/bin/go /usr/local/bin/go || true
 
 jammy-amd64:
-	apt install -y golang-1.21 libelf-dev clang llvm libc6-dev-i386
-	ln -s /usr/lib/go-1.21/bin/go /usr/local/bin/go
+	apt install -y golang-1.23 libelf-dev clang llvm libc6-dev-i386
+	ln -s /usr/lib/go-1.23/bin/go /usr/local/bin/go
