@@ -36,8 +36,6 @@ const (
 	GUE  TunnelType = bpf.T_GUE
 )
 
-const F_STICKY uint8 = bpf.F_STICKY
-
 var VETH32 uint32 = 4095
 var ZERO uint32 = 0
 
@@ -293,6 +291,8 @@ func (s *service3) recalc() {
 			val.hash[i] = byte((i % len(dests)) + 1)
 		}
 	}
+
+	val.destinfo[0] = bpf_destinfo{flags: uint8(s.service.Flags)}
 
 	vip := as16(s.service.Address)
 

@@ -506,41 +506,25 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (IPPROTO_TCP == protocol) {
 	// lookup in flow table
     }
-
     
     if (!service)
 	return NOT_FOUND;
 
-    __u8 sticky = 0; //service->flag[0] & F_STICKY;
+    __u8 sticky = service->destinfo[0].flags & F_STICKY;
     __u16 hash3 = l3_hash(ft);
     __u16 hash4 = l4_hash(ft);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
 	return NOT_FOUND;
-
-    //struct destinfo d = service->destinfo[index];
-    /*
-    t->daddr = d.daddr;
-    t->saddr = d.saddr;
-    t->dport = d.dport;
-    t->sport = d.sport ? d.sport : 0x8000 | (hash4 & 0x7fff);
-    memcpy(t->h_dest, d.h_dest, 6);
-    memcpy(t->h_source, d.h_source, 6);
-    t->vlanid = d.vlanid;
-    t->method = d.method;
-    t->flags = d.flags;
-    */
-
+    
     *t = service->destinfo[index];
     t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
-    enum tunnel_type type = t->method;
 
-    
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
     
-    switch (type) {
+    switch ((enum tunnel_type) t->method) {
     case T_FOU:  return LAYER3_FOU;
     case T_GRE:  return LAYER3_GRE;
     case T_GUE:  return LAYER3_GUE;
@@ -1257,7 +1241,6 @@ int xdp_pass(struct xdp_md *ctx)
 SEC("xdp")
 int xdp_reply(struct xdp_md *ctx)
 {
-    //return XDP_PASS;
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     
