@@ -280,7 +280,7 @@ void new_iphdr(struct iphdr *ip, __u16 tot_len, __u8 protocol, __be32 saddr, __b
 }
 
 //static __always_inline
-void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6_addr saddr, struct in6_addr daddr)
+void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6_addr *saddr, struct in6_addr *daddr)
 {
     struct ip6_hdr i = {};
     *ip = i;
@@ -290,8 +290,8 @@ void new_ip6hdr(struct ip6_hdr *ip, __u16 payload_len, __u8 protocol, struct in6
     ip->ip6_ctlun.ip6_un1.ip6_un1_nxt = protocol;
     ip->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64;
     
-    ip->ip6_src = saddr;
-    ip->ip6_dst = daddr;
+    ip->ip6_src = *saddr;
+    ip->ip6_dst = *daddr;
 }
 
 static __always_inline
@@ -462,7 +462,7 @@ int icmp6_too_big(struct xdp_md *ctx, struct in6_addr *saddr, struct in6_addr *d
     
     reverse_ethhdr(p.eth);
 
-    new_ip6hdr(p.ip6, sizeof(struct icmp6_hdr) + iplen, IPPROTO_ICMPV6, *saddr, *daddr);
+    new_ip6hdr(p.ip6, sizeof(struct icmp6_hdr) + iplen, IPPROTO_ICMPV6, saddr, daddr);
     
     struct icmp6_hdr msg = { .icmp6_type = ICMP6_PACKET_TOO_BIG };
     msg.icmp6_dataun.icmp6_un_data32[0] = bpf_htonl(mtu);
@@ -670,7 +670,7 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
         return -1;
     
     int payload_len = overhead + orig_len;
-    new_ip6hdr(new, payload_len, protocol, t->saddr.addr6, t->daddr.addr6);
+    new_ip6hdr(new, payload_len, protocol, &(t->saddr.addr6), &(t->daddr.addr6));
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
     memcpy(p->eth->h_source, t->h_source,6);
