@@ -168,6 +168,7 @@ ipip
 #include <netinet/tcp.h>
 
 #include <netinet/ip6.h>
+#include <netinet/icmp6.h>
 
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n))
@@ -433,15 +434,6 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
-{
-    return XDP_ABORTED;
-    // should probably rate limit sending frag_needed - calculating checksum is slow
-    // could have a token queue refilled from userspace every second?
-    return (frag_needed4(ctx, saddr, mtu, NULL) < 0) ? XDP_ABORTED : XDP_TX;    
-}
-
-static __always_inline
 __u16 l3_hash(fourtuple_t *ft)
 {
     return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
@@ -554,9 +546,6 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
 
-    ft->saddr = saddr;
-    ft->daddr = daddr;
-    
     if (!bpf_map_lookup_elem(&vips, &daddr)) {
 	if (!bpf_map_lookup_elem(&vips, &saddr))
             return NOT_A_VIP;
@@ -581,6 +570,9 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
         return NOT_FOUND;
 
+    ft->saddr = saddr;
+    ft->daddr = daddr;
+    
     struct tcphdr *tcp = (void *) (ip6 + 1);
 
     if (tcp + 1 > data_end)
@@ -766,10 +758,15 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	if ((data_end - next_header) + overhead > mtu) {
 	    if (is_ipv6) {
 		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
+		//return frag_needed6(ctx, ft, mtu - overhead) < 0 ? XDP_ABORTED : XDP_TX;
+		// daddr should be my (the LB's) ext addr - do need a vlaninfo map with ext ip adrs
+		return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? XDP_ABORTED : XDP_TX;
+		
 	    } else {
 		bpf_printk("IPv4 FRAG_NEEDED\n");
 		//return send_frag_needed4(ctx, dest->saddr.addr4.addr, mtu - overhead);
-		return send_frag_needed4(ctx, ft->saddr.addr4.addr, mtu - overhead);		
+		//return send_frag_needed4(ctx, ft->saddr.addr4.addr, mtu - overhead);
+		return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? XDP_ABORTED : XDP_TX;
 	    }
 	}
 	
