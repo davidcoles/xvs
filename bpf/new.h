@@ -2,6 +2,8 @@ struct pointers {
     struct ethhdr *eth, eth_copy;
     struct vlan_hdr *vlan, vlan_copy;
     struct iphdr *ip, ip_copy;
+    void *data;
+    void *data_end;    
 };
 
 
@@ -241,6 +243,9 @@ int restore_l2_headers(struct xdp_md *ctx, struct pointers *p)
 
     *(p->eth) = p->eth_copy;
     if (p->vlan) *(p->vlan) = p->vlan_copy;
+
+    p->data = data;
+    p->data_end = data_end;
     
     return 0;
 }
@@ -524,8 +529,8 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 	p->eth->h_proto = bpf_htons(ETH_P_IP);
     }
 
-    //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    void *data_end = (void *)(long)ctx->data_end;
+    //void *data_end = xdp_data_end(ctx);
     
     void *payload = (void *) (p->ip + 1);
     
@@ -558,8 +563,8 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 
     struct gre_hdr *gre = (void *) (p.ip + 1);
 
-    //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    void *data_end = (void *)(long)ctx->data_end;
+    //void *data_end = xdp_data_end(ctx);
     
     if (gre + 1 > data_end)
         return -1;
@@ -612,8 +617,8 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     struct ip6_hdr *new = (void *) p->ip;
 
     
-    //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    void *data_end = (void *)(long)ctx->data_end;
+    //void *data_end = xdp_data_end(ctx);
     
     if (new + 1 > data_end)
         return -1;
@@ -661,7 +666,8 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
     struct gre_hdr *gre = (void *) ((struct ip6_hdr *) p.ip + 1);
 
     //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    //void *data_end = xdp_data_end(ctx);
+    void *data_end = p.data_end;
     
     if (gre + 1 > data_end)
     	return -1;
@@ -685,7 +691,8 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
     struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
 
     //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    //void *data_end = xdp_data_end(ctx);
+    void *data_end = p.data_end;
     
     if (udp + 1 > data_end)
         return -1;
@@ -748,7 +755,8 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
 
     //void *data_end = (void *)(long)ctx->data_end;
-    void *data_end = xdp_data_end(ctx);
+    //void *data_end = xdp_data_end(ctx);
+    void *data_end = p.data_end;
     
     if (udp + 1 > data_end)
         return -1;
