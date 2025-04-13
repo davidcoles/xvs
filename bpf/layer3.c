@@ -495,34 +495,10 @@ static __always_inline
 enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
-
-    if (IPPROTO_ICMP == protocol || IPPROTO_ICMPV6 == protocol) {
-	key.proto = IPPROTO_TCP;
-	key.port = 80;
-    }
-    
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (IPPROTO_TCP == protocol) {
 	// lookup in flow table
-    }
-    
-    if (!service) {
-
-	key.proto = IPPROTO_ICMP;
-        key.port = 0;
-
-	// look up IMCP - if exists then the VIP is set up but this service does not exist
-	if (IPPROTO_ICMP != protocol && bpf_map_lookup_elem(&destinations, &key))
-	    // return NO_SERVICE;
-	    return NOT_FOUND;
-	
-	return NOT_FOUND;
-    }
-
-    if (IPPROTO_ICMP == protocol || IPPROTO_ICMPV6 == protocol) {
-	bpf_printk("BOUNCE_ICMP\n");
-	return BOUNCE_ICMP;
     }
     
     __u8 sticky = service->destinfo[0].flags & F_STICKY;
@@ -626,9 +602,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	    icmp->icmp6_cksum = 0;
 	    icmp->icmp6_cksum = icmp6_checksum(ip6, icmp, data_end);
             reverse_ethhdr(eth);
-            ft->sport = 0;
-            ft->dport = 0;
-	    break;
+	    return BOUNCE_ICMP;
 	}
 	return NOT_FOUND;
 	
@@ -723,9 +697,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	    icmp->type = ICMP_ECHOREPLY;
 	    icmp->checksum = icmp_checksum_diff(~old_csum, icmp, &old);
 	    reverse_ethhdr(eth);
-	    ft->sport = 0;
-	    ft->dport = 0;
-	    break;
+	    return BOUNCE_ICMP;
 	}
 	return NOT_FOUND;	
     default:
