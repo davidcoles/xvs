@@ -175,6 +175,26 @@ __u16 checksum_diff(__u16 seed, void *new, void *old, __u16 size)
 }
 
 static __always_inline
+__u16 checksum_diff2(__u16 seed, void *new, void *old, __u16 size)
+{
+    __u32 csum = 0;
+    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, ~seed);
+    return csum_fold_helper(csum);
+}
+
+static __always_inline
+__u16 icmp4_csum_diff(struct icmphdr *new, struct icmphdr *old)
+{
+    return checksum_diff2(old->checksum, new, old, sizeof(struct icmphdr));
+}
+
+static __always_inline
+__u16 icmp6_csum_diff(struct icmp6_hdr *new, struct icmp6_hdr *old)
+{
+    return checksum_diff2(old->icmp6_cksum, new, old, sizeof(struct icmp6_hdr));
+}
+
+static __always_inline
 void ip_reply(struct iphdr *ip, __u8 ttl) {
     __u16 old_csum = ip->check;
     ip->check = 0;

@@ -500,7 +500,10 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     if (IPPROTO_TCP == protocol) {
 	// lookup in flow table
     }
-    
+
+    if (!service)
+	return NOT_FOUND;;
+
     __u8 sticky = service->destinfo[0].flags & F_STICKY;
     __u16 hash3 = l3_hash(ft);
     __u16 hash4 = l4_hash(ft);
@@ -580,6 +583,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	break;
+	
     case IPPROTO_UDP:
 	udp = (void *) (ip6 + 1);
 	if (udp + 1 > data_end)
@@ -587,6 +591,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	ft->sport = udp->source;
 	ft->dport = udp->dest;
 	break;
+	
     case IPPROTO_ICMPV6:
 	icmp = (void *)(ip6 + 1);
         if (icmp + 1 > data_end)
@@ -594,13 +599,9 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	if (icmp->icmp6_type == 128 && icmp->icmp6_code == 0) {
 	    bpf_printk("ICMPv6\n");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
-            //__u16 old_csum = icmp->icmp6_cksum;
-            //icmp->icmp6_cksum = 0;
-            //struct icmp6_hdr old = *icmp;
+	    struct icmp6_hdr old = *icmp;
             icmp->icmp6_type = 129;
-            //icmp->icmp6_cksum = checksum_diff(~old_csum, icmp, &old, sizeof(struct icmp6_hdr));
-	    icmp->icmp6_cksum = 0;
-	    icmp->icmp6_cksum = icmp6_checksum(ip6, icmp, data_end);
+	    icmp->icmp6_cksum = icmp6_csum_diff(icmp, &old);
             reverse_ethhdr(eth);
 	    return BOUNCE_ICMP;
 	}
@@ -611,7 +612,6 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
     }
 
     return lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
-    //return NOT_FOUND;
 }
 
 static __always_inline
@@ -677,6 +677,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	break;
+	
     case IPPROTO_UDP:
 	udp = (void *)(ip + 1);
 	if (udp + 1 > data_end)
@@ -684,6 +685,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	ft->sport = udp->source;
 	ft->dport = udp->dest;
 	break;
+	
     case IPPROTO_ICMP:
 	icmp = (void *)(ip + 1);
 	if (icmp + 1 > data_end)
@@ -691,15 +693,14 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
 	    bpf_printk("ICMPv4\n");
 	    ip_reply(ip, 64); // swap saddr/daddr, set TTL
-	    __u16 old_csum = icmp->checksum;
-	    icmp->checksum = 0;
 	    struct icmphdr old = *icmp;
 	    icmp->type = ICMP_ECHOREPLY;
-	    icmp->checksum = icmp_checksum_diff(~old_csum, icmp, &old);
+            icmp->checksum = icmp4_csum_diff(icmp, &old);
 	    reverse_ethhdr(eth);
 	    return BOUNCE_ICMP;
 	}
 	return NOT_FOUND;	
+
     default:
 	return NOT_FOUND;
     }
