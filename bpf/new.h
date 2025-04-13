@@ -159,6 +159,42 @@ __u16 internet_checksum(void *data, void *data_end, __u32 csum)
 }
 
 static __always_inline
+__u16 icmp_checksum_diff(__u16 seed, struct icmphdr *new, struct icmphdr *old)
+{
+    __u32 csum, size = sizeof(struct icmphdr);
+    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
+    return csum_fold_helper(csum);
+}
+
+static __always_inline
+__u16 checksum_diff(__u16 seed, void *new, void *old, __u16 size)
+{
+    __u32 csum = 0;
+    csum = bpf_csum_diff((__be32 *)old, size, (__be32 *)new, size, seed);
+    return csum_fold_helper(csum);
+}
+
+static __always_inline
+void ip_reply(struct iphdr *ip, __u8 ttl) {
+    __u16 old_csum = ip->check;
+    ip->check = 0;
+    struct iphdr old = *ip;
+    __be32 tmp = ip->daddr;
+    ip->daddr = ip->saddr;
+    ip->saddr = tmp;
+    ip->ttl = ttl;
+    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+}
+
+static __always_inline
+void ip6_reply(struct ip6_hdr *ip6, __u8 hlim) {
+    struct in6_addr tmp = ip6->ip6_src;
+    ip6->ip6_src = ip6->ip6_dst;
+    ip6->ip6_dst = tmp;
+    ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = hlim;
+}
+
+static __always_inline
 int preserve_l2_headers(struct xdp_md *ctx, struct pointers *p)
 {
     void *data     = (void *)(long)ctx->data;

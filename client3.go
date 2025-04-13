@@ -82,7 +82,7 @@ type Config struct {
 }
 
 func New(interfaces ...string) (Client3, error) {
-	return newClient(interfaces[0], mac{})
+	return newClient(interfaces[0])
 }
 
 func (l *layer3) Info() (Info, error) {

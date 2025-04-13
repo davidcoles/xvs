@@ -17,6 +17,14 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
+// TODO:
+// ingress interface/vlan -> interface IPs, for correct ICMP "too big" responses
+// process intermediate system ICMP too big messages and pass to backends
+// health probe ICMP?
+// stats
+// latency
+// handle udp/icmp
+
 //go:embed bpf/layer3.o.gz
 var layer3_gz []byte
 
@@ -352,7 +360,7 @@ func as16(a netip.Addr) (r addr16) {
 	return
 }
 
-func newClient(ifname string, h_dest [6]byte) (*layer3, error) {
+func newClient(ifname string) (*layer3, error) {
 
 	iface, err := net.InterfaceByName(ifname)
 

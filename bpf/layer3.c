@@ -198,6 +198,7 @@ enum lookup_result {
 		    NOT_FOUND = 0,
 		    NOT_A_VIP,
 		    PROBE_REPLY,
+		    BOUNCE_ICMP,
 		    LAYER2_DSR,
 		    LAYER3_GRE,
 		    LAYER3_FOU,
@@ -494,15 +495,36 @@ static __always_inline
 enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
+
+    if (IPPROTO_ICMP == protocol || IPPROTO_ICMPV6 == protocol) {
+	key.proto = IPPROTO_TCP;
+	key.port = 80;
+    }
+    
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (IPPROTO_TCP == protocol) {
 	// lookup in flow table
     }
     
-    if (!service)
-	return NOT_FOUND;
+    if (!service) {
 
+	key.proto = IPPROTO_ICMP;
+        key.port = 0;
+
+	// look up IMCP - if exists then the VIP is set up but this service does not exist
+	if (IPPROTO_ICMP != protocol && bpf_map_lookup_elem(&destinations, &key))
+	    // return NO_SERVICE;
+	    return NOT_FOUND;
+	
+	return NOT_FOUND;
+    }
+
+    if (IPPROTO_ICMP == protocol || IPPROTO_ICMPV6 == protocol) {
+	bpf_printk("BOUNCE_ICMP\n");
+	return BOUNCE_ICMP;
+    }
+    
     __u8 sticky = service->destinfo[0].flags & F_STICKY;
     __u16 hash3 = l3_hash(ft);
     __u16 hash4 = l4_hash(ft);
@@ -562,34 +584,60 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
         return PROBE_REPLY;
     }
     
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
-        //bpf_printk("IPv6 ICMP!\n");
-        return NOT_A_VIP;
-    }
-
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
-        return NOT_FOUND;
-
     ft->saddr = saddr;
     ft->daddr = daddr;
-    
-    struct tcphdr *tcp = (void *) (ip6 + 1);
-
-    if (tcp + 1 > data_end)
-        return NOT_FOUND;
-
-    ft->sport = tcp->source;
-    ft->dport = tcp->dest;
-    
-    //int x = bpf_ntohs(tcp->dest);
-    //bpf_printk("IPv6 TCP %d\n", x);
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return NOT_FOUND; // FIXME - new enum
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
+    struct tcphdr *tcp = NULL;
+    struct udphdr *udp = NULL;
+    struct icmp6_hdr *icmp = NULL;
+    
+    switch (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+    case IPPROTO_TCP:
+	tcp = (void *) (ip6 + 1);
+	if (tcp + 1 > data_end)
+	    return NOT_FOUND;
+	ft->sport = tcp->source;
+	ft->dport = tcp->dest;
+	break;
+    case IPPROTO_UDP:
+	udp = (void *) (ip6 + 1);
+	if (udp + 1 > data_end)
+	    return NOT_FOUND;
+	ft->sport = udp->source;
+	ft->dport = udp->dest;
+	break;
+    case IPPROTO_ICMPV6:
+	icmp = (void *)(ip6 + 1);
+        if (icmp + 1 > data_end)
+            return NOT_FOUND;
+	if (icmp->icmp6_type == 128 && icmp->icmp6_code == 0) {
+	    bpf_printk("ICMPv6\n");
+            ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
+            //__u16 old_csum = icmp->icmp6_cksum;
+            //icmp->icmp6_cksum = 0;
+            //struct icmp6_hdr old = *icmp;
+            icmp->icmp6_type = 129;
+            //icmp->icmp6_cksum = checksum_diff(~old_csum, icmp, &old, sizeof(struct icmp6_hdr));
+	    icmp->icmp6_cksum = 0;
+	    icmp->icmp6_cksum = icmp6_checksum(ip6, icmp, data_end);
+            reverse_ethhdr(eth);
+            ft->sport = 0;
+            ft->dport = 0;
+	    break;
+	}
+	return NOT_FOUND;
+	
+    default:
+	return NOT_FOUND;
+    }
+
     return lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
+    //return NOT_FOUND;
 }
 
 static __always_inline
@@ -640,7 +688,12 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
     ft->saddr = saddr;
     ft->daddr = daddr;
 
+    /* We're going to forward the packet, so we should decrement the time to live */
+    ip_decrease_ttl(ip);    
+
     struct tcphdr *tcp = NULL;
+    struct udphdr *udp = NULL;
+    struct icmphdr *icmp = NULL;
     
     switch (ip->protocol) {
     case IPPROTO_TCP:
@@ -650,13 +703,35 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	break;
+    case IPPROTO_UDP:
+	udp = (void *)(ip + 1);
+	if (udp + 1 > data_end)
+	    return NOT_FOUND;
+	ft->sport = udp->source;
+	ft->dport = udp->dest;
+	break;
+    case IPPROTO_ICMP:
+	icmp = (void *)(ip + 1);
+	if (icmp + 1 > data_end)
+            return NOT_FOUND;
+	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
+	    bpf_printk("ICMPv4\n");
+	    ip_reply(ip, 64); // swap saddr/daddr, set TTL
+	    __u16 old_csum = icmp->checksum;
+	    icmp->checksum = 0;
+	    struct icmphdr old = *icmp;
+	    icmp->type = ICMP_ECHOREPLY;
+	    icmp->checksum = icmp_checksum_diff(~old_csum, icmp, &old);
+	    reverse_ethhdr(eth);
+	    ft->sport = 0;
+	    ft->dport = 0;
+	    break;
+	}
+	return NOT_FOUND;	
     default:
 	return NOT_FOUND;
     }
     
-    /* We're going to forward the packet, so we should decrement the time to live */
-    ip_decrease_ttl(ip);    
-
     return lookup(ft, ip->protocol, t);
 }
 
@@ -742,6 +817,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case NOT_A_VIP: return XDP_PASS;
     case NOT_FOUND: return XDP_DROP;
     case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
+    case BOUNCE_ICMP: return XDP_TX;
     }
 
     // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
@@ -758,14 +834,10 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	if ((data_end - next_header) + overhead > mtu) {
 	    if (is_ipv6) {
 		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
-		//return frag_needed6(ctx, ft, mtu - overhead) < 0 ? XDP_ABORTED : XDP_TX;
-		// daddr should be my (the LB's) ext addr - do need a vlaninfo map with ext ip adrs
 		return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? XDP_ABORTED : XDP_TX;
 		
 	    } else {
-		bpf_printk("IPv4 FRAG_NEEDED\n");
-		//return send_frag_needed4(ctx, dest->saddr.addr4.addr, mtu - overhead);
-		//return send_frag_needed4(ctx, ft->saddr.addr4.addr, mtu - overhead);
+		bpf_printk("IPv4 FRAG_NEEDED - FIXME\n");
 		return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? XDP_ABORTED : XDP_TX;
 	    }
 	}
@@ -777,10 +849,10 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     }
     
     switch (result) {
-    case LAYER3_IPIP:   return send_xinx(ctx, t, is_ipv6);
-    case LAYER3_GRE:    return send_gre(ctx, t, is_ipv6);
-    case LAYER3_FOU:    return send_fou(ctx, t);
-	//case LAYER3_GUE:    return send_gue(ctx, t, is_ipv6); // TODO - breaks verifier on 22.04
+    case LAYER3_IPIP: return send_xinx(ctx, t, is_ipv6);
+    case LAYER3_GRE:  return send_gre(ctx, t, is_ipv6);
+    case LAYER3_FOU:  return send_fou(ctx, t);
+    case LAYER3_GUE:  return send_gue(ctx, t, is_ipv6); // TODO - breaks verifier on 22.04
     default:
 	break;
     }
@@ -827,14 +899,13 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return XDP_DROP;
     
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
         return XDP_PASS;
-    }
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return XDP_DROP;
     
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
         return XDP_PASS;
     
     struct tcphdr *tcp = (void *) (ip6 + 1);
