@@ -189,6 +189,18 @@ __u16 icmp4_csum_diff(struct icmphdr *new, struct icmphdr *old)
 }
 
 static __always_inline
+__u16 ip4_csum_diff(struct iphdr *new, struct iphdr *old)
+{
+    return checksum_diff2(old->check, new, old, sizeof(struct iphdr));
+}
+
+static __always_inline
+__u16 l4_csum_diff(struct l4 *new, struct l4 *old, __u16 seed)
+{
+    return checksum_diff2(seed, new, old, sizeof(struct l4));
+}
+
+static __always_inline
 __u16 icmp6_csum_diff(struct icmp6_hdr *new, struct icmp6_hdr *old)
 {
     return checksum_diff2(old->icmp6_cksum, new, old, sizeof(struct icmp6_hdr));

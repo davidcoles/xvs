@@ -983,25 +983,38 @@ int xdp_request_v4(struct xdp_md *ctx)
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
-    
-    if (ip->protocol != IPPROTO_TCP)
-	return XDP_DROP;
 
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-    
-    struct tcphdr *tcp = (void *)(ip + 1);
-    
-    if (tcp + 1 > data_end)
-      return XDP_DROP;
-
-
-    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
-
+    __u8 proto = ip->protocol;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
-    __be16 eph = tcp->source;
-    __be16 svc = tcp->dest;
+    __be16 eph = 0;
+    __be16 svc = 0;
 
+    struct tcphdr *tcp = NULL;
+    struct udphdr *udp = NULL;
+
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp = (void *)(ip + 1);
+	if (tcp + 1 > data_end)
+	    return XDP_DROP;
+	eph = tcp->source;
+	svc = tcp->dest;
+	break;
+    case IPPROTO_UDP:
+	udp = (void *)(ip + 1);
+	if (udp + 1 > data_end)
+	    return XDP_DROP;
+	eph = udp->source;
+	svc = udp->dest;
+	break;
+    default:
+	return XDP_DROP;
+    }
+    
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+
+    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
     
@@ -1029,28 +1042,29 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
     */
 
-    
-    //bpf_printk("HERE %x:%x:%x\n", t.h_dest[3], t.h_dest[4], t.h_dest[5]);
-
-    /**********************************************************************/
-    // SAVE CHECKSUM INFO
-    /**********************************************************************/
-    struct l4 o = {.saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };
-    __u16 old_csum = ip->check;
+    // save l3/l4 parameters for checksum diffs
+    struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };    
+    struct l4 n = o;
     struct iphdr old = *ip;
-    old.check = 0;
-    /**********************************************************************/
+    
+    // update l3 addresses
+    n.saddr = ip->saddr = ext.addr4.addr;
+    n.daddr = ip->daddr = vip.addr4.addr;
 
-    ip->saddr = ext.addr4.addr; // the source address of the NATed packet needs to be the LB's external IP
-    ip->daddr = vip.addr4.addr; // the destination needs to the that of the VIP that we are probing
+    // calculate new l3 checksum
+    ip->check = ip4_csum_diff(ip, &old);
 
-    /**********************************************************************/
-    // CHECKSUM DIFFS FROM OLD
-    /**********************************************************************/
-    ip->check = 0;
-    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
-    struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr, .sport = tcp->source, .dport = tcp->dest };    
-    tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
+    // calculate new l4 checksum
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp->check = l4_csum_diff(&n, &o, tcp->check);
+	break;
+    case IPPROTO_UDP:
+	udp->check = l4_csum_diff(&n, &o, udp->check);
+	break;
+    }
+
+    
     /**********************************************************************/
 
     int is_ipv6 = 0;
@@ -1068,7 +1082,7 @@ int xdp_request_v4(struct xdp_md *ctx)
 	return XDP_DROP;
 
     // to match returning packet
-    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = IPPROTO_TCP };
+    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
     rep.saddr = vip; // ???? upsets verifier if in declaration above
     rep.daddr = ext; // ???? upsets verifier if in declaration above
     
@@ -1077,9 +1091,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     map.src = src; // ??? upsets verifier if in declaration above    
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
-
-
-    //return bpf_redirect(vlaninfo->ifindex, 0);
     return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
 }
 
