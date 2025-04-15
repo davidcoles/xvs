@@ -1144,31 +1144,48 @@ int xdp_reply_v6(struct xdp_md *ctx)
         return XDP_PASS;
     }
 
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
-        return XDP_PASS;
-    
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return XDP_DROP;
-    
-    struct tcphdr *tcp = (void *) (ip6 + 1);
-    
-    if (tcp + 1 > data_end)
-        return XDP_DROP;
 
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
+        
+
+    __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t saddr = { .addr6 = ip6->ip6_src };
     addr_t daddr = { .addr6 = ip6->ip6_dst };    
     
-    struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
+    //struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
+    struct five_tuple rep = { .protocol = proto };
     rep.saddr = saddr; // ??? upsets verifier if in declaration above
     rep.daddr = daddr; // ??? upsets verifier if in declaration above
-    
+
+    struct tcphdr *tcp = NULL;
+    struct udphdr *udp = NULL;
+	
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp = (void *) (ip6 + 1);
+	if (tcp + 1 > data_end)
+	    return XDP_DROP;
+	rep.sport = tcp->source;
+	rep.dport = tcp->dest;
+	break;
+    case IPPROTO_UDP:
+	udp = (void *) (ip6 + 1);
+	if (udp + 1 > data_end)
+	    return XDP_DROP;
+	rep.sport = udp->source;
+	rep.dport = udp->dest;
+	break;
+    default:
+	return XDP_DROP;
+    }
+
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
     if (!match)
 	return XDP_DROP;
     
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-        
     __u64 time = bpf_ktime_get_ns();
 
     if (time < match->time)
@@ -1177,14 +1194,29 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
-    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    //struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = rep.sport, .dport = rep.dport };
+    struct l4v6 n = o;
     
-    ip6->ip6_src = match->nat.addr6; // reply comes from the NAT addr
-    ip6->ip6_dst = match->src.addr6; // to the internal NETNS address
-    tcp->dest = match->port;
+    n.saddr = ip6->ip6_src = match->nat.addr6; // reply comes from the NAT addr
+    n.daddr = ip6->ip6_dst = match->src.addr6; // to the internal NETNS address
 
-    struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
-    tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+    //struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
+    
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp->dest = match->port;
+	n.sport = tcp->source;
+	n.dport = tcp->dest;
+	tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+	break;
+    case IPPROTO_UDP:
+	udp->dest = match->port;
+	n.sport = udp->source;
+	n.dport = udp->dest;
+	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
+	break;
+    }
     
     return XDP_PASS;
 }
