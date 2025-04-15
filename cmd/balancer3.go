@@ -57,7 +57,7 @@ func main() {
 		log.Fatal("Unknown tunnel type")
 	}
 
-	fmt.Println("Starting ...")
+	fmt.Println("Starting ...xxx")
 
 	client, err := xvs.New(iface)
 
@@ -65,7 +65,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	pair := [2]netip.Prefix{netip.MustParsePrefix(vlan)}
+	//pair := [2]netip.Prefix{netip.MustParsePrefix(vlan)}
+	var pair [2]netip.Prefix
+
+	pair[0] = netip.MustParsePrefix(vlan)
+
+	log.Println("XXXXXXX", pair[0], vlan)
 
 	if *extra != "" {
 		pair[1] = netip.MustParsePrefix(*extra)

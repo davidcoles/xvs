@@ -195,7 +195,7 @@ __u16 icmp6_csum_diff(struct icmp6_hdr *new, struct icmp6_hdr *old)
 }
 
 static __always_inline
-void ip_reply(struct iphdr *ip, __u8 ttl) {
+void ip4_reply(struct iphdr *ip, __u8 ttl) {
     __u16 old_csum = ip->check;
     ip->check = 0;
     struct iphdr old = *ip;

@@ -464,7 +464,13 @@ func (l *layer3) vlans(vlans map[uint16][2]netip.Prefix) error {
 
 	for i := uint32(1); i < 4095; i++ {
 		f := l.netinfo.l2info4[uint16(i)]
+		if f.ifindex == 0 {
+			f = l.netinfo.l2info6[uint16(i)]
+		}
 		nic := f.ifindex
+		if nic != 0 {
+			fmt.Println(">>>>>>", f)
+		}
 		l.redirect_map.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 	}
 

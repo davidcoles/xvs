@@ -3,6 +3,7 @@ package xvs
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os/exec"
@@ -183,6 +184,26 @@ func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
 
 	l2info4, l3info4 := n.config2(vlan4, hw)
 	l2info6, l3info6 := n.config2(vlan6, hw)
+
+	for id, nic := range l2info4 {
+		if nic.ifindex == 0 {
+			log.Fatal("4: nic.ifindex == 0", id)
+		}
+		n, ok := l2info6[id]
+		if ok && n.ifindex != nic.ifindex {
+			log.Fatal("4: n.ifindex != nic.ifindex", id)
+		}
+	}
+
+	for id, nic := range l2info6 {
+		if nic.ifindex == 0 {
+			log.Fatal("6: nic.ifindex == 0", id)
+		}
+		n, ok := l2info4[id]
+		if ok && n.ifindex != nic.ifindex {
+			log.Fatal("6: n.ifindex != nic.ifindex", id)
+		}
+	}
 
 	fmt.Println("INFO4", l2info4, l3info4)
 	fmt.Println("INFO6", l2info6, l3info6)

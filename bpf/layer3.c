@@ -562,7 +562,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	
         return PROBE_REPLY;
     }
-    
+
     ft->saddr = saddr;
     ft->daddr = daddr;
 
@@ -596,11 +596,11 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	icmp = (void *)(ip6 + 1);
         if (icmp + 1 > data_end)
             return NOT_FOUND;
-	if (icmp->icmp6_type == 128 && icmp->icmp6_code == 0) {
+	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
 	    bpf_printk("ICMPv6\n");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
 	    struct icmp6_hdr old = *icmp;
-            icmp->icmp6_type = 129;
+            icmp->icmp6_type = ICMP6_ECHO_REPLY;
 	    icmp->icmp6_cksum = icmp6_csum_diff(icmp, &old);
             reverse_ethhdr(eth);
 	    return BOUNCE_ICMP;
@@ -692,7 +692,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
             return NOT_FOUND;
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
 	    bpf_printk("ICMPv4\n");
-	    ip_reply(ip, 64); // swap saddr/daddr, set TTL
+	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
 	    struct icmphdr old = *icmp;
 	    icmp->type = ICMP_ECHOREPLY;
             icmp->checksum = icmp4_csum_diff(icmp, &old);
@@ -708,7 +708,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
     return lookup(ft, ip->protocol, t);
 }
 
-static __always_inline
+//static __always_inline
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
 
     if (vlan) {
@@ -801,8 +801,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case LAYER3_FOU: // fallthough
     case LAYER3_GUE: // fallthough
     case LAYER3_IPIP:
-	if (check_ingress_interface(ctx->ingress_ifindex, vlan, t->vlanid) < 0)
-            return XDP_DROP;
+	//if (check_ingress_interface(ctx->ingress_ifindex, vlan, t->vlanid) < 0)
+        //    return XDP_DROP;
 	
 	if ((data_end - next_header) + overhead > mtu) {
 	    if (is_ipv6) {
