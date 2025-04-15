@@ -878,6 +878,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return XDP_DROP;
     
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
+
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
@@ -887,8 +889,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     struct destinfo *destinfo = (void *) vip_rip;
 
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
@@ -896,6 +896,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     __be16 svc = 0;
 
     struct tcphdr *tcp = NULL;
+    struct udphdr *udp = NULL;
     
     switch(proto) {
     case IPPROTO_TCP:
@@ -905,23 +906,38 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	eph = tcp->source;
 	svc = tcp->dest;
 	break;
+    case IPPROTO_UDP:
+	udp = (void *) (ip6 + 1);
+	if (udp + 1 > data_end)
+	    return XDP_DROP;
+	eph = udp->source;
+	svc = udp->dest;
+	break;
     default:
 	return XDP_DROP;
     }
     
 
-    struct l4 ft = { .saddr = ext.addr4.addr, .daddr = vip.addr4.addr, .sport = tcp->source, .dport = tcp->dest }; // FIXME
+    struct l4 ft = { .saddr = ext.addr4.addr, .daddr = vip.addr4.addr, .sport = eph, .dport = svc }; // FIXME
 
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
-
-    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     
-    ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
-    ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
+    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
+    struct l4v6 n = o;
+    
+    n.saddr = ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
+    n.daddr = ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
 
-    struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
-    tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+
+     switch(proto) {
+     case IPPROTO_TCP:
+	 tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+	 break;
+     case IPPROTO_UDP:
+	 udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
+	 break;
+     }
 
     int action = XDP_DROP;
 
@@ -988,6 +1004,8 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (ip->ttl <= 1)
 	return XDP_DROP;
 
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
@@ -1020,8 +1038,6 @@ int xdp_request_v4(struct xdp_md *ctx)
 	return XDP_DROP;
     }
     
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-
     struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
