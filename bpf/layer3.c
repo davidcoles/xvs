@@ -1268,7 +1268,7 @@ int xdp_reply_v4(struct xdp_md *ctx)
     struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
     __u16 old_csum = ip->check;
     struct iphdr old = *ip;
-    old.check = 0;
+    //old.check = 0;
     /**********************************************************************/
     
     addr_t saddr = { .addr4.addr = ip->saddr };
@@ -1300,8 +1300,11 @@ int xdp_reply_v4(struct xdp_md *ctx)
     /**********************************************************************/
     // CHECKSUM DIFFS FROM OLD
     /**********************************************************************/
-    ip->check = 0;
-    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+    //ip->check = 0;
+    //ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+
+    ip->check = ip4_csum_diff(ip, &old);
+    
     struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
     tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
     /**********************************************************************/
