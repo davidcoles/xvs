@@ -1205,15 +1205,11 @@ int xdp_reply_v6(struct xdp_md *ctx)
     
     switch(proto) {
     case IPPROTO_TCP:
-	tcp->dest = match->port;
-	n.sport = tcp->source;
-	n.dport = tcp->dest;
+	//tcp->dest = match->port;
 	tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
 	break;
     case IPPROTO_UDP:
-	udp->dest = match->port;
-	n.sport = udp->source;
-	n.dport = udp->dest;
+	//udp->dest = match->port;
 	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
 	break;
     }
@@ -1248,67 +1244,84 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     if (ip->ttl <= 1)
         return XDP_DROP;
-
+    
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+    
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
     
-    if (ip->protocol != IPPROTO_TCP)
-        return XDP_DROP;
-
-    struct tcphdr *tcp = (void *)(ip + 1);
+    __u8 proto = ip->protocol;
+    addr_t saddr = { .addr4.addr = ip->saddr };
+    addr_t daddr = { .addr4.addr = ip->daddr };    
     
-    if (tcp + 1 > data_end)
+    //struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
+    struct five_tuple rep = { .protocol = proto };
+    rep.saddr = saddr; // ??? upsets verifier if in declaration above
+    rep.daddr = daddr; // ??? upsets verifier if in declaration above
+    
+    struct tcphdr *tcp = NULL;
+    struct udphdr *udp = NULL;    
+
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp = (void *)(ip + 1);
+	if (tcp + 1 > data_end)
+	    return XDP_DROP;
+	rep.sport = tcp->source;
+	rep.dport = tcp->dest;
+	break;
+    case IPPROTO_UDP:
+	udp = (void *)(ip + 1);
+	if (udp + 1 > data_end)
+	    return XDP_DROP;
+	rep.sport = udp->source;
+	rep.dport = udp->dest;
+	break;
+    default:
 	return XDP_DROP;    
+    }
 
-
+    
     /**********************************************************************/
     // SAVE CHECKSUM INFO
     /**********************************************************************/
     struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
-    __u16 old_csum = ip->check;
+    struct l4 n = o;
+    //__u16 old_csum = ip->check;
     struct iphdr old = *ip;
     //old.check = 0;
     /**********************************************************************/
-    
-    addr_t saddr = { .addr4.addr = ip->saddr };
-    addr_t daddr = { .addr4.addr = ip->daddr };    
-    
-    struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
-    rep.saddr = saddr; // ??? upsets verifier if in declaration above
-    rep.daddr = daddr; // ??? upsets verifier if in declaration above
     
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
     if (!match)
 	return XDP_DROP;
     
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-    
     __u64 time = bpf_ktime_get_ns();
-
+    
     if (time < match->time)
 	return XDP_DROP;
-
+    
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
+    
+    n.saddr = ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
+    n.daddr = ip->daddr = match->src.addr4.addr; // to the internal NETNS address
 
-    ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
-    ip->daddr = match->src.addr4.addr; // to the internal NETNS address
-    tcp->dest = match->port;
-
-    /**********************************************************************/
-    // CHECKSUM DIFFS FROM OLD
-    /**********************************************************************/
     //ip->check = 0;
     //ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
-
-    ip->check = ip4_csum_diff(ip, &old);
+    ip->check = ipv4_checksum_diff(~(ip->check), ip, &old);    
     
-    struct l4 n = {.saddr = ip->saddr, .daddr = ip->daddr};
-    tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
-    /**********************************************************************/
-
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
+	break;
+    case IPPROTO_UDP:
+	udp->check = l4_checksum_diff(~(udp->check), &n, &o);
+	break;
+    }
+    
     return XDP_PASS;
 }
 
