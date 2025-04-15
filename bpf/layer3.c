@@ -878,14 +878,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return XDP_DROP;
     
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt != IPPROTO_TCP)
-        return XDP_PASS;
-    
-    struct tcphdr *tcp = (void *) (ip6 + 1);
-    
-    if (tcp + 1 > data_end)
-        return XDP_DROP;
-
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
@@ -896,11 +888,27 @@ int xdp_request_v6(struct xdp_md *ctx) {
     struct destinfo *destinfo = (void *) vip_rip;
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-    
+
+    __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
-    __be16 eph = tcp->source;
-    __be16 svc = tcp->dest;
+    __be16 eph = 0;
+    __be16 svc = 0;
+
+    struct tcphdr *tcp = NULL;
+    
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp = (void *) (ip6 + 1);
+	if (tcp + 1 > data_end)
+	    return XDP_DROP;
+	eph = tcp->source;
+	svc = tcp->dest;
+	break;
+    default:
+	return XDP_DROP;
+    }
+    
 
     struct l4 ft = { .saddr = ext.addr4.addr, .daddr = vip.addr4.addr, .sport = tcp->source, .dport = tcp->dest }; // FIXME
 
