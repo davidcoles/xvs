@@ -953,7 +953,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
         return XDP_DROP;
 
     // to match returning packet
-    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = IPPROTO_TCP };
+    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
     rep.saddr = vip; // ???? upsets verifier if in declaration above
     rep.daddr = ext; // ???? upsets verifier if in declaration above
 
@@ -1194,22 +1194,17 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
-    //struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = rep.sport, .dport = rep.dport };
     struct l4v6 n = o;
     
     n.saddr = ip6->ip6_src = match->nat.addr6; // reply comes from the NAT addr
     n.daddr = ip6->ip6_dst = match->src.addr6; // to the internal NETNS address
-
-    //struct l4v6 n = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = tcp->source, .dport = tcp->dest };
     
     switch(proto) {
     case IPPROTO_TCP:
-	//tcp->dest = match->port;
 	tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
 	break;
     case IPPROTO_UDP:
-	//udp->dest = match->port;
 	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
 	break;
     }
@@ -1283,15 +1278,9 @@ int xdp_reply_v4(struct xdp_md *ctx)
     }
 
     
-    /**********************************************************************/
-    // SAVE CHECKSUM INFO
-    /**********************************************************************/
     struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
     struct l4 n = o;
-    //__u16 old_csum = ip->check;
     struct iphdr old = *ip;
-    //old.check = 0;
-    /**********************************************************************/
     
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
@@ -1309,9 +1298,8 @@ int xdp_reply_v4(struct xdp_md *ctx)
     n.saddr = ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
     n.daddr = ip->daddr = match->src.addr4.addr; // to the internal NETNS address
 
-    //ip->check = 0;
-    //ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
-    ip->check = ipv4_checksum_diff(~(ip->check), ip, &old);    
+    //ip->check = ipv4_checksum_diff(~(ip->check), ip, &old);
+    ip->check = ip4_csum_diff(ip, &old);
     
     switch(proto) {
     case IPPROTO_TCP:
