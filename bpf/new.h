@@ -27,17 +27,6 @@ const __u8 GRE_OVERHEAD = sizeof(struct gre_hdr);
 const __u8 FOU_OVERHEAD = sizeof(struct udphdr);
 const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 
-// magic code from https://mejedi.dev/posts/ebpf-dereference-of-modified-ctx-ptr-disallowed/
-static __always_inline void *xdp_data_end(const struct xdp_md *ctx) {
-    //return (void *)(long)ctx->data_end;
-    void *data_end;
-    
-    asm("%[res] = *(u32 *)(%[base] + %[offset])"
-	: [res]"=r"(data_end)
-	: [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data_end)), "m"(*ctx));
-    
-    return data_end;
-}
 
 static __always_inline
 void *ipptr(void *data, void *data_end)
@@ -206,6 +195,12 @@ __u16 icmp6_csum_diff(struct icmp6_hdr *new, struct icmp6_hdr *old)
     return checksum_diff2(old->icmp6_cksum, new, old, sizeof(struct icmp6_hdr));
 }
 
+
+static __always_inline
+__u16 l4v6_csum_diff(struct l4v6 *new, struct l4v6 *old, __u16 seed) {
+    return checksum_diff2(seed, new, old, sizeof(struct l4v6));
+}
+
 static __always_inline
 void ip4_reply(struct iphdr *ip, __u8 ttl) {
     __u16 old_csum = ip->check;
@@ -214,6 +209,15 @@ void ip4_reply(struct iphdr *ip, __u8 ttl) {
     __be32 tmp = ip->daddr;
     ip->daddr = ip->saddr;
     ip->saddr = tmp;
+    ip->ttl = ttl;
+    ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
+}
+
+static __always_inline
+void ip4_set_ttl(struct iphdr *ip, __u8 ttl) {
+    __u16 old_csum = ip->check;
+    ip->check = 0;
+    struct iphdr old = *ip;
     ip->ttl = ttl;
     ip->check = ipv4_checksum_diff(~old_csum, ip, &old);
 }

@@ -57,7 +57,7 @@ func main() {
 		log.Fatal("Unknown tunnel type")
 	}
 
-	fmt.Println("Starting ...xxx")
+	fmt.Println("Starting ...")
 
 	client, err := xvs.New(iface)
 

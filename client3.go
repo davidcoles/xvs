@@ -24,6 +24,7 @@ import (
 )
 
 type TunnelType uint8
+type TunnelFlags uint8
 type Flags uint8
 
 const (
@@ -67,10 +68,11 @@ type Service3Extended struct {
 }
 
 type Destination3 struct {
-	Address    netip.Addr
-	TunnelType TunnelType
-	TunnelPort uint16
-	Weight     uint8
+	Address     netip.Addr
+	TunnelType  TunnelType
+	TunnelPort  uint16
+	TunnelFlags TunnelFlags
+	Weight      uint8
 }
 
 type Destination3Extended struct {
@@ -82,7 +84,7 @@ type Config struct {
 }
 
 func New(interfaces ...string) (Client3, error) {
-	return newClient(interfaces[0])
+	return newClient(interfaces...)
 }
 
 func (l *layer3) Info() (Info, error) {

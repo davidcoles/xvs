@@ -16,146 +16,6 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-/*
-
-// all backends in data plane have full source IP/HW addresses in destinfo - no need to look up seperate VLAN details
-// On a single/bond interface with no VLANs then TX always
-// On a single/bond interface with VLANs then update VLAN header (if necc) and TX always
-// On multiple interfaces then REDIRECT always
-
-
-https://www.etb-tech.com/netronome-agilio-cx-40gb-qsfp-dual-port-low-profile-network-card-pcbd0097-005-nic00476.html
-
-https://datatracker.ietf.org/doc/html/draft-herbert-gue-01
-
-bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
-
-# remember to set up IPv6 and VIPs
-ip a add 192.168.101.201 dev lo
-ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
-
-* check VIP against know list
-* lookup flow in state table first
-* if not there then try shared flow table
-* if not found then lookup backend server/tunnel info
-* modify packet
-* if required then store new/updated flow record in state table
-* push to userland queue if necessary
-* update stats
-* TX/redirect_map packet as indicated in dest record
-
-# TODO
-* IPv6 ICMP - frag needed
-* ICMP replies
-* flow table
-* healthchecks for IPv6
-
-**********************************************************************
-
-# can use same port for IP and IPV6 in GOU as there is a protocol field
-
-# IPv4 in GUE4
-modprobe fou
-modprobe ipip
-ip fou add port 9999 gue
-ip link set dev tunl0 up
-sysctl -w net.ipv4.conf.tunl0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-# IPv6 in GUE4
-modprobe fou
-modprobe sit
-ip l set dev sit0 up
-ip fou add port 9999 gue
-
-**********************************************************************
-
-# IPv4 in FOU4
-modprobe fou
-modprobe ipip
-ip fou add port 9999 ipproto 4
-ip link set dev tunl0 up
-sysctl -w net.ipv4.conf.tunl0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-# IPv6 in FOU4
-modprobe fou
-modprobe sit
-ip l set dev sit0 up
-ip fou add port 6666 ipproto 41
-
-# IPv6 in FOU6
-modprobe fou
-modprobe fou6 # creates ip6tnl0
-ip -6 fou add port 6666 ipproto 41
-ip l set dev ip6tnl0 up
-# DOES NOT WORK ATM - I thought this was working previously
-
-# IPv4 in FOU6 - couldn't get to work
-
-**********************************************************************
-
-# IPIP
-modprobe ipip
-ip l set dev tunl0 up
-tcpdump tunl0
-sysctl -w net.ipv4.conf.tunl0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-# 6in4
-modprobe sit
-ip l set dev sit0 up
-
-# 6in6
-modprobe ip6_tunnel
-ip -6 tunnel change ip6tnl0 mode ip6ip6
-ip l set dev ip6tnl0 up
-
-# 4in6 
-modprobe ip6_tunnel
-ip -6 tunnel change ip6tnl0 mode ip4ip6
-ip l set dev ip6tnl0 up
-sysctl -w net.ipv4.conf.ip6tnl0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-**********************************************************************
-
-# 4in4 and 6in4 4 GRE
-modprobe ip_gre
-ip l set dev gre0 up
-sysctl -w net.ipv4.conf.gre0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-# 6in6 and 4in6 GRE
-modprobe ip6_gre
-ip l set dev ip6gre0 up
-sysctl -w net.ipv4.conf.ip6gre0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-**********************************************************************
-
-ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
-
-ip link add name geneve0 type geneve id 666 remote 0.0.0.0
-ip l set dev geneve0 up
-sysctl -w net.ipv4.conf.geneve0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-For a basic FOU4 backend:
-
-/etc/networkd-dispatcher/routable.d/50-ifup-hooks:
-#!/bin/sh
-ip fou add port 9999 ipproto 4
-ip link set dev tunl0 up
-sysctl -w net.ipv4.conf.tunl0.rp_filter=0
-sysctl -w net.ipv4.conf.all.rp_filter=0
-
-/etc/modules:
-fou
-ipip
-
-*/
-
 #ifdef __BPF__ // Skip all of this with CGO
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -175,7 +35,8 @@ ipip
 //#define memcmp(d, s, n) __builtin_memcmp((d), (s), (n))
 //#define memcmp(d, s, n) (1)
 
-const __u8 F_CALCULATE_CHECKSUM = 1;
+const __u8 F_CALCULATEX_CHECKSUM = 1;
+const __u8 F_NOT_LOCAL = 0x80;
 
 #include "imports.h"
 #include "vlan.h"
@@ -367,6 +228,40 @@ struct {
 
 /**********************************************************************/
 
+struct settings {
+    __u64 ticker;
+    __u8 vetha[6];
+    __u8 vethb[6];
+    __u8 multi;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct settings);
+    __uint(max_entries, 1);
+} settings SEC(".maps");
+
+
+struct vlaninfo {
+    __be32 ip4;
+    __be32 gw4;
+    addr_t ip6;
+    addr_t gw6;
+    __u8 hw4[6];
+    __u8 hw6[6];
+    __u8 gh4[6];
+    __u8 gh6[6];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct vlaninfo);
+    __uint(max_entries, 4096);
+} vlaninfo SEC(".maps");
+
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct fourtuple);
@@ -394,6 +289,13 @@ struct {
     __type(value, __u32);
     __uint(max_entries, 4096);
 } redirect_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 4096);
+} redirect_map6 SEC(".maps");
 
 /**********************************************************************/
 
@@ -457,6 +359,11 @@ int is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
+static __always_inline
+int is_ipv4_addr_p(struct addr *a) {
+    return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
+}
+
 //static __always_inline
 int lookup_flow(fourtuple_t *ft, __u8 protocol)
 {
@@ -497,13 +404,9 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
-    if (IPPROTO_TCP == protocol) {
-	// lookup in flow table
-    }
-
     if (!service)
 	return NOT_FOUND;;
-
+    
     __u8 sticky = service->destinfo[0].flags & F_STICKY;
     __u16 hash3 = l3_hash(ft);
     __u16 hash4 = l4_hash(ft);
@@ -515,6 +418,38 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
     *t = service->destinfo[index];
     t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
 
+    __u32 vlanid = t->vlanid;
+
+    if (!vlanid)
+	return NOT_FOUND;
+    
+    struct vlaninfo *vlan = bpf_map_lookup_elem(&vlaninfo, &vlanid);
+
+    if (!vlan)
+	return NOT_FOUND;
+    
+    addr_t saddr = {};
+    __u8 h_source[6];
+    __u8 h_gw[6];
+    
+    if (is_ipv4_addr_p(&(t->daddr))) {
+	saddr.addr4.addr = vlan->ip4;
+	memcpy(h_source, vlan->hw4, 6);
+	memcpy(h_gw, vlan->gh4, 6);
+    } else {
+	saddr = vlan->ip6;
+	memcpy(h_source, vlan->hw6, 6);
+	memcpy(h_gw, vlan->gh6, 6);
+    }
+
+    t->saddr = saddr;
+    memcpy(t->h_source, h_source, 6);
+
+    if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
+	bpf_printk("F_NOT_LOCAL\n");
+	memcpy(t->h_dest, h_gw, 6); // send packet to router
+    }
+    
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
     
@@ -611,7 +546,12 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	return NOT_FOUND;
     }
 
-    return lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
+    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t); // FIXME - if L2 DSR then set TTL to 1 if > 1
+
+    if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
+	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim == 1;
+
+    return r;
 }
 
 static __always_inline
@@ -705,9 +645,15 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	return NOT_FOUND;
     }
     
-    return lookup(ft, ip->protocol, t);
+    enum lookup_result r = lookup(ft, ip->protocol, t); // FIXME - if L2 DSR then set TTL to 1 if > 1
+
+    if (LAYER2_DSR == r && ip->ttl > 1)
+	ip4_set_ttl(ip, 1);
+    
+    return r;
 }
 
+/*
 //static __always_inline
 int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
 
@@ -723,7 +669,7 @@ int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected
 
     return 0;
 }
-
+*/
 
 
 static __always_inline
@@ -733,8 +679,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     int mtu = MTU;
     int overhead = 0;
     enum lookup_result result = NOT_A_VIP;
-    int is_ipv6 = 0;
-
+    int vip_is_ipv6 = 0;
+    
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -761,16 +707,16 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 	next_header = vlan + 1;
     }
 
-    __builtin_memset(t, 0, sizeof(tunnel_t));
+    //__builtin_memset(t, 0, sizeof(tunnel_t)); // was a temp fix
     
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
-	is_ipv6 = 1;
+	vip_is_ipv6 = 1;
 	overhead = sizeof(struct ip6_hdr);
 	result = lookup6(ctx, next_header, ft, t);
 	break;
     case bpf_htons(ETH_P_IP):
-	is_ipv6 = 0;
+	vip_is_ipv6 = 0;
 	overhead = sizeof(struct iphdr);
 	result = lookup4(ctx, next_header, ft, t);
 	break;
@@ -782,30 +728,26 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 
     // no default here - handle all cases explicitly
     switch (result) {
-    case LAYER2_DSR: return send_l2(ctx, t);
+    case LAYER2_DSR: break; //return send_l2(ctx, t);
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
     case LAYER3_IPIP: break;
     case NOT_A_VIP: return XDP_PASS;
     case NOT_FOUND: return XDP_DROP;
-    case PROBE_REPLY: return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
     case BOUNCE_ICMP: return XDP_TX;
+    case PROBE_REPLY:
+	if (vlan && vlan_pop(ctx) < 0) return XDP_DROP;
+	return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
     }
 
-    // Layer 3 service packets should only ever be received on the same interface/VLAN as they will be sent
-    // FIXME: need to make provision for untagged bond interfaces - list of acceptable interfaces?
-    // Also check if packet is too large to encapsulate
     switch (result) {
     case LAYER3_GRE: // fallthough
     case LAYER3_FOU: // fallthough
     case LAYER3_GUE: // fallthough
     case LAYER3_IPIP:
-	//if (check_ingress_interface(ctx->ingress_ifindex, vlan, t->vlanid) < 0)
-        //    return XDP_DROP;
-	
 	if ((data_end - next_header) + overhead > mtu) {
-	    if (is_ipv6) {
+	    if (vip_is_ipv6) {
 		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
 		return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? XDP_ABORTED : XDP_TX;
 		
@@ -814,18 +756,21 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
 		return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? XDP_ABORTED : XDP_TX;
 	    }
 	}
-	
 	break;
-
     default:
 	break;
     }
+
+    // update VLAN ID to that of the target if packet is tagged
+    if (vlan)
+	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
     
     switch (result) {
-    case LAYER3_IPIP: return send_xinx(ctx, t, is_ipv6);
-    case LAYER3_GRE:  return send_gre(ctx, t, is_ipv6);
+    case LAYER2_DSR:  return send_l2(ctx, t);	
+    case LAYER3_IPIP: return send_xinx(ctx, t, vip_is_ipv6);
+    case LAYER3_GRE:  return send_gre(ctx, t, vip_is_ipv6);
     case LAYER3_FOU:  return send_fou(ctx, t);
-    case LAYER3_GUE:  return send_gue(ctx, t, is_ipv6); // TODO - breaks verifier on 22.04
+    case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6); // TODO - breaks verifier on 22.04
     default:
 	break;
     }
@@ -964,7 +909,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
 
     //return bpf_redirect(vlaninfo->ifindex, 0);
-    return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
+    return is_ipv4_addr(t.daddr) ?
+	bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
+	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
 static __always_inline
@@ -1115,7 +1062,10 @@ int xdp_request_v4(struct xdp_md *ctx)
     map.src = src; // ??? upsets verifier if in declaration above    
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
-    return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
+    //return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
+    return is_ipv4_addr(t.daddr) ?
+        bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
+        bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
 static __always_inline
@@ -1149,12 +1099,10 @@ int xdp_reply_v6(struct xdp_md *ctx)
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
         
-
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t saddr = { .addr6 = ip6->ip6_src };
     addr_t daddr = { .addr6 = ip6->ip6_dst };    
     
-    //struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
     struct five_tuple rep = { .protocol = proto };
     rep.saddr = saddr; // ??? upsets verifier if in declaration above
     rep.daddr = daddr; // ??? upsets verifier if in declaration above
@@ -1202,10 +1150,10 @@ int xdp_reply_v6(struct xdp_md *ctx)
     
     switch(proto) {
     case IPPROTO_TCP:
-	tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+	tcp->check = l4v6_csum_diff(&n, &o, tcp->check);
 	break;
     case IPPROTO_UDP:
-	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
+	udp->check = l4v6_csum_diff(&n, &o, udp->check);
 	break;
     }
     
@@ -1249,8 +1197,7 @@ int xdp_reply_v4(struct xdp_md *ctx)
     __u8 proto = ip->protocol;
     addr_t saddr = { .addr4.addr = ip->saddr };
     addr_t daddr = { .addr4.addr = ip->daddr };    
-    
-    //struct five_tuple rep = { .protocol = IPPROTO_TCP, .sport = tcp->source, .dport = tcp->dest };
+
     struct five_tuple rep = { .protocol = proto };
     rep.saddr = saddr; // ??? upsets verifier if in declaration above
     rep.daddr = daddr; // ??? upsets verifier if in declaration above
@@ -1276,7 +1223,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
     default:
 	return XDP_DROP;    
     }
-
     
     struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
     struct l4 n = o;
@@ -1303,10 +1249,12 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     switch(proto) {
     case IPPROTO_TCP:
-	tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
+	//tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
+	tcp->check = l4_csum_diff(&n, &o, tcp->check);
 	break;
     case IPPROTO_UDP:
-	udp->check = l4_checksum_diff(~(udp->check), &n, &o);
+	//udp->check = l4_checksum_diff(~(udp->check), &n, &o);
+	udp->check = l4_csum_diff(&n, &o, udp->check);
 	break;
     }
     
@@ -1317,9 +1265,34 @@ int xdp_reply_v4(struct xdp_md *ctx)
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
-     //__u64 start = bpf_ktime_get_ns();
-    //__u32 took = 0;
-     
+    __u64 start = bpf_ktime_get_ns();
+    __u64 start_s = start / SECOND_NS;
+
+    struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
+    if (!s)
+	return XDP_PASS;
+
+    if (s->ticker == 0) {
+	s->ticker = start_s;
+    } else if (s->ticker + 120 < start_s) {
+	return XDP_PASS; // ticker hasn't been reset for 2mins - fail safe
+    }
+
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data     = (void *)(long)ctx->data;
+    //int ingress    = ctx->ingress_ifindex;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP; // or drop?
+    
+    __u8 dot1q = 0;
+    
+    if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
+	dot1q = 1;
+    }
+    
     fourtuple_t ft = {};
     tunnel_t t = {};
     
@@ -1330,6 +1303,19 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_PASS: return XDP_PASS;
     case XDP_DROP: return XDP_DROP;
     case XDP_TX:
+
+	switch (s->multi) {
+	case 0: // untagged bond - multi NIC, but only single VLAN in config
+	    return XDP_TX; // possible efficiency, rather than XDP_REDIRECT to the bond device
+	case 1: // single interface - TX either tagged or untagged
+	    return XDP_TX;
+	default:
+	    if (dot1q) return XDP_TX; // muti-interface, if tagged packets then just TX to appropriate VLAN
+	    return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP); // otherwise redirect to interface
+	}
+
+	return XDP_DROP;
+	
 	//took = bpf_ktime_get_ns() - start;
 	//int ack = dest.flags.ack ? 1 : 0;	
 	//int syn = dest.flags.syn ? 1 : 0;	
@@ -1340,7 +1326,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_ABORTED: return XDP_ABORTED;
     case XDP_REDIRECT: return XDP_REDIRECT;
     }
-     return XDP_PASS;
+    return XDP_PASS;
 }
 
 SEC("xdp")

@@ -47,6 +47,13 @@ const (
 var VETH32 uint32 = 4095
 var ZERO uint32 = 0
 
+type bpf_settings struct {
+	ticker uint64 // periodically reset
+	vetha  mac
+	vethb  mac
+	multi  uint8
+}
+
 type bpf_destinfo struct {
 	daddr    addr16
 	saddr    addr16
@@ -58,6 +65,17 @@ type bpf_destinfo struct {
 	h_dest   mac
 	h_source mac
 	pad      [12]byte // pad to 64 bytes
+}
+
+type bpf_vlaninfo struct {
+	ip4 addr4
+	gw4 addr4
+	ip6 addr16
+	gw6 addr16
+	hw4 mac
+	hw6 mac
+	gh4 mac
+	gh6 mac
 }
 
 type bpf_destinations struct {
@@ -83,6 +101,7 @@ type bpf_vip_rip struct {
 }
 
 type addr16 [16]byte
+type addr4 [4]byte
 
 type threetuple struct {
 	address  netip.Addr
@@ -105,7 +124,10 @@ type layer3 struct {
 
 	nat_to_vip_rip xdp.Map
 	redirect_map   xdp.Map
+	redirect_map6  xdp.Map
 	destinations   xdp.Map
+	vlaninfo       xdp.Map
+	settings       xdp.Map
 	vips           xdp.Map
 }
 
@@ -273,16 +295,25 @@ func (s *service3) recalc() {
 			log.Fatal("FWD", err)
 		}
 
+		const NOT_LOCAL = 0x80
+
+		flags := uint8(d.TunnelFlags & 0x7f)
+
+		if ni.l3 {
+			flags |= NOT_LOCAL
+			log.Println("NOT_LOCAL", d.Address)
+		}
+
 		i2 := bpf_destinfo{
-			daddr:    as16(ni.daddr),
-			saddr:    as16(ni.saddr),
-			vlanid:   ni.vlanid,
-			h_dest:   ni.h_dest,
-			h_source: ni.h_source,
-			dport:    d.TunnelPort,
-			sport:    0,
-			method:   d.TunnelType,
-			flags:    0, // TODO
+			vlanid: ni.vlanid,
+			//h_source: ni.h_source,
+			//saddr:    as16(ni.saddr),
+			h_dest: ni.h_dest,
+			daddr:  as16(ni.daddr),
+			dport:  d.TunnelPort,
+			sport:  0,
+			method: d.TunnelType,
+			flags:  flags, // TODO
 		}
 
 		val.destinfo[i+1] = i2
@@ -355,20 +386,23 @@ func as16(a netip.Addr) (r addr16) {
 		return a.As16()
 	}
 
-	ip := a.As4()
-	copy(r[12:], ip[:])
+	if a.Is4() {
+		ip := a.As4()
+		copy(r[12:], ip[:])
+	}
+
 	return
 }
 
-func newClient(ifname string) (*layer3, error) {
-
-	iface, err := net.InterfaceByName(ifname)
-
-	if err != nil {
-		return nil, err
+func as4(a netip.Addr) (r addr4) {
+	if a.Is4() {
+		return a.As4()
 	}
 
-	nic := uint32(iface.Index)
+	return
+}
+
+func newClient(interfaces ...string) (*layer3, error) {
 
 	ni := &netinfo{}
 
@@ -386,13 +420,13 @@ func newClient(ifname string) (*layer3, error) {
 		return nil, err
 	}
 
-	x.LinkDetach(nic)
+	redirect_map, err := x.FindMap("redirect_map", 4, 4)
 
 	if err != nil {
 		return nil, err
 	}
 
-	redirect_map, err := x.FindMap("redirect_map", 4, 4)
+	redirect_map6, err := x.FindMap("redirect_map6", 4, 4)
 
 	if err != nil {
 		return nil, err
@@ -416,6 +450,18 @@ func newClient(ifname string) (*layer3, error) {
 		return nil, err
 	}
 
+	vlaninfo, err := x.FindMap("vlaninfo", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
+
+	if err != nil {
+		return nil, err
+	}
+
+	settings, err := x.FindMap("settings", 4, int(unsafe.Sizeof(bpf_settings{})))
+
+	if err != nil {
+		return nil, err
+	}
+
 	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
 
 	if err != nil {
@@ -428,8 +474,47 @@ func newClient(ifname string) (*layer3, error) {
 		return nil, err
 	}
 
-	if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
-		return nil, err
+	multi := uint8(len(interfaces))
+
+	var untagged_bond bool
+
+	if untagged_bond && multi == 1 {
+		multi = 0
+	}
+
+	setting := bpf_settings{
+		vetha: ns.a.mac,
+		vethb: ns.b.mac,
+		multi: multi,
+	}
+
+	settings.UpdateElem(uP(&ZERO), uP(&setting), xdp.BPF_ANY)
+
+	var nics []uint32
+
+	for _, ifname := range interfaces {
+
+		iface, err := net.InterfaceByName(ifname)
+
+		if err != nil {
+			return nil, err
+		}
+
+		nic := uint32(iface.Index)
+
+		if err != nil {
+			return nil, err
+		}
+
+		x.LinkDetach(nic)
+
+		nics = append(nics, nic)
+	}
+
+	for _, nic := range nics {
+		if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
+			return nil, err
+		}
 	}
 
 	fmt.Println("VETH", ns.a.mac.String(), ns.b.mac.String())
@@ -438,6 +523,7 @@ func newClient(ifname string) (*layer3, error) {
 
 	var ns_nic uint32 = uint32(ns.a.idx)
 	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
+	redirect_map6.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
 		services: map[threetuple]*service3{},
@@ -447,7 +533,10 @@ func newClient(ifname string) (*layer3, error) {
 
 		nat_to_vip_rip: nat_to_vip_rip,
 		redirect_map:   redirect_map,
+		redirect_map6:  redirect_map6,
 		destinations:   destinations,
+		vlaninfo:       vlaninfo,
+		settings:       settings,
 		vips:           vips,
 	}, nil
 }
@@ -472,6 +561,32 @@ func (l *layer3) vlans(vlans map[uint16][2]netip.Prefix) error {
 			fmt.Println(">>>>>>", f)
 		}
 		l.redirect_map.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
+
+		f4 := l.netinfo.l2info4[uint16(i)]
+		f6 := l.netinfo.l2info6[uint16(i)]
+
+		g4 := l.netinfo.l3info4[uint16(i)]
+		g6 := l.netinfo.l3info6[uint16(i)]
+
+		vi := bpf_vlaninfo{
+			ip4: as4(f4.ip),
+			gw4: as4(g4.ip),
+			ip6: as16(f6.ip),
+			gw6: as16(g6.ip),
+			hw4: f4.hw,
+			hw6: f6.hw,
+			gh4: g4.hw,
+			gh6: g6.hw,
+		}
+
+		if nic != 0 {
+			fmt.Println("<<<<<<", vi)
+		}
+
+		nic = f6.ifindex
+		l.redirect_map6.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
+
+		l.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
 	}
 
 	return nil

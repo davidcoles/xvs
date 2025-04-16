@@ -1,0 +1,151 @@
+
+
+// all backends in data plane have full source IP/HW addresses in destinfo - no need to look up seperate VLAN details
+// On a single inferface then TX always
+// On a single/bond interface with VLAN header then update VLAN header (if necc) and TX always
+// On multiple interfaces with a single VLAN then TX always (bond)
+// On multiple interfaces then REDIRECT always
+
+
+https://www.etb-tech.com/netronome-agilio-cx-40gb-qsfp-dual-port-low-profile-network-card-pcbd0097-005-nic00476.html
+
+https://datatracker.ietf.org/doc/html/draft-herbert-gue-01
+
+bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
+
+# remember to set up IPv6 and VIPs
+ip a add 192.168.101.201 dev lo
+ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
+
+* check VIP against know list
+* lookup flow in state table first
+* if not there then try shared flow table
+* if not found then lookup backend server/tunnel info
+* modify packet
+* if required then store new/updated flow record in state table
+* push to userland queue if necessary
+* update stats
+* TX/redirect_map packet as indicated in dest record
+
+# TODO
+* IPv6 ICMP - frag needed
+* ICMP replies
+* flow table
+* healthchecks for IPv6
+
+**********************************************************************
+
+# can use same port for IP and IPV6 in GOU as there is a protocol field
+
+# IPv4 in GUE4
+modprobe fou
+modprobe ipip
+ip fou add port 9999 gue
+ip link set dev tunl0 up
+sysctl -w net.ipv4.conf.tunl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+# IPv6 in GUE4
+modprobe fou
+modprobe sit
+ip l set dev sit0 up
+ip fou add port 9999 gue
+
+**********************************************************************
+
+# IPv4 in FOU4
+modprobe fou
+modprobe ipip
+ip fou add port 9999 ipproto 4
+ip link set dev tunl0 up
+sysctl -w net.ipv4.conf.tunl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+# IPv6 in FOU4
+modprobe fou
+modprobe sit
+ip l set dev sit0 up
+ip fou add port 6666 ipproto 41
+
+# IPv6 in FOU6
+modprobe fou
+modprobe fou6 # creates ip6tnl0
+ip -6 fou add port 6666 ipproto 41
+ip l set dev ip6tnl0 up
+# DOES NOT WORK ATM - I thought this was working previously
+
+# IPv4 in FOU6 - couldn't get to work
+
+**********************************************************************
+
+# IPIP
+modprobe ipip
+ip l set dev tunl0 up
+tcpdump tunl0
+sysctl -w net.ipv4.conf.tunl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+# 6in4
+modprobe sit
+ip l set dev sit0 up
+
+# 6in6
+modprobe ip6_tunnel
+ip -6 tunnel change ip6tnl0 mode ip6ip6
+ip l set dev ip6tnl0 up
+
+# 4in6 
+modprobe ip6_tunnel
+ip -6 tunnel change ip6tnl0 mode ip4ip6
+ip l set dev ip6tnl0 up
+sysctl -w net.ipv4.conf.ip6tnl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+**********************************************************************
+
+# 4in4 and 6in4 4 GRE
+modprobe ip_gre
+ip l set dev gre0 up
+sysctl -w net.ipv4.conf.gre0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+# 6in6 and 4in6 GRE
+modprobe ip6_gre
+ip l set dev ip6gre0 up
+sysctl -w net.ipv4.conf.ip6gre0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+**********************************************************************
+
+ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
+
+ip link add name geneve0 type geneve id 666 remote 0.0.0.0
+ip l set dev geneve0 up
+sysctl -w net.ipv4.conf.geneve0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+For a basic FOU4 backend:
+
+/etc/networkd-dispatcher/routable.d/50-ifup-hooks:
+#!/bin/sh
+ip fou add port 9999 ipproto 4
+ip link set dev tunl0 up
+sysctl -w net.ipv4.conf.tunl0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+/etc/modules:
+fou
+ipip
+
+
+// magic code from https://mejedi.dev/posts/ebpf-dereference-of-modified-ctx-ptr-disallowed/
+static __always_inline void *xdp_data_end(const struct xdp_md *ctx) {
+    //return (void *)(long)ctx->data_end;
+    void *data_end;
+    
+    asm("%[res] = *(u32 *)(%[base] + %[offset])"
+	: [res]"=r"(data_end)
+	: [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data_end)), "m"(*ctx));
+    
+    return data_end;
+}
