@@ -305,15 +305,15 @@ func (s *service3) recalc() {
 		}
 
 		i2 := bpf_destinfo{
-			vlanid: ni.vlanid,
-			//h_source: ni.h_source,
-			//saddr:    as16(ni.saddr),
-			h_dest: ni.h_dest,
-			daddr:  as16(ni.daddr),
-			dport:  d.TunnelPort,
-			sport:  0,
-			method: d.TunnelType,
-			flags:  flags, // TODO
+			vlanid:   ni.vlanid,
+			h_source: ni.h_source,
+			saddr:    as16(ni.saddr),
+			h_dest:   ni.h_dest,
+			daddr:    as16(ni.daddr),
+			dport:    d.TunnelPort,
+			sport:    0,
+			method:   d.TunnelType,
+			flags:    flags, // TODO
 		}
 
 		val.destinfo[i+1] = i2
@@ -359,6 +359,15 @@ func (s *service3) recalc() {
 			log.Fatal("LOOP", ni)
 		}
 
+		const NOT_LOCAL = 0x80
+
+		flags := uint8(d.TunnelFlags & 0x7f)
+
+		if ni.l3 {
+			flags |= NOT_LOCAL
+			log.Println("NOT_LOCAL", d.Address)
+		}
+
 		vip_rip := bpf_vip_rip{
 			destinfo: bpf_destinfo{
 				daddr:    as16(ni.daddr),
@@ -367,7 +376,7 @@ func (s *service3) recalc() {
 				sport:    0,
 				vlanid:   ni.vlanid,
 				method:   d.TunnelType,
-				flags:    0,
+				flags:    flags,
 				h_dest:   ni.h_dest,
 				h_source: ni.h_source,
 			},
@@ -519,11 +528,15 @@ func newClient(interfaces ...string) (*layer3, error) {
 
 	fmt.Println("VETH", ns.a.mac.String(), ns.b.mac.String())
 
+	// can replace this with a vlaninfo entry at 0
 	netns.UpdateElem(uP(&ZERO), uP(&(bpf_netns{a: ns.a.mac, b: ns.b.mac})), xdp.BPF_ANY)
 
 	var ns_nic uint32 = uint32(ns.a.idx)
 	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
 	redirect_map6.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
+
+	redirect_map.UpdateElem(uP(&ZERO), uP(&ns_nic), xdp.BPF_ANY)
+	redirect_map6.UpdateElem(uP(&ZERO), uP(&ns_nic), xdp.BPF_ANY)
 
 	return &layer3{
 		services: map[threetuple]*service3{},

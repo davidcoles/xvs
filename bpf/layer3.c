@@ -45,7 +45,7 @@ const __u8 F_NOT_LOCAL = 0x80;
 #define VERSION 1
 #define SECOND_NS 1000000000l
 
-const __u32 NETNS = 4095;
+//const __u32 NETNS = 4095;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 
@@ -177,7 +177,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, struct vrpp);
     __type(value, struct counters);
-    __uint(max_entries, 4096);
+    __uint(max_entries, 4095);
 } stats SEC(".maps");
 
 
@@ -427,29 +427,35 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 
     if (!vlan)
 	return NOT_FOUND;
-    
-    addr_t saddr = {};
-    __u8 h_source[6];
-    __u8 h_gw[6];
-    
-    if (is_ipv4_addr_p(&(t->daddr))) {
-	saddr.addr4.addr = vlan->ip4;
-	memcpy(h_source, vlan->hw4, 6);
-	memcpy(h_gw, vlan->gh4, 6);
-    } else {
-	saddr = vlan->ip6;
-	memcpy(h_source, vlan->hw6, 6);
-	memcpy(h_gw, vlan->gh6, 6);
-    }
 
-    t->saddr = saddr;
-    memcpy(t->h_source, h_source, 6);
-
-    if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
-	bpf_printk("F_NOT_LOCAL\n");
-	memcpy(t->h_dest, h_gw, 6); // send packet to router
+    if (0) {
+	addr_t saddr = {};
+	__u8 h_source[6];
+	__u8 h_gw[6];
+	
+	// migrate to using per-VLAN details for the tunnel source params - why?
+	// oh, yeah, to allow failover from one LB to another rather than store LB local params
+	// don't need to do this - just need this unless copying session from shared table
+	// useful to test here though
+	if (is_ipv4_addr_p(&(t->daddr))) {
+	    saddr.addr4.addr = vlan->ip4;
+	    memcpy(h_source, vlan->hw4, 6);
+	    memcpy(h_gw, vlan->gh4, 6);
+	} else {
+	    saddr = vlan->ip6;
+	    memcpy(h_source, vlan->hw6, 6);
+	    memcpy(h_gw, vlan->gh6, 6);
+	}
+	
+	t->saddr = saddr;
+	memcpy(t->h_source, h_source, 6);
+	
+	if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
+	    bpf_printk("F_NOT_LOCAL\n");
+	    memcpy(t->h_dest, h_gw, 6); // send packet to router
+	}
     }
-    
+	
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
     
@@ -546,7 +552,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t); // FIXME - if L2 DSR then set TTL to 1 if > 1
+    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
 
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim == 1;
@@ -645,32 +651,13 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 	return NOT_FOUND;
     }
     
-    enum lookup_result r = lookup(ft, ip->protocol, t); // FIXME - if L2 DSR then set TTL to 1 if > 1
+    enum lookup_result r = lookup(ft, ip->protocol, t);
 
     if (LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
     
     return r;
 }
-
-/*
-//static __always_inline
-int check_ingress_interface(__u32 ingress, struct vlan_hdr *vlan, __u32 expected) {
-
-    if (vlan) {
-	__u16 vlanid = bpf_ntohs(vlan->h_vlan_TCI) & 0x0fff;
-	if (vlanid != expected)
-	    return -1;
-    } else {
-	__u32 *interface = bpf_map_lookup_elem(&redirect_map, &expected);   
-	if (!interface || !(*interface) || (*interface != ingress))
-	    return -1;
-    }
-
-    return 0;
-}
-*/
-
 
 static __always_inline
 int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)    
@@ -738,7 +725,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     case BOUNCE_ICMP: return XDP_TX;
     case PROBE_REPLY:
 	if (vlan && vlan_pop(ctx) < 0) return XDP_DROP;
-	return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
+	//return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
+	return bpf_redirect_map(&redirect_map, 0, XDP_DROP);	
     }
 
     switch (result) {
@@ -794,7 +782,6 @@ void update(fourtuple_t *key, tunnel_t *t)
 
 
 
-// urgh, need to set up veth interfaces with ipv6 addresses first, of course
 static __always_inline
 int xdp_request_v6(struct xdp_md *ctx) {
     
@@ -828,17 +815,22 @@ int xdp_request_v6(struct xdp_md *ctx) {
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
-
+    
     if (!vip_rip)
         return XDP_PASS;
-
-    struct destinfo *destinfo = (void *) vip_rip;
-
+    
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
     __be16 eph = 0;
     __be16 svc = 0;
+
+    struct l4 ft = { .saddr = src.addr4.addr, .daddr = nat.addr4.addr, .sport = eph, .dport = svc };
+    struct destinfo *destinfo = (void *) vip_rip;
+
+    tunnel_t t = *destinfo;
+    t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
+
 
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;
@@ -862,19 +854,12 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	return XDP_DROP;
     }
     
-
-    struct l4 ft = { .saddr = ext.addr4.addr, .daddr = vip.addr4.addr, .sport = eph, .dport = svc }; // FIXME
-
-    tunnel_t t = *destinfo;
-    t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
-    
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
     struct l4v6 n = o;
     
     n.saddr = ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
     n.daddr = ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
-
-
+    
      switch(proto) {
      case IPPROTO_TCP:
 	 tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
@@ -933,6 +918,22 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (ip + 1 > data_end)
 	return XDP_PASS;
 
+    if (ip->version != 4)
+	return XDP_DROP;
+    
+    if (ip->ihl != 5)
+        return XDP_DROP;
+    
+    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
+    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
+        return XDP_DROP;
+
+    if (ip->ttl <= 1)
+	return XDP_DROP;
+
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+
+    
     addr_t src = { .addr4.addr = ip->saddr };
     addr_t nat = { .addr4.addr = ip->daddr };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
@@ -940,28 +941,18 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (!vip_rip)
     	return XDP_PASS;
 
-    struct destinfo *destinfo = (void *) vip_rip;
     
-    if (ip->version != 4)
-	return XDP_DROP;
-    
-    if (ip->ihl != 5)
-        return XDP_DROP;
-    
-    if (ip->ttl <= 1)
-	return XDP_DROP;
-
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-
-    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
-    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-        return XDP_DROP;
-
     __u8 proto = ip->protocol;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
     __be16 eph = 0;
     __be16 svc = 0;
+
+    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };
+    struct destinfo *destinfo = (void *) vip_rip;
+    
+    tunnel_t t = *destinfo;
+    t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
 
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;
@@ -984,11 +975,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     default:
 	return XDP_DROP;
     }
-    
-    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };
-    tunnel_t t = *destinfo;
-    t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
-    
+
     int overhead = 0;
     int mtu = MTU;
 
