@@ -703,22 +703,6 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 }
 
 static __always_inline
-int push_ipip(struct xdp_md *ctx, tunnel_t *t)
-{
-    struct pointers p = {};
-    return push_xin4(ctx, t, &p, IPPROTO_IPIP, 0);
-}
-
-
-static __always_inline
-int push_6in4(struct xdp_md *ctx, tunnel_t *t)    
-{
-    struct pointers p = {};
-    return push_xin4(ctx, t, &p, IPPROTO_IPV6, 0);
-}
-
-
-static __always_inline
 int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, unsigned int overhead)
 {
     if (nul6(&(t->saddr.addr6)) || nul6(&(t->daddr.addr6)))
@@ -755,6 +739,22 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 }
 
 
+/*
+static __always_inline
+int push_ipip(struct xdp_md *ctx, tunnel_t *t)
+{
+    struct pointers p = {};
+    return push_xin4(ctx, t, &p, IPPROTO_IPIP, 0);
+}
+
+
+static __always_inline
+int push_6in4(struct xdp_md *ctx, tunnel_t *t)    
+{
+    struct pointers p = {};
+    return push_xin4(ctx, t, &p, IPPROTO_IPV6, 0);
+}
+
 static __always_inline
 int push_6in6(struct xdp_md *ctx, tunnel_t *t)
 {
@@ -768,7 +768,7 @@ int push_4in6(struct xdp_md *ctx, tunnel_t *t)
     struct pointers p = {};
     return push_xin6(ctx, t, &p, IPPROTO_IPIP, 0);
 }
-
+*/
 
 static __always_inline
 int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
@@ -915,41 +915,4 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 	udp->check = udp4_checksum((void *) p.ip, udp, p.data_end);
 
     return 0;
-}
-
-
-
-
-
-/**********************************************************************/
-static __always_inline
-int send_fou(struct xdp_md *ctx, tunnel_t *t)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
-}
-
-static __always_inline
-int send_fou4(struct xdp_md *ctx, tunnel_t *t)
-{
-    return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int send_fou6(struct xdp_md *ctx, tunnel_t *t)
-{
-    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    __u8 protocol = is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP;
-    
-    if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_gue6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
 }

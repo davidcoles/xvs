@@ -65,20 +65,36 @@ func main() {
 		log.Fatal(err)
 	}
 
-	//pair := [2]netip.Prefix{netip.MustParsePrefix(vlan)}
-	var pair [2]netip.Prefix
+	/**********************************************************************/
 
-	pair[0] = netip.MustParsePrefix(vlan)
+	vlan4 := map[uint16]netip.Prefix{}
+	vlan6 := map[uint16]netip.Prefix{}
 
-	log.Println("XXXXXXX", pair[0], vlan)
+	prefix := netip.MustParsePrefix(vlan)
 
-	if *extra != "" {
-		pair[1] = netip.MustParsePrefix(*extra)
+	if prefix.Addr().Is4() {
+		vlan4[1] = prefix
+	} else {
+		vlan6[1] = prefix
 	}
 
-	vlans := map[uint16][2]netip.Prefix{1: pair}
+	if *extra != "" {
+		prefix = netip.MustParsePrefix(*extra)
 
-	client.SetConfig(xvs.Config{VLANs: vlans})
+		if prefix.Addr().Is4() {
+			vlan4[1] = prefix
+		} else {
+			vlan6[1] = prefix
+		}
+	}
+
+	err = client.SetConfig(xvs.Config{VLAN4: vlan4, VLAN6: vlan6})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	/**********************************************************************/
 
 	vips = append(vips, vip)
 

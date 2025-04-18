@@ -306,34 +306,42 @@ int send_l2(struct xdp_md *ctx, tunnel_t *t)
     return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
-
 static __always_inline
-int send_xinx(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
+    struct pointers p = {};
 
-    if (is_addr4(&(t->daddr))) {
-	
-	if (is_ipv6)
-	    return push_6in4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-	
-	return push_ipip(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-    }
+    if (is_addr4(&(t->daddr)))
+	return push_xin4(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
 
-    if (is_ipv6)
-	return push_6in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-	
-    return push_4in6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_xin6(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
 int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
-    __u16 protocol = is_ipv6 ? ETH_P_IPV6 : ETH_P_IP;
-    
     if (is_addr4(&(t->daddr)))
-	return push_gre4(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
     
-    return push_gre6(ctx, t, protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    return push_gre6(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_fou(struct xdp_md *ctx, tunnel_t *t)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+
+    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
+}
+
+static __always_inline
+int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_gue4(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
+    
+    return push_gue6(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
 }
 
 static __always_inline
@@ -755,7 +763,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)
     
     switch (result) {
     case LAYER2_DSR:  return send_l2(ctx, t);	
-    case LAYER3_IPIP: return send_xinx(ctx, t, vip_is_ipv6);
+    case LAYER3_IPIP: return send_ipip(ctx, t, vip_is_ipv6);
     case LAYER3_GRE:  return send_gre(ctx, t, vip_is_ipv6);
     case LAYER3_FOU:  return send_fou(ctx, t);
     case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6); // TODO - breaks verifier on 22.04
@@ -873,7 +881,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     switch (t.method) {
     case T_NONE: action = send_l2(ctx, &t); break;
-    case T_IPIP: action = send_xinx(ctx, &t, 1); break;
+    case T_IPIP: action = send_ipip(ctx, &t, 1); break;
     case T_GRE:  action = send_gre(ctx, &t, 1); break;
     case T_FOU:  action = send_fou(ctx, &t); break;
     case T_GUE:  action = send_gue(ctx, &t, 1); break;
@@ -1030,7 +1038,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     switch (t.method) {
     case T_NONE: action = send_l2(ctx, &t); break;
-    case T_IPIP: action = send_xinx(ctx, &t, is_ipv6); break;
+    case T_IPIP: action = send_ipip(ctx, &t, is_ipv6); break;
     case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
     case T_FOU:  action = send_fou(ctx, &t); break;
     case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;

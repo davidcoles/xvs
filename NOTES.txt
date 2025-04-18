@@ -17,7 +17,7 @@ bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
 ip a add 192.168.101.201 dev lo
 ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
 
-* check VIP against know list
+* check VIP against known list
 * lookup flow in state table first
 * if not there then try shared flow table
 * if not found then lookup backend server/tunnel info
@@ -27,11 +27,7 @@ ip -6 a add fd6e:eec8:76ac:ac1d:200::1 dev lo
 * update stats
 * TX/redirect_map packet as indicated in dest record
 
-# TODO
-* IPv6 ICMP - frag needed
-* ICMP replies
-* flow table
-* healthchecks for IPv6
+
 
 **********************************************************************
 

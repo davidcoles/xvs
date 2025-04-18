@@ -1,3 +1,21 @@
+/*
+ * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
 package xvs
 
 import (
@@ -18,12 +36,15 @@ import (
 )
 
 // TODO:
-// ingress interface/vlan -> interface IPs, for correct ICMP "too big" responses
+// ingress interface/vlan -> interface IPs, for correct ICMP "too big" responses?
 // process intermediate system ICMP too big messages and pass to backends
 // health probe ICMP?
 // stats
 // latency
 // handle udp/icmp
+//Ping tracking in NAT
+// TOO BIG notifications to NAT source in NAT
+// flow tables
 
 //go:embed bpf/layer3.o.gz
 var layer3_gz []byte
@@ -46,6 +67,8 @@ const (
 
 var VETH32 uint32 = 4095
 var ZERO uint32 = 0
+
+const F_NOT_LOCAL = 0x80
 
 type bpf_settings struct {
 	ticker uint64 // periodically reset
@@ -295,12 +318,10 @@ func (s *service3) recalc() {
 			log.Fatal("FWD", err)
 		}
 
-		const NOT_LOCAL = 0x80
-
 		flags := uint8(d.TunnelFlags & 0x7f)
 
 		if ni.l3 {
-			flags |= NOT_LOCAL
+			flags |= F_NOT_LOCAL
 			log.Println("NOT_LOCAL", d.Address)
 		}
 
@@ -359,12 +380,10 @@ func (s *service3) recalc() {
 			log.Fatal("LOOP", ni)
 		}
 
-		const NOT_LOCAL = 0x80
-
 		flags := uint8(d.TunnelFlags & 0x7f)
 
 		if ni.l3 {
-			flags |= NOT_LOCAL
+			flags |= F_NOT_LOCAL
 			log.Println("NOT_LOCAL", d.Address)
 		}
 
@@ -554,11 +573,24 @@ func newClient(interfaces ...string) (*layer3, error) {
 	}, nil
 }
 
-func (l *layer3) vlans(vlans map[uint16][2]netip.Prefix) error {
+//func (l *layer3) vlansx(vlans map[uint16][2]netip.Prefix) error {
+func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
+
+	for _, v := range vlan4 {
+		if !v.Addr().Is4() {
+			return fmt.Errorf("IPv4 VLAN entry is not a v4 prefix: %s", v.String())
+		}
+	}
+
+	for _, v := range vlan6 {
+		if !v.Addr().Is6() {
+			return fmt.Errorf("IPv6 VLAN entry is not a v6 prefix: %s", v.String())
+		}
+	}
 
 	route := map[netip.Prefix]uint16{}
 
-	err := l.netinfo.config(vlans, route)
+	err := l.netinfo.config(vlan4, vlan6, route)
 
 	if err != nil {
 		return err

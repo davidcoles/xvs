@@ -1,3 +1,21 @@
+/*
+ * vc5/xvs load balancer. Copyright (C) 2021-present David Coles
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
 package xvs
 
 import (
@@ -143,37 +161,8 @@ func (n ninfo) String() string {
 
 type vinfo2 = map[uint16][2]netip.Prefix
 
-func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
-
-	vlan4 := vinfo{}
-	vlan6 := vinfo{}
-
-	for id, pair := range vlans {
-		a := pair[0]
-		b := pair[1]
-
-		if a.IsValid() && b.IsValid() {
-			if a.Addr().Is6() == b.Addr().Is6() {
-				return fmt.Errorf("Can't have two addresses of the same family")
-			}
-		}
-
-		if a.IsValid() {
-			if a.Addr().Is6() {
-				vlan6[id] = a
-			} else {
-				vlan4[id] = a
-			}
-		}
-
-		if b.IsValid() {
-			if b.Addr().Is6() {
-				vlan6[id] = b
-			} else {
-				vlan4[id] = b
-			}
-		}
-	}
+//func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
+func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) error {
 
 	hw := n.hw()
 	n.hwinfo = hw
