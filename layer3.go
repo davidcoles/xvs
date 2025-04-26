@@ -337,6 +337,8 @@ type dni struct {
 	ni ninfo
 }
 
+type real = dni
+
 func (s *service3) recalc() {
 
 	reals := make(map[netip.Addr]dni, len(s.dests))
