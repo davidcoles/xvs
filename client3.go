@@ -171,9 +171,7 @@ func (l *layer3) CreateService(s Service3) error {
 		return fmt.Errorf("Service exists")
 	}
 
-	l.createService(s)
-
-	return nil
+	return l.createService(s)
 }
 
 func (l *layer3) UpdateService(s Service3) error {
@@ -254,17 +252,15 @@ func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
 	return service.removeDestination(d)
 }
 
-func (l *layer3) SetService(s Service3, ds []Destination3) error {
+func (l *layer3) SetService(s Service3, ds []Destination3) (err error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
 	service, exists := l.services[s.key()]
 
 	if !exists {
-		l.createService(s, ds...)
-	} else {
-		service.set(s, ds...)
+		return l.createService(s, ds...)
 	}
 
-	return nil
+	return service.set(s, ds...)
 }

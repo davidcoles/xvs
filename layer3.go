@@ -206,15 +206,21 @@ type neighbor struct {
 }
 
 func (s *service3) set(service Service3, ds ...Destination3) error {
-	s.service = service
 
-	m := map[netip.Addr]Destination3{}
+	m := make(map[netip.Addr]Destination3, len(ds))
 
 	for _, d := range ds {
+		if _, exists := s.dests[d.Address]; !exists {
+			if err := d.check(); err != nil {
+				return err
+			}
+			s.layer3.natmap.add(s.service.Address, d.Address)
+		}
+
 		m[d.Address] = d
-		s.layer3.natmap.add(s.service.Address, d.Address)
 	}
 
+	s.service = service
 	s.dests = m
 	s.layer3.natmap.index()
 	s.layer3.clean()
@@ -223,11 +229,57 @@ func (s *service3) set(service Service3, ds ...Destination3) error {
 	return nil
 }
 
-func (l *layer3) createService(s Service3, ds ...Destination3) *service3 {
+func (d Destination3) check() error {
+
+	if !d.Address.IsValid() || d.Address.IsUnspecified() || d.Address.IsMulticast() || d.Address.IsLoopback() {
+		return fmt.Errorf("Bad destination address: %s", d.Address)
+	}
+
+	return nil
+}
+
+func (s *service3) createDestination(d Destination3) error {
+
+	if _, exists := s.dests[d.Address]; exists {
+		return fmt.Errorf("Destination exists")
+	}
+
+	if err := d.check(); err != nil {
+		return err
+	}
+
+	s.layer3.natmap.add(s.service.Address, d.Address)
+	s.layer3.natmap.index()
+	s.dests[d.Address] = d
+	s.recalc()
+	return nil
+}
+
+func (l *layer3) createService(s Service3, ds ...Destination3) error {
+
+	if !s.Address.IsValid() || s.Address.IsUnspecified() || s.Address.IsMulticast() || s.Address.IsLoopback() {
+		return fmt.Errorf("Bad IP address")
+	}
+
+	if s.Port == 0 {
+		return fmt.Errorf("Reserved port")
+	}
+
+	if s.Protocol != TCP && s.Protocol != UDP {
+		return fmt.Errorf("Unsupported protocol")
+	}
+
 	service := &service3{dests: map[netip.Addr]Destination3{}, service: s, layer3: l}
-	service.set(s, ds...)
+
+	err := service.set(s, ds...)
+
+	if err != nil {
+		return err
+	}
+
 	l.services[s.key()] = service
-	return service
+
+	return nil
 }
 
 func (l *layer3) getStats(s, d netip.Addr, port, protocol uint16) (c bpf_counters2) {
@@ -294,29 +346,6 @@ func (s *service3) updateDestination(d Destination3) error {
 	return nil
 }
 
-func (s *service3) createDestination(d Destination3) error {
-
-	if _, exists := s.dests[d.Address]; exists {
-		return fmt.Errorf("Destination exists")
-	}
-
-	s.dests[d.Address] = d
-
-	s.layer3.natmap.add(s.service.Address, d.Address)
-	s.layer3.natmap.index()
-	svc := s.service
-
-	vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d.Address), vport: svc.Port, protocol: uint16(svc.Protocol)}
-
-	counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
-
-	s.layer3.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
-
-	s.recalc()
-
-	return nil
-}
-
 func (s *service3) destinations() (r []Destination3Extended, e error) {
 	for _, d := range s.dests {
 
@@ -331,21 +360,24 @@ func (l *layer3) nat(v, r netip.Addr) netip.Addr {
 	return l.netns.addr(l.natmap.get(v, r), v.Is6())
 }
 
-type dni struct {
-	d  Destination3
-	di bpf_destinfo
-	ni ninfo
+type real struct {
+	weight   uint8
+	destinfo bpf_destinfo
+	netinfo  ninfo // only used for debug purposes atm
 }
-
-type real = dni
 
 func (s *service3) recalc() {
 
-	reals := make(map[netip.Addr]dni, len(s.dests))
+	reals := make(map[netip.Addr]real, len(s.dests))
 
-	for k, v := range s.dests {
-		di, ni := destinfo(s.layer3, v)
-		reals[k] = dni{d: v, di: di, ni: ni}
+	for k, d := range s.dests {
+		di, ni := destinfo(s.layer3, d)
+		reals[k] = real{destinfo: di, netinfo: ni, weight: d.Weight}
+
+		svc := s.service
+		vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d.Address), vport: svc.Port, protocol: uint16(svc.Protocol)}
+		counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+		s.layer3.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 	}
 
 	s.forwarding(reals)
@@ -354,24 +386,24 @@ func (s *service3) recalc() {
 
 	for k, v := range reals {
 		nat := as16(s.layer3.nat(s.service.Address, k))
-		ext := as16(s.layer3.netinfo.ext(v.ni.vlanid, s.service.Address.Is6()))
+		ext := as16(s.layer3.netinfo.ext(v.destinfo.vlanid, s.service.Address.Is6()))
 
-		vip_rip := bpf_vip_rip{destinfo: v.di, vip: vip, ext: ext}
+		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: vip, ext: ext}
 		s.layer3.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
 
-		fmt.Println("NAT", v.ni, ext, vip)
+		fmt.Println("NAT", v.netinfo, ext, vip)
 	}
 
 	s.layer3.vips.UpdateElem(uP(&vip), uP(&ZERO), xdp.BPF_ANY) // value is not used
 }
 
-func (s *service3) forwarding(reals map[netip.Addr]dni) {
+func (s *service3) forwarding(reals map[netip.Addr]real) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
 	// filter out unusable destinations
 	for k, v := range reals {
-		if v.d.Weight != 0 && v.di.vlanid != 0 {
+		if v.weight != 0 && v.destinfo.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
 	}
@@ -390,7 +422,7 @@ func (s *service3) forwarding(reals map[netip.Addr]dni) {
 		nodes := make([][]byte, len(addrs))
 
 		for i, a := range addrs {
-			dests[i] = reals[a].di
+			dests[i] = reals[a].destinfo
 			nodes[i] = []byte(a.String())
 		}
 

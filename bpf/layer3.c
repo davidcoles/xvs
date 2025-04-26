@@ -1267,6 +1267,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
     __u64 start_s = start / SECOND_NS;
+    __u64 timeout = 300; // 5m
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
     if (!s)
@@ -1274,7 +1275,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     if (s->ticker == 0) {
 	s->ticker = start_s;
-    } else if (s->ticker + 120 < start_s) {
+    } else if (s->ticker + timeout < start_s) {
 	return XDP_PASS; // ticker hasn't been reset for 2mins - fail safe
     }
 
