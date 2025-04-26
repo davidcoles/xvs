@@ -382,19 +382,21 @@ func (s *service3) recalc() {
 
 	s.forwarding(reals)
 
-	vip := as16(s.service.Address)
+	vip := s.service.Address
+	vip_ := as16(vip)
 
 	for k, v := range reals {
-		nat := as16(s.layer3.nat(s.service.Address, k))
-		ext := as16(s.layer3.netinfo.ext(v.destinfo.vlanid, s.service.Address.Is6()))
+		nat := s.layer3.nat(s.service.Address, k)
+		nat_ := as16(nat)
+		ext := s.layer3.netinfo.ext(v.destinfo.vlanid, s.service.Address.Is6())
 
-		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: vip, ext: ext}
-		s.layer3.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
+		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: as16(vip), ext: as16(ext)}
+		s.layer3.nat_to_vip_rip.UpdateElem(uP(&nat_), uP(&vip_rip), xdp.BPF_ANY)
 
-		fmt.Println("NAT", v.netinfo, ext, vip)
+		fmt.Println("NAT", nat, v.netinfo, ext, vip)
 	}
 
-	s.layer3.vips.UpdateElem(uP(&vip), uP(&ZERO), xdp.BPF_ANY) // value is not used
+	s.layer3.vips.UpdateElem(uP(&vip_), uP(&ZERO), xdp.BPF_ANY) // value is not used
 }
 
 func (s *service3) forwarding(reals map[netip.Addr]real) {
@@ -572,7 +574,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	ns, err := nat3(x, "xdp_request", "xdp_reply") // checks
+	ns, err := nat3(x, "xdp_vetha", "xdp_vethb") // checks
 
 	if err != nil {
 		return nil, err

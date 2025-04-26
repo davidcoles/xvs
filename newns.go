@@ -113,7 +113,7 @@ func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 	}
 
 	// this seems to be needed to make native mode hardware work
-	if err := x.LoadBpfSection(outside, true, uint32(n.b.idx)); err != nil {
+	if err := x.LoadBpfSection(outside, false, uint32(n.b.idx)); err != nil {
 		return nil, err
 	}
 
@@ -160,7 +160,7 @@ func (n *newns) prefix6() string {
 }
 
 // can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32
-func (n *newns) config_pair(ns string, a, b nic) error {
+func (n *newns) config_pair_orig(ns string, a, b nic) error {
 	a4 := a.ip4.String()
 	b4 := b.ip4.String()
 	prefix4 := n.prefix4()
@@ -188,6 +188,51 @@ ip netns exec ` + ns + ` ip -6 a add ` + b6 + `/126 dev ` + b.nic + `
 ip netns exec ` + ns + ` ip -6 r replace default via ` + a6 + `
 
 ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
+`
+
+	if out, err := exec.Command("/bin/sh", "-e", "-c", script).Output(); err != nil {
+		fmt.Println(out)
+		return fmt.Errorf("Error seting up netns: %s", err.Error())
+	}
+
+	return nil
+}
+
+// can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32
+func (n *newns) config_pair(ns string, a, b nic) error {
+	a4 := a.ip4.String()
+	b4 := b.ip4.String()
+	//prefix4 := n.prefix4()
+
+	a6 := a.ip6.String()
+	b6 := b.ip6.String()
+	//prefix6 := n.prefix6()
+
+	script := `
+ip netns del ` + ns + ` >/dev/null 2>&1 || true
+ip netns add ` + ns + `
+
+ip l set ` + a.nic + ` up
+ip a add ` + a4 + `/30 dev ` + a.nic + `
+ip -6 a add ` + a6 + `/126 dev ` + a.nic + `
+
+ip link set ` + b.nic + ` netns ` + ns + `
+
+ip netns exec ` + ns + ` ip l set ` + b.nic + ` up
+
+ip netns exec ` + ns + ` ip a add ` + b4 + `/30 dev ` + b.nic + `
+#ip netns exec ` + ns + ` ip r replace default via ` + a4 + `
+
+ip netns exec ` + ns + ` ip -6 a add ` + b6 + `/126 dev ` + b.nic + `
+#ip netns exec ` + ns + ` ip -6 r replace default via ` + a6 + `
+
+ip r replace 255.0.0.0/8 via ` + b4 + `
+ip -6 r replace fefe::0/64 via ` + b6 + `
+
+#ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
+#ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` rx off
+ethtool -K ` + a.nic + ` tx off
+ethtool -K ` + a.nic + ` rx off
 `
 
 	if out, err := exec.Command("/bin/sh", "-e", "-c", script).Output(); err != nil {

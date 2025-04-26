@@ -567,8 +567,11 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 
     enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
 
+    //if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
+    //	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
+
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
-	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim == 1;
+	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
 
     return r;
 }
@@ -798,7 +801,7 @@ void update(fourtuple_t *key, tunnel_t *t)
 
 static __always_inline
 int xdp_request_v6(struct xdp_md *ctx) {
-    
+   
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     
@@ -815,15 +818,23 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (ip6 + 1 > data_end)
         return XDP_DROP;
     
+
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return XDP_DROP;
     
+
+    bpf_printk("PRIOR %d %d\n", ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt);
+
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
-        return XDP_PASS;
+	//return XDP_DROP;
+	return XDP_PASS;
+
+    bpf_printk("AFTER %d\n", ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim);
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
-	return XDP_DROP;
+    	return XDP_DROP;
     
+
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
 
     addr_t src = { .addr6 = ip6->ip6_src };
@@ -832,6 +843,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     if (!vip_rip)
         return XDP_PASS;
+
+    bpf_printk("AAAARSE\n");
+
 
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
@@ -895,6 +909,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
         return XDP_DROP;
 
+
     // to match returning packet
     struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
     rep.saddr = vip; // ???? upsets verifier if in declaration above
@@ -905,7 +920,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     map.src = src; // ??? upsets verifier if in declaration above    
 
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
-
+    
     //return bpf_redirect(vlaninfo->ifindex, 0);
     return is_ipv4_addr(t.daddr) ?
 	bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
@@ -929,7 +944,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     struct iphdr *ip = (void *)(eth + 1);
     
     if (ip + 1 > data_end)
-	return XDP_PASS;
+	return XDP_DROP;
 
     if (ip->version != 4)
 	return XDP_DROP;
@@ -1063,6 +1078,9 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     //return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
+
+    bpf_printk("REDIRECTING %d\n", t.vlanid);
+    
     return is_ipv4_addr(t.daddr) ?
         bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
         bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
@@ -1091,7 +1109,8 @@ int xdp_reply_v6(struct xdp_md *ctx)
         return XDP_DROP;
     
     if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
-        return XDP_PASS;
+        //return XDP_PASS;
+	return XDP_DROP;
     }
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
@@ -1267,7 +1286,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
     __u64 start_s = start / SECOND_NS;
-    __u64 timeout = 300; // 5m
+    __u64 timeout = 60; // seconds
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
     if (!s)
@@ -1346,16 +1365,33 @@ int xdp_pass(struct xdp_md *ctx)
 }
 
 SEC("xdp")
-int xdp_reply(struct xdp_md *ctx)
+int xdp_vethb(struct xdp_md *ctx)
 {
+    __u64 start = bpf_ktime_get_ns();
+    __u64 start_s = start / SECOND_NS;
+    __u64 timeout = 60; // seconds
+
+    struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
+    if (!s)
+	return XDP_PASS;
+
+    if (s->ticker == 0) {
+	s->ticker = start_s;
+    } else if (s->ticker + timeout < start_s) {
+	return XDP_PASS; // ticker hasn't been reset - fail safe
+    }
+
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     
     struct ethhdr *eth = data;
 
+    bpf_printk("vethb got data\n");
+
     if (eth + 1 > data_end)
         return XDP_DROP;
-    
+
+    /*
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
 	return xdp_reply_v4(ctx);	
@@ -1364,10 +1400,44 @@ int xdp_reply(struct xdp_md *ctx)
     }
 
     return XDP_PASS;
+    */
+
+    struct iphdr *ip = (void *)(eth + 1);
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	if (ip + 1 > data_end)
+	    return XDP_DROP;
+	
+	switch(ip->protocol) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    bpf_printk("BOUNCE v4!!!!!!!!!!!\n");
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+	
+    case bpf_htons(ETH_P_IPV6):
+	if (ip6 + 1 > data_end)
+	    return XDP_DROP;
+	
+	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    bpf_printk("BOUNCE v6!!!!!!!!!!!\n");
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+    }
+    
+    return XDP_PASS;
 }
 
 SEC("xdp")
-int xdp_request(struct xdp_md *ctx)
+int xdp_vetha(struct xdp_md *ctx)
 {
     // TODO - have probes set from host side to NAT addresses via
     // veth, process on ns side and TX *back* to through veth, host
@@ -1384,6 +1454,7 @@ int xdp_request(struct xdp_md *ctx)
     if (eth + 1 > data_end)
 	return XDP_DROP;
 
+    /*
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
 	return xdp_request_v4(ctx);
@@ -1392,8 +1463,36 @@ int xdp_request(struct xdp_md *ctx)
     }
 
     return XDP_PASS;
+    */
+
+
+    
+    switch(eth->h_proto) {
+	
+    case bpf_htons(ETH_P_IP):
+	if (XDP_PASS == xdp_reply_v4(ctx))
+	    return XDP_PASS;
+	return xdp_request_v4(ctx);
+    case bpf_htons(ETH_P_IPV6):
+	if (XDP_PASS == xdp_reply_v6(ctx))
+            return XDP_PASS;
+        return xdp_request_v6(ctx);
+    }
+
+    return XDP_PASS;
 }
 
 char _license[] SEC("license") = "GPL";
 
 #endif
+
+/*
+enum xdp_action {
+        XDP_ABORTED = 0,
+        XDP_DROP = 1,
+        XDP_PASS = 2,
+        XDP_TX = 3 ,
+        XDP_REDIRECT = 4,
+};
+
+*/
