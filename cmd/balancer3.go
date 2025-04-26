@@ -136,7 +136,7 @@ func main() {
 					tport = uint16(*tport6)
 				}
 
-				destination := xvs.Destination3{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport}
+				destination := xvs.Destination3{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport, Weight: 1}
 
 				if err := client.CreateDestination(service, destination); err != nil {
 					log.Fatal(service, destination, err)
@@ -166,7 +166,13 @@ func main() {
 
 				s, _ := client.Service(service.Service)
 
-				fmt.Println(s.Stats)
+				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats)
+
+				destinations, _ := client.Destinations(s.Service)
+
+				for _, d := range destinations {
+					fmt.Println("\t", d.Destination.Address, d.Stats)
+				}
 
 			}
 

@@ -85,6 +85,7 @@ type Destination3 struct {
 
 type Destination3Extended struct {
 	Destination Destination3
+	Stats       Stats3
 }
 
 type Config struct {

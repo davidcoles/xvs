@@ -95,6 +95,15 @@ struct fourtuple {
 };
 typedef struct fourtuple fourtuple_t;
 
+struct fivetuple {
+    struct addr saddr;
+    struct addr daddr;
+    __be16 sport;
+    __be16 dport;
+    __u16 proto;
+};
+typedef struct fivetuple fivetuple_t;
+
 // will replace tunnel type
 struct destinfo {
     addr_t daddr;
@@ -402,7 +411,7 @@ int store_tcp_flow(fourtuple_t *ft, tunnel_t *t, struct flow *f)
 
 
 static __always_inline
-enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
+enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t)
 {
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
@@ -411,8 +420,8 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 	return NOT_FOUND;;
     
     __u8 sticky = service->destinfo[0].flags & F_STICKY;
-    __u16 hash3 = l3_hash(ft);
-    __u16 hash4 = l4_hash(ft);
+    __u16 hash3 = l3_hash((fourtuple_t *) ft);
+    __u16 hash4 = l4_hash((fourtuple_t *) ft);
     __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 
     if (!index)
@@ -474,7 +483,7 @@ enum lookup_result lookup(fourtuple_t *ft, __u8 protocol, tunnel_t *t)
 }
 
 static __always_inline
-enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t *ft, tunnel_t *t)
+enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -509,6 +518,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 
     ft->saddr = saddr;
     ft->daddr = daddr;
+    ft->proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return NOT_FOUND; // FIXME - new enum
@@ -564,7 +574,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fourtuple_t 
 }
 
 static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft, tunnel_t *t)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, tunnel_t *t)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -610,7 +620,8 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 
     ft->saddr = saddr;
     ft->daddr = daddr;
-
+    ft->proto = ip->protocol;
+	
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
 
@@ -663,7 +674,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fourtuple_t *ft
 }
 
 static __always_inline
-int xdp_fwd_func_(struct xdp_md *ctx, struct fourtuple *ft, tunnel_t *t)    
+int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
 {
 
     int mtu = MTU;
@@ -821,7 +832,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     if (!vip_rip)
         return XDP_PASS;
-    
+
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
@@ -833,7 +844,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
-
 
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;
@@ -882,7 +892,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     case T_GUE:  action = send_gue(ctx, &t, 1); break;
     }
 
-    if (action != XDP_TX)
+    if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
         return XDP_DROP;
 
     // to match returning packet
@@ -1039,7 +1049,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
     }
 
-    if (action != XDP_TX)
+    if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
 	return XDP_DROP;
 
     // to match returning packet
@@ -1283,14 +1293,13 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	dot1q = 1;
     }
     
-    fourtuple_t ft = {};
+    //fourtuple_t ft = {};
+    fivetuple_t ft = {};    
     tunnel_t t = {};
     
     int action = xdp_fwd_func_(ctx, &ft, &t);
-
     
-    struct vrpp vrpp = { .vaddr = ft.daddr, .raddr = t.daddr, .vport = ntohs(ft.dport), .protocol = 6 };
-    
+    struct vrpp vrpp = { .vaddr = ft.daddr, .raddr = t.daddr, .vport = ntohs(ft.dport), .protocol = ft.proto };
     struct counters *c = bpf_map_lookup_elem(&stats, &vrpp);
 
     if (c) {

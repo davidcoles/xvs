@@ -27,11 +27,13 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/bpf"
+	"github.com/davidcoles/xvs/maglev"
 	"github.com/davidcoles/xvs/xdp"
 )
 
@@ -42,7 +44,7 @@ import (
 // stats
 // latency
 // handle udp/icmp
-//Ping tracking in NAT
+// Ping tracking in NAT
 // TOO BIG notifications to NAT source in NAT
 // flow tables
 
@@ -89,6 +91,14 @@ func (c *bpf_counters2) add(x bpf_counters2) {
 	c.octets += x.octets
 	c.flows += x.flows
 	c.errors += x.errors
+}
+
+func (c bpf_counters2) stats() (s Stats3) {
+	s.Packets = c.packets
+	s.Octets = c.octets
+	s.Flows = c.flows
+	s.Errors = c.errors
+	return
 }
 
 type bpf_settings struct {
@@ -208,70 +218,38 @@ func (s *service3) set(service Service3, ds ...Destination3) error {
 	s.dests = m
 	s.layer3.natmap.index()
 	s.layer3.clean()
-
 	s.recalc()
-	return nil
-}
 
-func (s *service3) set_old(service Service3, ds ...Destination3) error {
-	s.service = service
-
-	m := map[netip.Addr]Destination3{}
-
-	for _, d := range ds {
-		m[d.Address] = d
-		s.layer3.natmap.add(s.service.Address, d.Address)
-		s.layer3.natmap.index()
-	}
-
-	s.dests = m
-	s.recalc()
-	s.layer3.clean()
 	return nil
 }
 
 func (l *layer3) createService(s Service3, ds ...Destination3) *service3 {
-
-	service := &service3{
-		dests:   map[netip.Addr]Destination3{},
-		service: s,
-		layer3:  l,
-	}
-
+	service := &service3{dests: map[netip.Addr]Destination3{}, service: s, layer3: l}
 	service.set(s, ds...)
-
 	l.services[s.key()] = service
-
 	return service
 }
 
-func (l *layer3) getStats(s, d netip.Addr, port, protocol uint16) (x bpf_counters2) {
-	vrpp := bpf_vrpp2{vaddr: as16(s), raddr: as16(d), vport: port, protocol: protocol}
+func (l *layer3) getStats(s, d netip.Addr, port, protocol uint16) (c bpf_counters2) {
 
+	vrpp := bpf_vrpp2{vaddr: as16(s), raddr: as16(d), vport: port, protocol: protocol}
 	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
 
 	l.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
 
 	for _, v := range all {
-		x.add(v)
+		c.add(v)
 	}
 
-	return x
+	return c
 }
 
 func (s *service3) extend() Service3Extended {
 	var c bpf_counters2
-	svc := s.service
 	for d, _ := range s.dests {
-		c.add(s.layer3.getStats(svc.Address, d, svc.Port, uint16(svc.Protocol)))
+		c.add(s.layer3.getStats(s.service.Address, d, s.service.Port, uint16(s.service.Protocol)))
 	}
-
-	var stats Stats3
-	stats.Packets = c.packets
-	stats.Octets = c.octets
-	stats.Flows = c.flows
-	stats.Errors = c.errors
-	return Service3Extended{Service: s.service, Stats: stats}
+	return Service3Extended{Service: s.service, Stats: c.stats()}
 }
 
 func (s *service3) update(service Service3) error {
@@ -280,11 +258,8 @@ func (s *service3) update(service Service3) error {
 	return nil
 }
 
-func (s *service3) key() (k bpf_servicekey) {
-	k.addr = as16(s.service.Address)
-	k.port = s.service.Port
-	k.proto = uint16(s.service.Protocol)
-	return
+func (s *service3) key() bpf_servicekey {
+	return bpf_servicekey{addr: as16(s.service.Address), port: s.service.Port, proto: uint16(s.service.Protocol)}
 }
 
 func (s *service3) delete() error {
@@ -343,8 +318,11 @@ func (s *service3) createDestination(d Destination3) error {
 }
 
 func (s *service3) destinations() (r []Destination3Extended, e error) {
-	for _, v := range s.dests {
-		r = append(r, Destination3Extended{Destination: v})
+	for _, d := range s.dests {
+
+		stats := s.layer3.getStats(s.service.Address, d.Address, s.service.Port, uint16(s.service.Protocol)).stats()
+
+		r = append(r, Destination3Extended{Destination: d, Stats: stats})
 	}
 	return
 }
@@ -353,11 +331,96 @@ func (l *layer3) nat(v, r netip.Addr) netip.Addr {
 	return l.netns.addr(l.natmap.get(v, r), v.Is6())
 }
 
-func destinfo(l *layer3, d Destination3) bpf_destinfo {
+type dni struct {
+	d  Destination3
+	di bpf_destinfo
+	ni ninfo
+}
+
+func (s *service3) recalc() {
+
+	reals := make(map[netip.Addr]dni, len(s.dests))
+
+	for k, v := range s.dests {
+		di, ni := destinfo(s.layer3, v)
+		reals[k] = dni{d: v, di: di, ni: ni}
+	}
+
+	s.forwarding(reals)
+
+	vip := as16(s.service.Address)
+
+	for k, v := range reals {
+		nat := as16(s.layer3.nat(s.service.Address, k))
+		ext := as16(s.layer3.netinfo.ext(v.ni.vlanid, s.service.Address.Is6()))
+
+		vip_rip := bpf_vip_rip{destinfo: v.di, vip: vip, ext: ext}
+		s.layer3.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
+
+		fmt.Println("NAT", v.ni, ext, vip)
+	}
+
+	s.layer3.vips.UpdateElem(uP(&vip), uP(&ZERO), xdp.BPF_ANY) // value is not used
+}
+
+func (s *service3) forwarding(reals map[netip.Addr]dni) {
+
+	addrs := make([]netip.Addr, 0, len(reals))
+
+	// filter out unusable destinations
+	for k, v := range reals {
+		if v.d.Weight != 0 && v.di.vlanid != 0 {
+			addrs = append(addrs, k)
+		}
+	}
+
+	var val bpf_destinations
+	val.destinfo[0] = bpf_destinfo{flags: uint8(s.service.Flags)}
+
+	var dur time.Duration
+
+	if len(addrs) > 0 {
+
+		// we need the list to be sorted for maglev to be stable
+		sort.Slice(addrs, func(i, j int) bool { return addrs[i].Less(addrs[j]) })
+
+		dests := make([]bpf_destinfo, len(addrs))
+		nodes := make([][]byte, len(addrs))
+
+		for i, a := range addrs {
+			dests[i] = reals[a].di
+			nodes[i] = []byte(a.String())
+		}
+
+		for i, v := range dests {
+			val.destinfo[i+1] = v
+		}
+
+		now := time.Now()
+		for i, v := range maglev.Maglev8192(nodes) {
+			val.hash[i] = uint8(v + 1)
+		}
+		dur = time.Now().Sub(now)
+	}
+
+	fmt.Println("MAG", val.hash[0:32], dur)
+
+	key := s.key()
+	s.layer3.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+}
+
+// empty vlanid in di/ni indicates error
+func destinfo(l *layer3, d Destination3) (bpf_destinfo, ninfo) {
 	ni, err := l.netinfo.info(d.Address)
 
-	if err != nil {
-		log.Fatal("FWD", err)
+	if err != nil || ni.vlanid == 0 {
+		log.Fatal("FWD ERROR", err)
+		return bpf_destinfo{}, ninfo{}
+	}
+
+	if d.TunnelType == NONE && ni.l3 {
+		log.Fatal("LOOP ERROR", ni)
+		return bpf_destinfo{}, ninfo{}
 	}
 
 	flags := uint8(d.TunnelFlags & 0x7f)
@@ -367,125 +430,19 @@ func destinfo(l *layer3, d Destination3) bpf_destinfo {
 		log.Println("NOT_LOCAL", d.Address)
 	}
 
+	fmt.Println("FWD", ni)
+
 	return bpf_destinfo{
-		vlanid:   ni.vlanid,
-		h_source: ni.h_source,
-		saddr:    as16(ni.saddr),
-		h_dest:   ni.h_dest,
 		daddr:    as16(ni.daddr),
+		saddr:    as16(ni.saddr),
 		dport:    d.TunnelPort,
 		sport:    0,
+		vlanid:   ni.vlanid,
 		method:   d.TunnelType,
 		flags:    flags, // TODO
-	}
-}
-
-func (s *service3) recalc() {
-
-	l := s.layer3
-
-	var dests []Destination3
-	for _, v := range s.dests {
-		dests = append(dests, v)
-	}
-
-	var val bpf_destinations
-	for i, d := range dests {
-		ni, err := l.netinfo.info(d.Address)
-
-		if err != nil {
-			log.Fatal("FWD", err)
-		}
-
-		flags := uint8(d.TunnelFlags & 0x7f)
-
-		if ni.l3 {
-			flags |= F_NOT_LOCAL
-			log.Println("NOT_LOCAL", d.Address)
-		}
-
-		i2 := bpf_destinfo{
-			vlanid:   ni.vlanid,
-			h_source: ni.h_source,
-			saddr:    as16(ni.saddr),
-			h_dest:   ni.h_dest,
-			daddr:    as16(ni.daddr),
-			dport:    d.TunnelPort,
-			sport:    0,
-			method:   d.TunnelType,
-			flags:    flags, // TODO
-		}
-
-		val.destinfo[i+1] = i2
-
-		fmt.Println("FWD", ni)
-
-		if d.TunnelType == NONE && ni.l3 {
-			log.Fatal("LOOP", ni)
-		}
-	}
-
-	if len(dests) > 0 {
-		for i, _ := range val.hash {
-			val.hash[i] = byte((i % len(dests)) + 1)
-		}
-	}
-
-	val.destinfo[0] = bpf_destinfo{flags: uint8(s.service.Flags)}
-
-	vip := as16(s.service.Address)
-
-	key := s.key()
-
-	l.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
-
-	/**********************************************************************/
-
-	//l.vips.UpdateElem(uP(&vip), uP(&VLANID), xdp.BPF_ANY)
-	l.vips.UpdateElem(uP(&vip), uP(&ZERO), xdp.BPF_ANY) // value is not used
-
-	for _, d := range dests {
-
-		ni, err := l.netinfo.info(d.Address)
-
-		if err != nil {
-			log.Fatal("NAT", err, ni)
-		}
-
-		nat := as16(l.nat(s.service.Address, d.Address))
-		ext := as16(l.netinfo.ext(ni.vlanid, s.service.Address.Is6()))
-
-		if d.TunnelType == NONE && ni.l3 {
-			log.Fatal("LOOP", ni)
-		}
-
-		flags := uint8(d.TunnelFlags & 0x7f)
-
-		if ni.l3 {
-			flags |= F_NOT_LOCAL
-			log.Println("NOT_LOCAL", d.Address)
-		}
-
-		vip_rip := bpf_vip_rip{
-			destinfo: bpf_destinfo{
-				daddr:    as16(ni.daddr),
-				saddr:    as16(ni.saddr),
-				dport:    d.TunnelPort,
-				sport:    0,
-				vlanid:   ni.vlanid,
-				method:   d.TunnelType,
-				flags:    flags,
-				h_dest:   ni.h_dest,
-				h_source: ni.h_source,
-			},
-			vip: vip,
-			ext: ext,
-		}
-
-		fmt.Println("NAT", ni, ext, vip)
-
-		l.nat_to_vip_rip.UpdateElem(uP(&nat), uP(&vip_rip), xdp.BPF_ANY)
-	}
+		h_dest:   ni.h_dest,
+		h_source: ni.h_source,
+	}, ni
 }
 
 func as16(a netip.Addr) (r addr16) {
