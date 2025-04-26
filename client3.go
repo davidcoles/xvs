@@ -63,8 +63,16 @@ type Service3 struct {
 	Flags    Flags
 }
 
+type Stats3 struct {
+	Packets uint64
+	Octets  uint64
+	Flows   uint64
+	Errors  uint64
+}
+
 type Service3Extended struct {
 	Service Service3
+	Stats   Stats3
 }
 
 type Destination3 struct {

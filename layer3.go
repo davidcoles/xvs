@@ -70,6 +70,27 @@ var ZERO uint32 = 0
 
 const F_NOT_LOCAL = 0x80
 
+type bpf_vrpp2 struct {
+	vaddr    addr16 // virtual service IP
+	raddr    addr16 // real server IP
+	vport    uint16 // virtual service port
+	protocol uint16
+}
+
+type bpf_counters2 struct {
+	packets uint64
+	octets  uint64
+	flows   uint64
+	errors  uint64
+}
+
+func (c *bpf_counters2) add(x bpf_counters2) {
+	c.packets += x.packets
+	c.octets += x.octets
+	c.flows += x.flows
+	c.errors += x.errors
+}
+
 type bpf_settings struct {
 	ticker uint64 // periodically reset
 	vetha  mac
@@ -151,6 +172,7 @@ type layer3 struct {
 	destinations   xdp.Map
 	vlaninfo       xdp.Map
 	settings       xdp.Map
+	stats          xdp.Map
 	vips           xdp.Map
 }
 
@@ -223,8 +245,33 @@ func (l *layer3) createService(s Service3, ds ...Destination3) *service3 {
 	return service
 }
 
+func (l *layer3) getStats(s, d netip.Addr, port, protocol uint16) (x bpf_counters2) {
+	vrpp := bpf_vrpp2{vaddr: as16(s), raddr: as16(d), vport: port, protocol: protocol}
+
+	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+
+	l.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
+
+	for _, v := range all {
+		x.add(v)
+	}
+
+	return x
+}
+
 func (s *service3) extend() Service3Extended {
-	return Service3Extended{Service: s.service}
+	var c bpf_counters2
+	svc := s.service
+	for d, _ := range s.dests {
+		c.add(s.layer3.getStats(svc.Address, d, svc.Port, uint16(svc.Protocol)))
+	}
+
+	var stats Stats3
+	stats.Packets = c.packets
+	stats.Octets = c.octets
+	stats.Flows = c.flows
+	stats.Errors = c.errors
+	return Service3Extended{Service: s.service, Stats: stats}
 }
 
 func (s *service3) update(service Service3) error {
@@ -282,8 +329,13 @@ func (s *service3) createDestination(d Destination3) error {
 
 	s.layer3.natmap.add(s.service.Address, d.Address)
 	s.layer3.natmap.index()
+	svc := s.service
 
-	// TODO - add stats map eniires
+	vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d.Address), vport: svc.Port, protocol: uint16(svc.Protocol)}
+
+	counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+
+	s.layer3.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 
 	s.recalc()
 
@@ -299,6 +351,33 @@ func (s *service3) destinations() (r []Destination3Extended, e error) {
 
 func (l *layer3) nat(v, r netip.Addr) netip.Addr {
 	return l.netns.addr(l.natmap.get(v, r), v.Is6())
+}
+
+func destinfo(l *layer3, d Destination3) bpf_destinfo {
+	ni, err := l.netinfo.info(d.Address)
+
+	if err != nil {
+		log.Fatal("FWD", err)
+	}
+
+	flags := uint8(d.TunnelFlags & 0x7f)
+
+	if ni.l3 {
+		flags |= F_NOT_LOCAL
+		log.Println("NOT_LOCAL", d.Address)
+	}
+
+	return bpf_destinfo{
+		vlanid:   ni.vlanid,
+		h_source: ni.h_source,
+		saddr:    as16(ni.saddr),
+		h_dest:   ni.h_dest,
+		daddr:    as16(ni.daddr),
+		dport:    d.TunnelPort,
+		sport:    0,
+		method:   d.TunnelType,
+		flags:    flags, // TODO
+	}
 }
 
 func (s *service3) recalc() {
@@ -490,6 +569,12 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
+	stats, err := x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp2{})), int(unsafe.Sizeof(bpf_counters2{})))
+
+	if err != nil {
+		return nil, err
+	}
+
 	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
 
 	if err != nil {
@@ -569,6 +654,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		destinations:   destinations,
 		vlaninfo:       vlaninfo,
 		settings:       settings,
+		stats:          stats,
 		vips:           vips,
 	}, nil
 }

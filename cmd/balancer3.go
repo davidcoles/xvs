@@ -158,7 +158,22 @@ func main() {
 
 	if *remove != 0 {
 
-		time.Sleep(time.Duration(*remove) * time.Second)
+		for n := uint(0); n < *remove; n++ {
+
+			services, _ := client.Services()
+
+			for _, service := range services {
+
+				s, _ := client.Service(service.Service)
+
+				fmt.Println(s.Stats)
+
+			}
+
+			time.Sleep(time.Second)
+		}
+
+		//time.Sleep(time.Duration(*remove) * time.Second)
 
 		fmt.Println("REMOVING")
 

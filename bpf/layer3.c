@@ -155,8 +155,8 @@ struct flow {
 /**********************************************************************/
 
 struct vrpp {
-    __be32 vaddr; // virtual service IP
-    __be32 raddr; // real server IP
+    addr_t vaddr; // virtual service IP
+    addr_t raddr; // real server IP
     __be16 vport; // virtual service port
     __be16 protocol;
 };
@@ -166,11 +166,6 @@ struct counters {
     __u64 octets;
     __u64 flows;
     __u64 errors;
-
-    __be16 dport; // to terminate
-    __be16 type;  // old mappings
-    __be16 pad1;  // pad to 8-bytes alignment
-    __be16 pad2;  // pad to 8-bytes alignment
 };
 
 struct {
@@ -1293,6 +1288,16 @@ int xdp_fwd_func(struct xdp_md *ctx)
     
     int action = xdp_fwd_func_(ctx, &ft, &t);
 
+    
+    struct vrpp vrpp = { .vaddr = ft.daddr, .raddr = t.daddr, .vport = ntohs(ft.dport), .protocol = 6 };
+    
+    struct counters *c = bpf_map_lookup_elem(&stats, &vrpp);
+
+    if (c) {
+	c->packets++;
+	c->octets += data_end - data;
+    }
+    
     // handle stats here
     switch (action) {
     case XDP_PASS: return XDP_PASS;
