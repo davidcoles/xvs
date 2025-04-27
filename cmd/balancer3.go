@@ -179,8 +179,6 @@ func main() {
 			time.Sleep(time.Second)
 		}
 
-		//time.Sleep(time.Duration(*remove) * time.Second)
-
 		fmt.Println("REMOVING")
 
 		for _, vip := range vips {
@@ -190,7 +188,7 @@ func main() {
 			}
 		}
 
-		client.Clean()
+		//client.Clean()
 		client.Info()
 
 	}

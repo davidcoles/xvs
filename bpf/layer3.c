@@ -43,7 +43,6 @@ const __u8 F_NOT_LOCAL = 0x80;
 #define VERSION 1
 #define SECOND_NS 1000000000l
 
-//const __u32 NETNS = 4095;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 300; // seconds
@@ -292,7 +291,7 @@ struct {
     __type(key, __u32);
     __type(value, __u32);
     __uint(max_entries, 4096);
-} redirect_map SEC(".maps");
+} redirect_map4 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_DEVMAP);
@@ -559,9 +558,6 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 
     enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
 
-    //if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
-    //	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
-
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
 
@@ -677,7 +673,7 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
     struct ethhdr *eth = data;
     
     if (eth + 1 > data_end)
-        return XDP_PASS; // or drop?
+        return XDP_DROP;
     
     __be16 next_proto = eth->h_proto;
     void *next_header = eth + 1;
@@ -689,13 +685,11 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
 	vlan = next_header;
 	
 	if (vlan + 1 > data_end)
-	    return XDP_PASS;
+	    return XDP_DROP;
 	
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
-
-    //__builtin_memset(t, 0, sizeof(tunnel_t)); // was a temp fix
     
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
@@ -735,6 +729,10 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
 	    return XDP_DROP;
 
 	return bpf_redirect(ns->i, 0);
+    }
+
+    if (vlan) {
+	vlan->h_vlan_TCI = bpf_htons(t->vlanid); // TODO mask
     }
 
     switch (result) {
@@ -905,7 +903,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
     return is_ipv4_addr(t.daddr) ?
-	bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
+	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
@@ -1060,7 +1058,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
     return is_ipv4_addr(t.daddr) ?
-        bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
+        bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
         bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
@@ -1278,7 +1276,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     struct ethhdr *eth = data;
     
     if (eth + 1 > data_end)
-        return XDP_DROP; // or drop?
+        return XDP_DROP;
     
     __u8 dot1q = 0;
     
@@ -1308,16 +1306,20 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	switch (s->multi) {
 	case 0: // untagged bond - multi NIC, but only single VLAN in config
-	    return XDP_TX; // possible efficiency, rather than XDP_REDIRECT to the bond device
+	    return XDP_TX;
 	case 1: // single interface - TX either tagged or untagged
 	    return XDP_TX;
-	default:
-	    if (dot1q) return XDP_TX; // muti-interface, if tagged packets then just TX to appropriate VLAN
-	    return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP); // otherwise redirect to interface
 	}
-
-	return XDP_DROP;
 	
+	// muti-interface, if tagged packets then just TX to appropriate VLAN (previously set)
+	if (dot1q)
+	    return XDP_TX; 
+	
+	// otherwise redirect to interface
+	return is_ipv4_addr(t.daddr) ?
+	    bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
+	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
+
 	//took = bpf_ktime_get_ns() - start;
 	//int ack = dest.flags.ack ? 1 : 0;	
 	//int syn = dest.flags.syn ? 1 : 0;	
@@ -1414,14 +1416,3 @@ int xdp_vetha(struct xdp_md *ctx)
 char _license[] SEC("license") = "GPL";
 
 #endif
-
-/*
-enum xdp_action {
-        XDP_ABORTED = 0,
-        XDP_DROP = 1,
-        XDP_PASS = 2,
-        XDP_TX = 3 ,
-        XDP_REDIRECT = 4,
-};
-
-*/

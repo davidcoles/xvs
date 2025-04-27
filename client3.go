@@ -33,7 +33,7 @@ const (
 
 type Client3 interface {
 	Info() (Info, error)
-	Clean()
+	//Clean()
 
 	Config() (Config, error)
 	SetConfig(Config) error
@@ -110,12 +110,12 @@ func (l *layer3) Info() (Info, error) {
 	return Info{}, nil
 }
 
-func (l *layer3) Clean() {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	l.clean()
-}
+//func (l *layer3) Clean() {
+//	l.mutex.Lock()
+//	defer l.mutex.Unlock()
+//
+//	l.clean()
+//}
 
 func (l *layer3) Config() (Config, error) {
 	l.mutex.Lock()

@@ -177,7 +177,7 @@ type layer3 struct {
 	netns    *newns
 
 	nat_to_vip_rip xdp.Map
-	redirect_map   xdp.Map
+	redirect_map4  xdp.Map
 	redirect_map6  xdp.Map
 	destinations   xdp.Map
 	vlaninfo       xdp.Map
@@ -520,7 +520,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	redirect_map, err := x.FindMap("redirect_map", 4, 4)
+	redirect_map4, err := x.FindMap("redirect_map4", 4, 4)
 
 	if err != nil {
 		return nil, err
@@ -634,7 +634,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		netinfo:  ni,
 
 		nat_to_vip_rip: nat_to_vip_rip,
-		redirect_map:   redirect_map,
+		redirect_map4:  redirect_map4,
 		redirect_map6:  redirect_map6,
 		destinations:   destinations,
 		vlaninfo:       vlaninfo,
@@ -676,7 +676,7 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 		if nic != 0 {
 			fmt.Println(">>>>>>", f)
 		}
-		l.redirect_map.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
+		l.redirect_map4.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 
 		f4 := l.netinfo.l2info4[uint16(i)]
 		f6 := l.netinfo.l2info6[uint16(i)]
