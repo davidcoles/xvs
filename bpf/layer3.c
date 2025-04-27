@@ -32,8 +32,6 @@
 
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n))
-//#define memcmp(d, s, n) __builtin_memcmp((d), (s), (n))
-//#define memcmp(d, s, n) (1)
 
 const __u8 F_CALCULATEX_CHECKSUM = 1;
 const __u8 F_NOT_LOCAL = 0x80;
@@ -48,6 +46,7 @@ const __u8 F_NOT_LOCAL = 0x80;
 //const __u32 NETNS = 4095;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
+const __u64 TIMEOUT = 300; // seconds
 
 //const __u8 F_STICKY = 0x01;
 
@@ -822,14 +821,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return XDP_DROP;
     
-
-    bpf_printk("PRIOR %d %d\n", ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt);
-
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
 	//return XDP_DROP;
 	return XDP_PASS;
-
-    bpf_printk("AFTER %d\n", ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim);
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
     	return XDP_DROP;
@@ -843,9 +837,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     if (!vip_rip)
         return XDP_PASS;
-
-    bpf_printk("AAAARSE\n");
-
 
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
@@ -921,7 +912,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
     
-    //return bpf_redirect(vlaninfo->ifindex, 0);
     return is_ipv4_addr(t.daddr) ?
 	bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
 	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
@@ -968,7 +958,6 @@ int xdp_request_v4(struct xdp_md *ctx)
 
     if (!vip_rip)
     	return XDP_PASS;
-
     
     __u8 proto = ip->protocol;
     addr_t vip = vip_rip->vip;
@@ -1077,9 +1066,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     map.src = src; // ??? upsets verifier if in declaration above    
     
     bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
-    //return bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP);
-
-    bpf_printk("REDIRECTING %d\n", t.vlanid);
     
     return is_ipv4_addr(t.daddr) ?
         bpf_redirect_map(&redirect_map, t.vlanid, XDP_DROP) :
@@ -1116,7 +1102,6 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return XDP_DROP;
 
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
         
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t saddr = { .addr6 = ip6->ip6_src };
@@ -1153,11 +1138,13 @@ int xdp_reply_v6(struct xdp_md *ctx)
     if (!match)
 	return XDP_DROP;
     
-    __u64 time = bpf_ktime_get_ns();
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
 
+    __u64 time = bpf_ktime_get_ns();
+    
     if (time < match->time)
 	return XDP_DROP;
-
+    
     if ((time - match->time) > (5 * SECOND_NS))
 	return XDP_DROP;
 
@@ -1183,15 +1170,13 @@ static __always_inline
 int xdp_reply_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-    
-    struct ethhdr *eth = data;
+    struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end)
         return XDP_DROP;
     
     if (eth->h_proto != bpf_htons(ETH_P_IP))
-	return XDP_PASS;
+	return XDP_DROP;
     
     struct iphdr *ip = (void *)(eth + 1);
     
@@ -1206,8 +1191,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     if (ip->ttl <= 1)
         return XDP_DROP;
-    
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
     
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
@@ -1242,16 +1225,18 @@ int xdp_reply_v4(struct xdp_md *ctx)
     default:
 	return XDP_DROP;    
     }
-    
-    struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
-    struct l4 n = o;
-    struct iphdr old = *ip;
-    
+
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
     
     if (!match)
 	return XDP_DROP;
     
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+    
+    struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
+    struct l4 n = o;
+    struct iphdr old = *ip;
+
     __u64 time = bpf_ktime_get_ns();
     
     if (time < match->time)
@@ -1262,17 +1247,14 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     n.saddr = ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
     n.daddr = ip->daddr = match->src.addr4.addr; // to the internal NETNS address
-
-    //ip->check = ipv4_checksum_diff(~(ip->check), ip, &old);
+    
     ip->check = ip4_csum_diff(ip, &old);
     
     switch(proto) {
     case IPPROTO_TCP:
-	//tcp->check = l4_checksum_diff(~(tcp->check), &n, &o);
 	tcp->check = l4_csum_diff(&n, &o, tcp->check);
 	break;
     case IPPROTO_UDP:
-	//udp->check = l4_checksum_diff(~(udp->check), &n, &o);
 	udp->check = l4_csum_diff(&n, &o, udp->check);
 	break;
     }
@@ -1286,7 +1268,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
     __u64 start_s = start / SECOND_NS;
-    __u64 timeout = 60; // seconds
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
     if (!s)
@@ -1294,7 +1275,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     if (s->ticker == 0) {
 	s->ticker = start_s;
-    } else if (s->ticker + timeout < start_s) {
+    } else if (s->ticker + TIMEOUT < start_s) {
 	return XDP_PASS; // ticker hasn't been reset for 2mins - fail safe
     }
 
@@ -1369,38 +1350,23 @@ int xdp_vethb(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
     __u64 start_s = start / SECOND_NS;
-    __u64 timeout = 60; // seconds
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
+
     if (!s)
 	return XDP_PASS;
-
+    
     if (s->ticker == 0) {
 	s->ticker = start_s;
-    } else if (s->ticker + timeout < start_s) {
-	return XDP_PASS; // ticker hasn't been reset - fail safe
+    } else if (s->ticker + TIMEOUT < start_s) {
+	return XDP_PASS; // ticker hasn't been reset for a while - fail safe
     }
 
     void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-    
-    struct ethhdr *eth = data;
-
-    bpf_printk("vethb got data\n");
+    struct ethhdr *eth = (void *)(long)ctx->data;
 
     if (eth + 1 > data_end)
         return XDP_DROP;
-
-    /*
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return xdp_reply_v4(ctx);	
-    case bpf_htons(ETH_P_IPV6):
-	return xdp_reply_v6(ctx);
-    }
-
-    return XDP_PASS;
-    */
 
     struct iphdr *ip = (void *)(eth + 1);
     struct ip6_hdr *ip6 = (void *)(eth + 1);
@@ -1413,8 +1379,8 @@ int xdp_vethb(struct xdp_md *ctx)
 	switch(ip->protocol) {
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
+	    //bpf_printk("BOUNCE v4!!!!!!!!!!!\n");
 	    reverse_ethhdr(eth);
-	    bpf_printk("BOUNCE v4!!!!!!!!!!!\n");
 	    return XDP_TX;
 	}
 	return XDP_PASS;
@@ -1426,8 +1392,8 @@ int xdp_vethb(struct xdp_md *ctx)
 	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
+	    //bpf_printk("BOUNCE v6!!!!!!!!!!!\n");
 	    reverse_ethhdr(eth);
-	    bpf_printk("BOUNCE v6!!!!!!!!!!!\n");
 	    return XDP_TX;
 	}
 	return XDP_PASS;
@@ -1439,44 +1405,17 @@ int xdp_vethb(struct xdp_md *ctx)
 SEC("xdp")
 int xdp_vetha(struct xdp_md *ctx)
 {
-    // TODO - have probes set from host side to NAT addresses via
-    // veth, process on ns side and TX *back* to through veth, host
-    // side veth then forwards out to the destination. Returning
-    // traffic is forwarded from physical nic to the veth, mapped back
-    // to NAT addresses and TX back to host. Obviates the need to exec
-    // anything in the namespace!
-    
     void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-    
-    struct ethhdr *eth = data;
+    struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end)
 	return XDP_DROP;
 
-    /*
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
-	return xdp_request_v4(ctx);
+	return XDP_PASS == xdp_reply_v4(ctx) ? XDP_PASS : xdp_request_v4(ctx);
     case bpf_htons(ETH_P_IPV6):
-	return xdp_request_v6(ctx);
-    }
-
-    return XDP_PASS;
-    */
-
-
-    
-    switch(eth->h_proto) {
-	
-    case bpf_htons(ETH_P_IP):
-	if (XDP_PASS == xdp_reply_v4(ctx))
-	    return XDP_PASS;
-	return xdp_request_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-	if (XDP_PASS == xdp_reply_v6(ctx))
-            return XDP_PASS;
-        return xdp_request_v6(ctx);
+	return XDP_PASS == xdp_reply_v6(ctx) ? XDP_PASS : xdp_request_v6(ctx);
     }
 
     return XDP_PASS;

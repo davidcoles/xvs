@@ -202,11 +202,11 @@ ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
 func (n *newns) config_pair(ns string, a, b nic) error {
 	a4 := a.ip4.String()
 	b4 := b.ip4.String()
-	//prefix4 := n.prefix4()
+	prefix4 := n.prefix4()
 
 	a6 := a.ip6.String()
 	b6 := b.ip6.String()
-	//prefix6 := n.prefix6()
+	prefix6 := n.prefix6()
 
 	script := `
 ip netns del ` + ns + ` >/dev/null 2>&1 || true
@@ -217,17 +217,12 @@ ip a add ` + a4 + `/30 dev ` + a.nic + `
 ip -6 a add ` + a6 + `/126 dev ` + a.nic + `
 
 ip link set ` + b.nic + ` netns ` + ns + `
-
 ip netns exec ` + ns + ` ip l set ` + b.nic + ` up
-
 ip netns exec ` + ns + ` ip a add ` + b4 + `/30 dev ` + b.nic + `
-#ip netns exec ` + ns + ` ip r replace default via ` + a4 + `
-
 ip netns exec ` + ns + ` ip -6 a add ` + b6 + `/126 dev ` + b.nic + `
-#ip netns exec ` + ns + ` ip -6 r replace default via ` + a6 + `
 
-ip r replace 255.0.0.0/8 via ` + b4 + `
-ip -6 r replace fefe::0/64 via ` + b6 + `
+ip r replace ` + prefix4 + ` via ` + b4 + `
+ip -6 r replace ` + prefix6 + ` via ` + b6 + `
 
 #ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
 #ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` rx off

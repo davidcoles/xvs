@@ -465,7 +465,6 @@ int frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     
     if ((iplen = frag_needed_trim(ctx, &p)) < 0)	
 	return -1;
-
     
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
