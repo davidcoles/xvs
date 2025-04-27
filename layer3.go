@@ -67,7 +67,6 @@ const (
 	GUE  TunnelType = bpf.T_GUE
 )
 
-var VETH32 uint32 = 4095
 var ZERO uint32 = 0
 
 const F_NOT_LOCAL = 0x80
@@ -144,6 +143,7 @@ type bpf_servicekey struct {
 }
 
 type bpf_netns struct {
+	i uint32
 	a [6]byte
 	b [6]byte
 }
@@ -625,15 +625,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 
 	fmt.Println("VETH", ns.a.mac.String(), ns.b.mac.String())
 
-	// can replace this with a vlaninfo entry at 0
-	netns.UpdateElem(uP(&ZERO), uP(&(bpf_netns{a: ns.a.mac, b: ns.b.mac})), xdp.BPF_ANY)
-
-	var ns_nic uint32 = uint32(ns.a.idx)
-	redirect_map.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
-	redirect_map6.UpdateElem(uP(&VETH32), uP(&ns_nic), xdp.BPF_ANY)
-
-	redirect_map.UpdateElem(uP(&ZERO), uP(&ns_nic), xdp.BPF_ANY)
-	redirect_map6.UpdateElem(uP(&ZERO), uP(&ns_nic), xdp.BPF_ANY)
+	netns.UpdateElem(uP(&ZERO), uP(&(bpf_netns{i: uint32(ns.a.idx), a: ns.a.mac, b: ns.b.mac})), xdp.BPF_ANY)
 
 	return &layer3{
 		services: map[threetuple]*service3{},

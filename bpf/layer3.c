@@ -187,6 +187,7 @@ struct {
 /**********************************************************************/
 
 struct netns {
+    __u32 i;
     __u8 a[6];
     __u8 b[6];
 };
@@ -416,7 +417,7 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t)
     struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 
     if (!service)
-	return NOT_FOUND;;
+	return NOT_FOUND;
     
     __u8 sticky = service->destinfo[0].flags & F_STICKY;
     __u16 hash3 = l3_hash((fourtuple_t *) ft);
@@ -503,15 +504,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	if (!bpf_map_lookup_elem(&vips, &saddr))
             return NOT_A_VIP;
 	
-	// source was a VIP - send to netns via veth interface
-	struct netns *ns = bpf_map_lookup_elem(&netns, &ZERO);
-
-	if (!ns || nulmac(ns->a) || nulmac(ns->b))
-	    return NOT_FOUND;
-	
-	memcpy(eth->h_dest, ns->b, 6);
-	memcpy(eth->h_source, ns->a, 6);
-	
+	// source was a VIP - send to netns via veth interface	
         return PROBE_REPLY;
     }
 
@@ -604,19 +597,10 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
     struct addr daddr = { .addr4.addr = ip->daddr };
     
     if (!bpf_map_lookup_elem(&vips, &daddr)) {
-	
 	if (!bpf_map_lookup_elem(&vips, &saddr))
 	    return NOT_A_VIP;
 	
 	// source was a VIP - send to netns via veth interface
-	struct netns *ns = bpf_map_lookup_elem(&netns, &ZERO);
-	
-        if (!ns || nulmac(ns->a) || nulmac(ns->b))
-            return NOT_FOUND;
-	
-        memcpy(eth->h_dest, ns->b, 6);
-        memcpy(eth->h_source, ns->a, 6);
-	
 	return PROBE_REPLY;
     }
 
@@ -683,7 +667,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
     int overhead = 0;
     enum lookup_result result = NOT_A_VIP;
     int vip_is_ipv6 = 0;
-    
+    struct netns *ns = NULL;
+	
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -740,9 +725,16 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
     case NOT_FOUND: return XDP_DROP;
     case BOUNCE_ICMP: return XDP_TX;
     case PROBE_REPLY:
-	if (vlan && vlan_pop(ctx) < 0) return XDP_DROP;
-	//return bpf_redirect_map(&redirect_map, NETNS, XDP_DROP);
-	return bpf_redirect_map(&redirect_map, 0, XDP_DROP);	
+        if (!(ns = bpf_map_lookup_elem(&netns, &ZERO)) || nulmac(ns->a) || nulmac(ns->b) || !ns->i)
+            return XDP_DROP;
+	
+        memcpy(eth->h_dest, ns->b, 6);
+        memcpy(eth->h_source, ns->a, 6);
+	
+	if (vlan && vlan_pop(ctx) < 0)
+	    return XDP_DROP;
+
+	return bpf_redirect(ns->i, 0);
     }
 
     switch (result) {
@@ -1379,7 +1371,6 @@ int xdp_vethb(struct xdp_md *ctx)
 	switch(ip->protocol) {
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
-	    //bpf_printk("BOUNCE v4!!!!!!!!!!!\n");
 	    reverse_ethhdr(eth);
 	    return XDP_TX;
 	}
@@ -1392,7 +1383,6 @@ int xdp_vethb(struct xdp_md *ctx)
 	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
-	    //bpf_printk("BOUNCE v6!!!!!!!!!!!\n");
 	    reverse_ethhdr(eth);
 	    return XDP_TX;
 	}
