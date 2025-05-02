@@ -463,52 +463,44 @@ void *percpu_map(void *outer) {
     return bpf_map_lookup_elem(outer, &cpu_id);
 }
 
-/*
-struct vrpp {
-    addr_t vaddr; // virtual service IP
-    addr_t raddr; // real server IP
-    __be16 vport; // virtual service port
-    __be16 protocol;
+struct tcpflags {
+    __u32 syn : 1;
+    __u32 ack : 1;
+    __u32 rst : 1;
+    __u32 fin : 1;
 };
-*/
+typedef struct tcpflags tcpflags_t;
 
-
-//static __always_inline
-void be_tcp_concurrent(vrpp_t *vr, struct tcphdr *tcp, flow_t *flow, __u8 era)
+static __always_inline
+void tcp_concurrent(vrpp_t *vr, tcpflags_t *tcp, flow_t *flow, __u8 era)
 {
-    flow_t *state = flow;
-    
-    if (!flow)
-	return;
-    
-    //vrpp_t vrpp = { .vaddr = tf->daddr, .raddr = ftstate->rip, .port = tcp->dest, .protocol = IPPROTO_TCP, .pad = era%2 };
-    __s64 *concurrent = NULL;
+    __s64 *concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr);
 
     if (tcp->syn == 1)
-        state->finrst = 0;
+        flow->finrst = 0;
     
-    if (state->finrst == 0 && ((tcp->rst == 1) || (tcp->fin == 1))) {
-        state->finrst = 10;
+    if (flow->finrst == 0 && ((tcp->rst == 1) || (tcp->fin == 1))) {
+        flow->finrst = 10;
     } else {
-        if (state->finrst > 0)
-            (state->finrst)--;
+        if (flow->finrst > 0)
+            (flow->finrst)--;
     }
     
-    if (state->era != era || tcp->syn == 1) {
-        state->era = era;
+    if (flow->era != era || tcp->syn == 1) {
+        flow->era = era;
 
-        switch(state->finrst) {
+        switch(flow->finrst) {
         case 10:
             break;
         case 0:
-            if((concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr)))
+            if (concurrent)
 		(*concurrent)++;
             break;
         }
     } else {
-        switch(state->finrst) {
+        switch(flow->finrst) {
         case 10:
-            if((concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr)))
+	    if (concurrent)
 		(*concurrent)--;
             break;
         case 0:
@@ -519,7 +511,7 @@ void be_tcp_concurrent(vrpp_t *vr, struct tcphdr *tcp, flow_t *flow, __u8 era)
 
 
 static __always_inline
-enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, void *l3)
+enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, tcpflags_t tcpflags)
 {
     flow_t *flow = NULL;
     __u8 era = 0;
@@ -527,7 +519,8 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, void *l3)
     switch(ft->proto) {
     case IPPROTO_TCP:
 	if ((flow = lookup_flow(percpu_map(&flows_tcp), (fourtuple_t *) ft))) {
-	    // update concurrent
+	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = ft->dport, .protocol = ft->proto };
+	    tcp_concurrent(&vrpp, &tcpflags, flow, era);
 	}
 	break;
     case IPPROTO_UDP:
@@ -652,22 +645,24 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
-    struct icmp6_hdr *icmp = NULL;
-    void *l4 = (void *) (ip6 + 1);
-    
+    tcpflags_t tcpflags = {};
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+    struct udphdr *udp = (void *) (ip6 + 1);
+    struct icmp6_hdr *icmp = (void *) (ip6 + 1);
+
     switch (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
     case IPPROTO_TCP:
-	tcp = (void *) (ip6 + 1);
 	if (tcp + 1 > data_end)
 	    return NOT_FOUND;
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
+	tcpflags.syn = tcp->syn;
+	tcpflags.ack = tcp->ack;
+	tcpflags.rst = tcp->rst;
+	tcpflags.fin = tcp->fin;
 	break;
 	
     case IPPROTO_UDP:
-	udp = (void *) (ip6 + 1);
 	if (udp + 1 > data_end)
 	    return NOT_FOUND;
 	ft->sport = udp->source;
@@ -675,7 +670,6 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	break;
 	
     case IPPROTO_ICMPV6:
-	icmp = (void *)(ip6 + 1);
         if (icmp + 1 > data_end)
             return NOT_FOUND;
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
@@ -693,7 +687,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t, l4);
+    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t, tcpflags);
 
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -744,22 +738,24 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
 
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
-    struct icmphdr *icmp = NULL;
-    void *l4 = (void *) (ip + 1);
+    tcpflags_t tcpflags = {};
+    struct tcphdr *tcp = (void *) (ip + 1);
+    struct udphdr *udp = (void *) (ip + 1);
+    struct icmphdr *icmp = (void *) (ip + 1);
     
     switch (ip->protocol) {
     case IPPROTO_TCP:
-	tcp = (void *)(ip + 1);
 	if (tcp + 1 > data_end)
 	    return NOT_FOUND;
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
+	tcpflags.syn = tcp->syn;
+	tcpflags.ack = tcp->ack;
+	tcpflags.rst = tcp->rst;
+	tcpflags.fin = tcp->fin;
 	break;
 	
     case IPPROTO_UDP:
-	udp = (void *)(ip + 1);
 	if (udp + 1 > data_end)
 	    return NOT_FOUND;
 	ft->sport = udp->source;
@@ -767,7 +763,6 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 	break;
 	
     case IPPROTO_ICMP:
-	icmp = (void *)(ip + 1);
 	if (icmp + 1 > data_end)
             return NOT_FOUND;
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
@@ -784,8 +779,8 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
     default:
 	return NOT_FOUND;
     }
-    
-    enum lookup_result r = lookup(ft, ip->protocol, t, l4);
+
+    enum lookup_result r = lookup(ft, ip->protocol, t, tcpflags);
 
     if (LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
