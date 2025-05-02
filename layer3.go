@@ -106,6 +106,8 @@ type bpf_settings struct {
 	vetha  mac
 	vethb  mac
 	multi  uint8
+	era    uint8
+	pad    [2]uint8
 }
 
 type bpf_destinfo struct {
@@ -380,6 +382,11 @@ type real struct {
 	netinfo  ninfo // only used for debug purposes atm
 }
 
+func (s *service3) conc(c xdp.Map, era bool) {
+	for k, v := range reals {
+	}
+}
+
 func (s *service3) recalc() {
 
 	reals := make(map[netip.Addr]real, len(s.dests))
@@ -582,6 +589,12 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
+	concurrent, err := x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp2{})), 8)
+
+	if err != nil {
+		return nil, err
+	}
+
 	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
 
 	if err != nil {
@@ -712,18 +725,24 @@ func newClient(interfaces ...string) (*layer3, error) {
 		vips:           vips,
 	}
 
-	//go l3.background()
+	go l3.background(concurrent)
 
 	return l3, nil
 }
 
-func (l *layer3) background() error {
+func (l *layer3) background(concurrent xdp.Map) error {
 	ticker := time.NewTicker(time.Minute)
 	for {
 		select {
 		case <-ticker.C:
+			// increment era - write settings
+			// collect old concurrecy stats into map and zero out
 			fmt.Println("TICK")
+			l.setting.era++
 			updateSettings(l.settings, l.setting)
+			for _, s := range l.services {
+				s.conc(l.setting.era)
+			}
 
 			l.mutex.Lock()
 			// re-scan network interfaces and match to VLANs

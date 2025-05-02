@@ -152,22 +152,9 @@ struct flow {
     __u8 finrst;
     __u8 era;
     __u8 pad;
-    __u8 version;
+    __u8 version; // +4 = 72
 };
 typedef struct flow flow_t;
-
-/*
-
-  look up record
-  if timestamp older than X seconds then don't set pointer - new flow - delete?
-
-  update timestamp
-
-  if TCP {
-  be_tcp_concurrent
-  }
-  
- */
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
@@ -200,7 +187,9 @@ struct vrpp {
     addr_t vaddr; // virtual service IP
     addr_t raddr; // real server IP
     __be16 vport; // virtual service port
-    __be16 protocol;
+    //__be16 protocol;
+    __u8 protocol;
+    __u8 era;    
 };
 typedef struct vrpp vrpp_t;
 
@@ -280,6 +269,8 @@ struct settings {
     __u8 vetha[6];
     __u8 vethb[6];
     __u8 multi;
+    __u8 era;
+    __u8 pad[2];
 };
 
 struct {
@@ -414,7 +405,7 @@ int is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
-static __always_inline
+//static __always_inline
 int is_ipv4_addr_p(struct addr *a) {
     return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
 }
@@ -458,7 +449,7 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
     return 0;
 }
 
-void *percpu_map(void *outer) {
+void *array_of_maps(void *outer) {
     __u32 cpu_id = bpf_get_smp_processor_id();
     return bpf_map_lookup_elem(outer, &cpu_id);
 }
@@ -511,14 +502,14 @@ void tcp_concurrent(vrpp_t *vr, tcpflags_t *tcp, flow_t *flow, __u8 era)
 
 
 static __always_inline
-enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, tcpflags_t tcpflags)
+enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags)
 {
     flow_t *flow = NULL;
     __u8 era = 0;
     
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if ((flow = lookup_flow(percpu_map(&flows_tcp), (fourtuple_t *) ft))) {
+	if ((flow = lookup_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = ft->dport, .protocol = ft->proto };
 	    tcp_concurrent(&vrpp, &tcpflags, flow, era);
 	}
@@ -531,7 +522,7 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, tcpflags_
 	flow->era = era;
 	*t = flow->tunnel;
     } else {
-	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
+	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };
 	struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
 	
 	if (!service)
@@ -559,6 +550,7 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, tcpflags_
     if (!vlan)
 	return NOT_FOUND;
 
+    /*
     if (0) {
 	addr_t saddr = {};
 	__u8 h_source[6];
@@ -586,6 +578,7 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, tcpflags_
 	    memcpy(t->h_dest, h_gw, 6); // send packet to router
 	}
     }
+    */
 
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
@@ -594,7 +587,7 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, tcpflags_
     if (!flow) {
 	switch(ft->proto) {
 	case IPPROTO_TCP:
-	    store_flow(percpu_map(&flows_tcp), (fourtuple_t *) ft, t, era);
+	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, era);
 	    break;
 	}
     }
@@ -687,7 +680,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t, tcpflags);
+    enum lookup_result r = lookup(ft, t, tcpflags);
 
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -780,7 +773,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, ip->protocol, t, tcpflags);
+    enum lookup_result r = lookup(ft, t, tcpflags);
 
     if (LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
@@ -904,20 +897,6 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
     return XDP_DROP; 
 }
 
-//static __always_inline
-void update(fourtuple_t *key, tunnel_t *t)
-{
-    /*
-    //struct fourtuple key = { .sport = sport, .dport = dport };
-    struct flow val = { .tunnel = *t };
-    
-    if (bpf_map_update_elem(&flows, key, &val, BPF_ANY)) {
-	bpf_printk("ERR\n");
-    } else {
-	bpf_printk("OK\n");
-    }
-    */
-}
 
 
 
