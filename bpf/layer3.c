@@ -46,6 +46,7 @@ const __u8 F_NOT_LOCAL = 0x80;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 300; // seconds
+//const __u64 TIMEOUT = 120; // seconds
 
 //const __u8 F_STICKY = 0x01;
 
@@ -126,7 +127,6 @@ int is_addr4(struct addr *a) {
 #include "new.h"
 
 
-
 struct vip_rip {
     struct destinfo destinfo;
     addr_t vip;
@@ -147,17 +147,52 @@ struct destinations {
 };
 
 struct flow {
-    tunnel_t tunnel; // contains real IP of server, etc
-    
-    __u32 time;   // time of last update
-    __u16 vlanid; // either VLAN ID for ETH_P_8021Q of index to redirect map for untagged NICs
-    __u8 mac[6];
-
+    tunnel_t tunnel; // contains real IP of server, etc (64)
+    __u32 time; // +4 = 68
     __u8 finrst;
     __u8 era;
+    __u8 pad;
     __u8 version;
 };
+typedef struct flow flow_t;
 
+/*
+
+  look up record
+  if timestamp older than X seconds then don't set pointer - new flow - delete?
+
+  update timestamp
+
+  if TCP {
+  be_tcp_concurrent
+  }
+  
+ */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, MAX_CPU_SUPPORT);
+    __array(
+            values,
+            struct {
+                __uint(type, BPF_MAP_TYPE_LRU_HASH);
+                __type(key, fourtuple_t);
+                // strangely, this doesn't work for all systems, but the following __u8 array workaround does:
+		//__type(value, flow_t);
+                __type(value, __u8[sizeof(flow_t)]);
+                __uint(max_entries, FLOW_STATE_SIZE);
+            });
+} flows_tcp SEC(".maps");
+
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, flow_t);
+    __uint(max_entries, FLOW_STATE_SIZE);
+} reference SEC(".maps");
 
 /**********************************************************************/
 
@@ -167,6 +202,7 @@ struct vrpp {
     __be16 vport; // virtual service port
     __be16 protocol;
 };
+typedef struct vrpp vrpp_t;
 
 struct counters {
     __u64 packets;
@@ -174,6 +210,14 @@ struct counters {
     __u64 flows;
     __u64 errors;
 };
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, vrpp_t);
+    __type(value, __s64);
+    __uint(max_entries, 65536);
+} vrpp_concurrent SEC(".maps");
+
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
@@ -239,7 +283,7 @@ struct settings {
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
     __type(value, struct settings);
     __uint(max_entries, 1);
@@ -265,12 +309,12 @@ struct {
 } vlaninfo SEC(".maps");
 
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct fourtuple);
-    __type(value, struct flow);
-    __uint(max_entries, 100);
-} flows SEC(".maps");
+//struct {
+//    __uint(type, BPF_MAP_TYPE_HASH);
+//    __type(key, struct fourtuple);
+//    __type(value, struct flow);
+//    __uint(max_entries, 100);
+//} flows SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -376,61 +420,144 @@ int is_ipv4_addr_p(struct addr *a) {
 }
 
 //static __always_inline
-int lookup_flow(fourtuple_t *ft, __u8 protocol)
+flow_t *lookup_flow(void *flow_state, fourtuple_t *ft)
 {
-    struct flow *flow = bpf_map_lookup_elem(&flows, ft);
+    if (!flow_state)
+	return NULL;
+    
+    flow_t *flow = bpf_map_lookup_elem(flow_state, ft);
 
-    if (flow)
-	return 1;
+    if (!flow)
+	return NULL;
+
+    __u64 time = bpf_ktime_get_ns();
+    __u64 time_s = time / SECOND_NS;
+
+    if (flow->time + 30 < time_s)
+    	return NULL;
+
+    flow->time = time_s;
+    
+    return flow;
+}
+
+static __always_inline
+int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
+{
+    if (!flows)
+	return -1;
+
+    __u64 time = bpf_ktime_get_ns();
+    __u64 time_s = time / SECOND_NS;
+    
+    flow_t flow = { .tunnel = *t, time = time_s, .era = era };
+    bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
+    
+    bpf_printk("STORE");
     
     return 0;
 }
 
+void *percpu_map(void *outer) {
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    return bpf_map_lookup_elem(outer, &cpu_id);
+}
+
+/*
+struct vrpp {
+    addr_t vaddr; // virtual service IP
+    addr_t raddr; // real server IP
+    __be16 vport; // virtual service port
+    __be16 protocol;
+};
+*/
+
 
 //static __always_inline
-int store_tcp_flow(fourtuple_t *ft, tunnel_t *t, struct flow *f)
+void be_tcp_concurrent(vrpp_t *vr, struct tcphdr *tcp, flow_t *flow, __u8 era)
 {
-
-    if (f) {
-
-	// update existing record - just modify f->
-	// updating on a syn does leave open to tcp sniping, but will only affect long lived conns
-
-	// I shall treat this naively, iterating as I learn more - assume not an atta
-	
-	return 0;
-    }
-
+    flow_t *state = flow;
     
-    struct flow flow = { .tunnel = *t };
-    bpf_map_update_elem(&flows, ft, &flow, BPF_ANY);
+    if (!flow)
+	return;
+    
+    //vrpp_t vrpp = { .vaddr = tf->daddr, .raddr = ftstate->rip, .port = tcp->dest, .protocol = IPPROTO_TCP, .pad = era%2 };
+    __s64 *concurrent = NULL;
 
-    return 0;
+    if (tcp->syn == 1)
+        state->finrst = 0;
+    
+    if (state->finrst == 0 && ((tcp->rst == 1) || (tcp->fin == 1))) {
+        state->finrst = 10;
+    } else {
+        if (state->finrst > 0)
+            (state->finrst)--;
+    }
+    
+    if (state->era != era || tcp->syn == 1) {
+        state->era = era;
+
+        switch(state->finrst) {
+        case 10:
+            break;
+        case 0:
+            if((concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr)))
+		(*concurrent)++;
+            break;
+        }
+    } else {
+        switch(state->finrst) {
+        case 10:
+            if((concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr)))
+		(*concurrent)--;
+            break;
+        case 0:
+            break;
+        }
+    }
 }
 
 
 static __always_inline
-enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t)
+enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t, void *l3)
 {
-    struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
-    struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
-
-    if (!service)
-	return NOT_FOUND;
+    flow_t *flow = NULL;
+    __u8 era = 0;
     
-    __u8 sticky = service->destinfo[0].flags & F_STICKY;
-    __u16 hash3 = l3_hash((fourtuple_t *) ft);
-    __u16 hash4 = l4_hash((fourtuple_t *) ft);
-    __u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
-
-    if (!index)
-	return NOT_FOUND;
+    switch(ft->proto) {
+    case IPPROTO_TCP:
+	if ((flow = lookup_flow(percpu_map(&flows_tcp), (fourtuple_t *) ft))) {
+	    // update concurrent
+	}
+	break;
+    case IPPROTO_UDP:
+	break;
+    }
     
-    *t = service->destinfo[index];
-    t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
+    if (flow) {
+	flow->era = era;
+	*t = flow->tunnel;
+    } else {
+	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = protocol };
+	struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
+	
+	if (!service)
+	    return NOT_FOUND;
+    
+	__u8 sticky = service->destinfo[0].flags & F_STICKY;
+	__u16 hash3 = l3_hash((fourtuple_t *) ft);
+	__u16 hash4 = l4_hash((fourtuple_t *) ft);
+	__u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
+	
+	if (!index)
+	    return NOT_FOUND;
+	
+	*t = service->destinfo[index];
+	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
+    }
 
     __u32 vlanid = t->vlanid;
-
+    
     if (!vlanid)
 	return NOT_FOUND;
     
@@ -466,9 +593,18 @@ enum lookup_result lookup(fivetuple_t *ft, __u8 protocol, tunnel_t *t)
 	    memcpy(t->h_dest, h_gw, 6); // send packet to router
 	}
     }
-	
+
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
+
+
+    if (!flow) {
+	switch(ft->proto) {
+	case IPPROTO_TCP:
+	    store_flow(percpu_map(&flows_tcp), (fourtuple_t *) ft, t, era);
+	    break;
+	}
+    }
     
     switch ((enum tunnel_type) t->method) {
     case T_FOU:  return LAYER3_FOU;
@@ -519,6 +655,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;
     struct icmp6_hdr *icmp = NULL;
+    void *l4 = (void *) (ip6 + 1);
     
     switch (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
     case IPPROTO_TCP:
@@ -556,7 +693,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t);
+    enum lookup_result r = lookup(ft, ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt, t, l4);
 
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -610,6 +747,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;
     struct icmphdr *icmp = NULL;
+    void *l4 = (void *) (ip + 1);
     
     switch (ip->protocol) {
     case IPPROTO_TCP:
@@ -647,7 +785,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 	return NOT_FOUND;
     }
     
-    enum lookup_result r = lookup(ft, ip->protocol, t);
+    enum lookup_result r = lookup(ft, ip->protocol, t, l4);
 
     if (LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
@@ -1253,6 +1391,88 @@ int xdp_reply_v4(struct xdp_md *ctx)
 }
 
 
+
+SEC("xdp")
+int xdp_pass(struct xdp_md *ctx)
+{
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_vethb(struct xdp_md *ctx)
+{
+    __u64 start = bpf_ktime_get_ns();
+    __u64 start_s = start / SECOND_NS;
+
+    struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
+
+    if (!s)
+	return XDP_PASS;
+
+    // settings is a per-CPU map, so no concurrency issues
+    if (s->ticker == 0) {
+	s->ticker = start_s;
+    } else if (s->ticker + TIMEOUT < start_s) {
+	return XDP_PASS;
+    }
+
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	if (ip + 1 > data_end)
+	    return XDP_DROP;
+	
+	switch(ip->protocol) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+	
+    case bpf_htons(ETH_P_IPV6):
+	if (ip6 + 1 > data_end)
+	    return XDP_DROP;
+	
+	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+    }
+    
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_vetha(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    
+    if (eth + 1 > data_end)
+	return XDP_DROP;
+
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	return XDP_PASS == xdp_reply_v4(ctx) ? XDP_PASS : xdp_request_v4(ctx);
+    case bpf_htons(ETH_P_IPV6):
+	return XDP_PASS == xdp_reply_v6(ctx) ? XDP_PASS : xdp_request_v6(ctx);
+    }
+
+    return XDP_PASS;
+}
+
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
@@ -1260,13 +1480,15 @@ int xdp_fwd_func(struct xdp_md *ctx)
     __u64 start_s = start / SECOND_NS;
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
+    
     if (!s)
 	return XDP_PASS;
 
+    // settings is a per-CPU map, so no concurrency issues
     if (s->ticker == 0) {
 	s->ticker = start_s;
     } else if (s->ticker + TIMEOUT < start_s) {
-	return XDP_PASS; // ticker hasn't been reset for 2mins - fail safe
+	return XDP_PASS;
     }
 
     void *data_end = (void *)(long)ctx->data_end;
@@ -1333,85 +1555,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
-SEC("xdp")
-int xdp_pass(struct xdp_md *ctx)
-{
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_vethb(struct xdp_md *ctx)
-{
-    __u64 start = bpf_ktime_get_ns();
-    __u64 start_s = start / SECOND_NS;
-
-    struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
-
-    if (!s)
-	return XDP_PASS;
-    
-    if (s->ticker == 0) {
-	s->ticker = start_s;
-    } else if (s->ticker + TIMEOUT < start_s) {
-	return XDP_PASS; // ticker hasn't been reset for a while - fail safe
-    }
-
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    struct ip6_hdr *ip6 = (void *)(eth + 1);
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	if (ip + 1 > data_end)
-	    return XDP_DROP;
-	
-	switch(ip->protocol) {
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-	
-    case bpf_htons(ETH_P_IPV6):
-	if (ip6 + 1 > data_end)
-	    return XDP_DROP;
-	
-	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-    }
-    
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_vetha(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-	return XDP_DROP;
-
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return XDP_PASS == xdp_reply_v4(ctx) ? XDP_PASS : xdp_request_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-	return XDP_PASS == xdp_reply_v6(ctx) ? XDP_PASS : xdp_request_v6(ctx);
-    }
-
-    return XDP_PASS;
-}
 
 char _license[] SEC("license") = "GPL";
 

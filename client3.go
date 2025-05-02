@@ -49,7 +49,8 @@ type Client3 interface {
 	UpdateDestination(Service3, Destination3) error
 	RemoveDestination(Service3, Destination3) error
 
-	SetService(Service3, []Destination3) error
+	SetService(Service3, ...Destination3) error
+	NAT(netip.Addr, netip.Addr) netip.Addr
 }
 
 func (s *Service3) key() threetuple {
@@ -121,20 +122,21 @@ func (l *layer3) Config() (Config, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	return Config{}, nil
+	return l.config, nil
 }
 
 func (l *layer3) SetConfig(c Config) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	err := l.vlans(c.VLAN4, c.VLAN6)
+	l.config = c
+	//err := l.vlans(c.VLAN4, c.VLAN6)
 
-	if err != nil {
-		return err
-	}
+	//if err != nil {
+	//	return err
+	//}
 
-	l.config()
+	l.reconfig()
 
 	return nil
 }
@@ -252,7 +254,7 @@ func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
 	return service.removeDestination(d)
 }
 
-func (l *layer3) SetService(s Service3, ds []Destination3) (err error) {
+func (l *layer3) SetService(s Service3, ds ...Destination3) (err error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -262,5 +264,8 @@ func (l *layer3) SetService(s Service3, ds []Destination3) (err error) {
 		return l.createService(s, ds...)
 	}
 
-	return service.set(s, ds...)
+	return service.set(s, false, ds...)
+}
+func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
+	return l.nat(vip, rip)
 }

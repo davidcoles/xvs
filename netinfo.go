@@ -48,7 +48,7 @@ type fu struct {
 type hwinfo = map[netip.Addr]mac
 type l2info = map[uint16]fu
 
-//type l3info = map[uint16]mac
+// type l3info = map[uint16]mac
 type l3info = map[uint16]fu
 type vinfo = map[uint16]netip.Prefix
 type rtinfo = map[netip.Prefix]uint16
@@ -161,7 +161,7 @@ func (n ninfo) String() string {
 
 type vinfo2 = map[uint16][2]netip.Prefix
 
-//func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
+// func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
 func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) error {
 
 	hw := n.hw()
@@ -205,12 +205,12 @@ func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) error {
 	return nil
 }
 
-func (n *netinfo) config2(vlan4 map[uint16]netip.Prefix, hw map[netip.Addr]mac) (l2info, l3info) {
+func (n *netinfo) config2(vlan map[uint16]netip.Prefix, hw map[netip.Addr]mac) (l2info, l3info) {
 
 	foo := map[uint16]fu{}
 	l3 := map[uint16]fu{}
 
-	for id, prefix := range vlan4 {
+	for id, prefix := range vlan {
 
 		// identify which interface we will use for health probes on this vlan,
 		// the address that we should use as source IP, and the source MAC to use

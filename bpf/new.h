@@ -517,7 +517,8 @@ __u16 icmp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
 }
 
 
-//static __always_inline 
+// "static __always_inline" needs commenting on 20.24 and uncommenting on 24.04
+static __always_inline 
 int icmp6_too_big(struct xdp_md *ctx, struct in6_addr *saddr, struct in6_addr *daddr, __u16 mtu)
 {
     struct pointers p = {};
