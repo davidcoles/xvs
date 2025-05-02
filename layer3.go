@@ -170,6 +170,7 @@ type service3 struct {
 	dests   map[netip.Addr]Destination3
 	service Service3
 	layer3  *layer3
+	sess    map[netip.Addr]uint64
 }
 
 type layer3 struct {
@@ -187,6 +188,7 @@ type layer3 struct {
 	destinations   xdp.Map
 	vlaninfo       xdp.Map
 	settings       xdp.Map
+	sessions       xdp.Map
 	stats          xdp.Map
 	vips           xdp.Map
 }
@@ -225,6 +227,12 @@ func (s *service3) set(service Service3, more bool, ds ...Destination3) error {
 		}
 
 		m[d.Address] = d
+	}
+
+	for d, _ := range s.dests {
+		if _, exists := m[d]; !exists {
+			s.layer3.removeSessions_(s.service, d) // d was deleted
+		}
 	}
 
 	for _, d := range m {
@@ -330,8 +338,13 @@ func (s *service3) key() bpf_servicekey {
 	return bpf_servicekey{addr: as16(s.service.Address), port: s.service.Port, proto: uint16(s.service.Protocol)}
 }
 
-func (s *service3) delete() error {
+func (s *service3) remove() error {
 	key := s.key()
+
+	for d, _ := range s.dests {
+		s.layer3.removeSessions_(s.service, d)
+	}
+
 	s.layer3.destinations.DeleteElem(uP(&key))
 	delete(s.layer3.services, s.service.key())
 	s.layer3.clean()
@@ -342,6 +355,8 @@ func (s *service3) removeDestination(d Destination3) error {
 	if _, exists := s.dests[d.Address]; !exists {
 		return fmt.Errorf("Destination does not exist")
 	}
+
+	s.layer3.removeSessions_(s.service, d.Address)
 
 	delete(s.dests, d.Address)
 	s.recalc()
@@ -363,9 +378,10 @@ func (s *service3) updateDestination(d Destination3) error {
 }
 
 func (s *service3) destinations() (r []Destination3Extended, e error) {
-	for _, d := range s.dests {
+	for a, d := range s.dests {
 
 		stats := s.layer3.getStats(s.service.Address, d.Address, s.service.Port, uint16(s.service.Protocol)).stats()
+		stats.Current = s.sess[a]
 
 		r = append(r, Destination3Extended{Destination: d, Stats: stats})
 	}
@@ -382,9 +398,90 @@ type real struct {
 	netinfo  ninfo // only used for debug purposes atm
 }
 
-func (s *service3) conc(c xdp.Map, era bool) {
-	for k, v := range reals {
+func (l *layer3) createSessions(vrpp bpf_vrpp2) {
+	vrpp.protocol &= 0xff
+	all := make([]int64, xdp.BpfNumPossibleCpus())
+	log.Println("createSessions", vrpp)
+	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_NOEXIST)
+	vrpp.protocol |= 0xff00
+	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_NOEXIST)
+}
+
+//func (l *layer3) removeSessions(vrpp bpf_vrpp2) {
+//	vrpp.protocol &= 0xff
+//	l.sessions.DeleteElem(uP(&vrpp))
+//	vrpp.protocol |= 0xff00
+//	l.sessions.DeleteElem(uP(&vrpp))
+//}
+
+func (l *layer3) removeSessions_(s Service3, d netip.Addr) {
+	vrpp := bpf_vrpp2{vaddr: as16(s.Address), raddr: as16(d), vport: s.Port, protocol: uint16(s.Protocol)}
+	vrpp.protocol &= 0xff
+	l.sessions.DeleteElem(uP(&vrpp))
+	vrpp.protocol |= 0xff00
+	l.sessions.DeleteElem(uP(&vrpp))
+}
+
+func read_and_clear(c xdp.Map, vrpp bpf_vrpp2, era bool) uint64 {
+
+	vrpp.protocol &= 0xff
+
+	if !era {
+		vrpp.protocol |= 0xff00
 	}
+
+	all := make([]int64, xdp.BpfNumPossibleCpus())
+
+	c.LookupElem(uP(&vrpp), uP(&all[0]))
+
+	var total uint64
+	for i, v := range all {
+		if v > 0 {
+			total += uint64(v)
+		}
+		all[i] = 0
+	}
+
+	c.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_EXIST)
+
+	return total
+}
+
+func (l *layer3) read_and_clear(vrpp bpf_vrpp2) uint64 {
+
+	vrpp.protocol &= 0xff
+
+	era := l.setting.era%2 > 0
+
+	if !era {
+		vrpp.protocol |= 0xff00
+	}
+
+	all := make([]int64, xdp.BpfNumPossibleCpus())
+
+	l.sessions.LookupElem(uP(&vrpp), uP(&all[0]))
+
+	var total uint64
+	for i, v := range all {
+		if v > 0 {
+			total += uint64(v)
+		}
+		all[i] = 0
+	}
+
+	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_EXIST)
+
+	return total
+}
+
+func (s *service3) sessions() {
+	svc := s.service
+	sess := make(map[netip.Addr]uint64, len(s.dests))
+	for d, _ := range s.dests {
+		vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d), vport: svc.Port, protocol: uint16(svc.Protocol)}
+		sess[d] = s.layer3.read_and_clear(vrpp)
+	}
+	s.sess = sess
 }
 
 func (s *service3) recalc() {
@@ -399,6 +496,7 @@ func (s *service3) recalc() {
 		vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d.Address), vport: svc.Port, protocol: uint16(svc.Protocol)}
 		counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
 		s.layer3.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
+		s.layer3.createSessions(vrpp)
 	}
 
 	s.forwarding(reals)
@@ -589,7 +687,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	concurrent, err := x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp2{})), 8)
+	sessions, err := x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp2{})), 8)
 
 	if err != nil {
 		return nil, err
@@ -721,32 +819,39 @@ func newClient(interfaces ...string) (*layer3, error) {
 		destinations:   destinations,
 		vlaninfo:       vlaninfo,
 		settings:       settings,
+		sessions:       sessions,
 		stats:          stats,
 		vips:           vips,
 	}
 
-	go l3.background(concurrent)
+	go l3.background()
 
 	return l3, nil
 }
 
-func (l *layer3) background(concurrent xdp.Map) error {
+func (l *layer3) background() error {
 	ticker := time.NewTicker(time.Minute)
+	session := time.NewTicker(time.Second * 5)
+
+	defer ticker.Stop()
+	defer session.Stop()
+
 	for {
 		select {
-		case <-ticker.C:
-			// increment era - write settings
-			// collect old concurrecy stats into map and zero out
-			fmt.Println("TICK")
+		case <-session.C:
 			l.setting.era++
-			updateSettings(l.settings, l.setting)
-			for _, s := range l.services {
-				s.conc(l.setting.era)
-			}
 
 			l.mutex.Lock()
+			updateSettings(l.settings, l.setting)
+			for _, s := range l.services {
+				s.sessions()
+			}
+			l.mutex.Unlock()
+
+		case <-ticker.C:
 			// re-scan network interfaces and match to VLANs
-			// recalc all services as parameters may have changed in previous step
+			// recalc all services as parameters may have changed
+			l.mutex.Lock()
 			l.reconfig()
 			l.mutex.Unlock()
 		}

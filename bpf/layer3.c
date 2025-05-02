@@ -187,9 +187,7 @@ struct vrpp {
     addr_t vaddr; // virtual service IP
     addr_t raddr; // real server IP
     __be16 vport; // virtual service port
-    //__be16 protocol;
-    __u8 protocol;
-    __u8 era;    
+    __s16 protocol;
 };
 typedef struct vrpp vrpp_t;
 
@@ -444,7 +442,7 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
     flow_t flow = { .tunnel = *t, time = time_s, .era = era };
     bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
     
-    bpf_printk("STORE");
+    //bpf_printk("STORE");
     
     return 0;
 }
@@ -463,8 +461,9 @@ struct tcpflags {
 typedef struct tcpflags tcpflags_t;
 
 static __always_inline
-void tcp_concurrent(vrpp_t *vr, tcpflags_t *tcp, flow_t *flow, __u8 era)
+void tcp_concurrent(vrpp_t vr, tcpflags_t *tcp, flow_t *flow, __u8 era)
 {
+    vr.protocol |= era%2 ? 0xff00 : 0x0000;
     __s64 *concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr);
 
     if (tcp->syn == 1)
@@ -502,16 +501,15 @@ void tcp_concurrent(vrpp_t *vr, tcpflags_t *tcp, flow_t *flow, __u8 era)
 
 
 static __always_inline
-enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags)
+enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags, __u8 era)
 {
     flow_t *flow = NULL;
-    __u8 era = 0;
     
     switch(ft->proto) {
     case IPPROTO_TCP:
 	if ((flow = lookup_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft))) {
-	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = ft->dport, .protocol = ft->proto };
-	    tcp_concurrent(&vrpp, &tcpflags, flow, era);
+	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
+	    tcp_concurrent(vrpp, &tcpflags, flow, era);
 	}
 	break;
     case IPPROTO_UDP:
@@ -587,7 +585,7 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags)
     if (!flow) {
 	switch(ft->proto) {
 	case IPPROTO_TCP:
-	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, era);
+	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, era-1);
 	    break;
 	}
     }
@@ -604,7 +602,7 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags)
 }
 
 static __always_inline
-enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft, tunnel_t *t)
+enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft, tunnel_t *t, __u8 era)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -680,7 +678,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, t, tcpflags);
+    enum lookup_result r = lookup(ft, t, tcpflags, era);
 
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -689,7 +687,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 }
 
 static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, tunnel_t *t)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, tunnel_t *t, __u8 era)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -773,7 +771,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, t, tcpflags);
+    enum lookup_result r = lookup(ft, t, tcpflags, era);
 
     if (LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
@@ -782,7 +780,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 }
 
 static __always_inline
-int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
+int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, __u8 era)
 {
 
     int mtu = MTU;
@@ -821,12 +819,12 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t)
     case bpf_htons(ETH_P_IPV6):
 	vip_is_ipv6 = 1;
 	overhead = sizeof(struct ip6_hdr);
-	result = lookup6(ctx, next_header, ft, t);
+	result = lookup6(ctx, next_header, ft, t, era);
 	break;
     case bpf_htons(ETH_P_IP):
 	vip_is_ipv6 = 0;
 	overhead = sizeof(struct iphdr);
-	result = lookup4(ctx, next_header, ft, t);
+	result = lookup4(ctx, next_header, ft, t, era);
 	break;
     default:
 	return XDP_PASS;
@@ -1484,7 +1482,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     fivetuple_t ft = {};    
     tunnel_t t = {};
     
-    int action = xdp_fwd_func_(ctx, &ft, &t);
+    int action = xdp_fwd_func_(ctx, &ft, &t, s->era);
     
     struct vrpp vrpp = { .vaddr = ft.daddr, .raddr = t.daddr, .vport = ntohs(ft.dport), .protocol = ft.proto };
     struct counters *c = bpf_map_lookup_elem(&stats, &vrpp);

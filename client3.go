@@ -68,6 +68,7 @@ type Stats3 struct {
 	Packets uint64
 	Octets  uint64
 	Flows   uint64
+	Current uint64
 	Errors  uint64
 }
 
@@ -199,7 +200,7 @@ func (l *layer3) RemoveService(s Service3) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	return service.delete()
+	return service.remove()
 }
 
 func (l *layer3) Destinations(s Service3) (r []Destination3Extended, e error) {
