@@ -320,22 +320,6 @@ func (l *layer3) getStats(vrpp bpf_vrpp2) (c bpf_counters2) {
 	return c
 }
 
-/*
-func (l *layer3) getStats_(s, d netip.Addr, port, protocol uint16) (c bpf_counters2) {
-
-	vrpp := bpf_vrpp2{vaddr: as16(s), raddr: as16(d), vport: port, protocol: protocol}
-	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
-
-	l.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
-
-	for _, v := range all {
-		c.add(v)
-	}
-
-	return c
-}
-*/
-
 func (s *service3) extend() Service3Extended {
 	var c bpf_counters2
 	for d, _ := range s.dests {
@@ -398,11 +382,8 @@ func (s *service3) updateDestination(d Destination3) error {
 
 func (s *service3) destinations() (r []Destination3Extended, e error) {
 	for a, d := range s.dests {
-
-		//stats := s.layer3.getStats_(s.service.Address, d.Address, s.service.Port, uint16(s.service.Protocol)).stats()
 		stats := s.layer3.getStats(s.vrpp(a)).stats()
 		stats.Current = s.sess[a]
-
 		r = append(r, Destination3Extended{Destination: d, Stats: stats})
 	}
 	return
@@ -431,58 +412,25 @@ func (l *layer3) createSessions(vrpp bpf_vrpp2) {
 	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
-// func (l *layer3) removeSessions(s Service3, d netip.Addr) {
 func (l *layer3) removeSessions(vrpp bpf_vrpp2) {
-
 	vrpp.protocol &= 0xff
-
 	l.stats.DeleteElem(uP(&vrpp))
-
 	l.sessions.DeleteElem(uP(&vrpp))
 	vrpp.protocol |= 0xff00
 	l.sessions.DeleteElem(uP(&vrpp))
 }
 
-func read_and_clear(c xdp.Map, vrpp bpf_vrpp2, era bool) uint64 {
+func (l *layer3) read_and_clear(vrpp bpf_vrpp2) (total uint64) {
+	all := make([]int64, xdp.BpfNumPossibleCpus())
 
 	vrpp.protocol &= 0xff
 
-	if !era {
+	if !(l.setting.era%2 > 0) {
 		vrpp.protocol |= 0xff00
 	}
-
-	all := make([]int64, xdp.BpfNumPossibleCpus())
-
-	c.LookupElem(uP(&vrpp), uP(&all[0]))
-
-	var total uint64
-	for i, v := range all {
-		if v > 0 {
-			total += uint64(v)
-		}
-		all[i] = 0
-	}
-
-	c.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_EXIST)
-
-	return total
-}
-
-func (l *layer3) read_and_clear(vrpp bpf_vrpp2) uint64 {
-
-	vrpp.protocol &= 0xff
-
-	era := l.setting.era%2 > 0
-
-	if !era {
-		vrpp.protocol |= 0xff00
-	}
-
-	all := make([]int64, xdp.BpfNumPossibleCpus())
 
 	l.sessions.LookupElem(uP(&vrpp), uP(&all[0]))
 
-	var total uint64
 	for i, v := range all {
 		if v > 0 {
 			total += uint64(v)
@@ -492,7 +440,7 @@ func (l *layer3) read_and_clear(vrpp bpf_vrpp2) uint64 {
 
 	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_EXIST)
 
-	return total
+	return
 }
 
 func (s *service3) sessions() {
@@ -551,8 +499,6 @@ func (s *service3) forwarding(reals map[netip.Addr]real) {
 		if v.weight != 0 && v.destinfo.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
-		//vrpp := bpf_vrpp2{vaddr: s.a16(), raddr: as16(k), vport: s.port(), protocol: s.proto()}
-		//s.layer3.createSessions(vrpp)
 		s.layer3.createSessions(s.vrpp(k))
 	}
 
