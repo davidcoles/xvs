@@ -252,7 +252,9 @@ func (l *layer3) SetService(s Service3, ds ...Destination3) (err error) {
 		return l.createService(s, ds...)
 	}
 
-	return service.set(s, false, ds...)
+	defer l.clean()
+
+	return service.set(s, ds...)
 }
 
 func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {

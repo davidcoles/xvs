@@ -376,7 +376,7 @@ void reverse_ethhdr(struct ethhdr *eth)
 }
 
 static __always_inline
-int nulmac(unsigned char *mac)
+int nulmac(const unsigned char *mac)
 {
     return (!mac[0] && !mac[1] && !mac[2] && !mac[3] && !mac[4] && !mac[5]);
 }

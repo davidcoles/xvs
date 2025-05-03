@@ -20,17 +20,15 @@ package xvs
 
 import (
 	"fmt"
-	"log"
 	"net/netip"
 	"sort"
 	"time"
 
-	// "github.com/davidcoles/xvs/bpf"
 	"github.com/davidcoles/xvs/maglev"
 	"github.com/davidcoles/xvs/xdp"
 )
 
-type real struct {
+type dest struct {
 	weight   uint8
 	destinfo bpf_destinfo
 	netinfo  ninfo // only used for debug purposes atm
@@ -43,21 +41,23 @@ type service3 struct {
 	sess    map[netip.Addr]uint64
 }
 
-func (s *service3) set(service Service3, more bool, ds ...Destination3) error {
+func (s *service3) set(service Service3, ds ...Destination3) error {
 
 	m := make(map[netip.Addr]Destination3, len(ds))
 
 	for _, d := range ds {
-		if _, exists := s.dests[d.Address]; !exists {
-			if err := d.check(); err != nil {
-				return err
-			}
-
-			log.Println("ADDING", d)
-			s.layer3.natmap.add(s.service.Address, d.Address)
-		}
-
 		m[d.Address] = d
+		if err := d.check(); err != nil {
+			return err
+		}
+	}
+
+	for d, _ := range m {
+		if _, exists := s.dests[d]; !exists {
+			//fmt.Println("ADDING", d)
+			s.layer3.createCounters(s.vrpp(d))
+			s.layer3.natmap.add(s.service.Address, d)
+		}
 	}
 
 	for d, _ := range s.dests {
@@ -73,10 +73,6 @@ func (s *service3) set(service Service3, more bool, ds ...Destination3) error {
 	s.service = service
 	s.dests = m
 	s.layer3.natmap.index()
-
-	if !more {
-		s.layer3.clean()
-	}
 	s.recalc()
 
 	return nil
@@ -92,10 +88,25 @@ func (s *service3) createDestination(d Destination3) error {
 		return err
 	}
 
+	s.layer3.createCounters(s.vrpp(d.Address))
 	s.layer3.natmap.add(s.service.Address, d.Address)
 	s.layer3.natmap.index()
 	s.dests[d.Address] = d
 	s.recalc()
+	return nil
+}
+
+func (s *service3) removeDestination(d Destination3) error {
+
+	if _, exists := s.dests[d.Address]; !exists {
+		return fmt.Errorf("Destination does not exist")
+	}
+
+	s.layer3.removeCounters(s.vrpp(d.Address))
+
+	delete(s.dests, d.Address)
+	s.recalc()
+	s.layer3.clean()
 	return nil
 }
 
@@ -115,7 +126,7 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 
 	service := &service3{dests: map[netip.Addr]Destination3{}, service: s, layer3: l}
 
-	err := service.set(s, true, ds...)
+	err := service.set(s, ds...)
 
 	if err != nil {
 		return err
@@ -123,17 +134,19 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 
 	l.services[s.key()] = service
 
-	l.clean()
+	//l.clean() // do we need to clean? nothing would have been deleted
 
 	return nil
 }
 
 func (s *service3) extend() Service3Extended {
 	var c bpf_counters3
+	var t uint64
 	for d, _ := range s.dests {
 		c.add(s.layer3.counters(s.vrpp(d)))
+		t += s.sess[d]
 	}
-	return Service3Extended{Service: s.service, Stats: c.stats()}
+	return Service3Extended{Service: s.service, Stats: c.stats(t)}
 }
 
 func (s *service3) update(service Service3) error {
@@ -159,19 +172,6 @@ func (s *service3) remove() error {
 	return nil
 }
 
-func (s *service3) removeDestination(d Destination3) error {
-	if _, exists := s.dests[d.Address]; !exists {
-		return fmt.Errorf("Destination does not exist")
-	}
-
-	s.layer3.removeCounters(s.vrpp(d.Address))
-
-	delete(s.dests, d.Address)
-	s.recalc()
-	s.layer3.clean()
-	return nil
-}
-
 func (s *service3) updateDestination(d Destination3) error {
 
 	if _, exists := s.dests[d.Address]; !exists {
@@ -185,11 +185,13 @@ func (s *service3) updateDestination(d Destination3) error {
 	return nil
 }
 
+func (s *service3) stats(d netip.Addr) Stats3 {
+	return s.layer3.counters(s.vrpp(d)).stats(s.sess[d])
+}
+
 func (s *service3) destinations() (r []Destination3Extended, e error) {
 	for a, d := range s.dests {
-		stats := s.layer3.counters(s.vrpp(a)).stats()
-		stats.Current = s.sess[a]
-		r = append(r, Destination3Extended{Destination: d, Stats: stats})
+		r = append(r, Destination3Extended{Destination: d, Stats: s.stats(a)})
 	}
 	return
 }
@@ -213,11 +215,12 @@ func (s *service3) vrpp(d netip.Addr) bpf_vrpp3 {
 
 func (s *service3) recalc() {
 
-	reals := make(map[netip.Addr]real, len(s.dests))
+	reals := make(map[netip.Addr]dest, len(s.dests))
 
 	for k, d := range s.dests {
 		di, ni := s.layer3.destinfo(d)
-		reals[k] = real{destinfo: di, netinfo: ni, weight: d.Weight}
+		reals[k] = dest{destinfo: di, netinfo: ni, weight: d.Weight}
+		//fmt.Println("FWD", ni, di.flags)
 	}
 
 	s.forwarding(reals)
@@ -227,7 +230,7 @@ func (s *service3) recalc() {
 	s.layer3.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
 }
 
-func (s *service3) nat(reals map[netip.Addr]real) {
+func (s *service3) nat(reals map[netip.Addr]dest) {
 	vip := s.service.Address
 
 	for k, v := range reals {
@@ -238,11 +241,11 @@ func (s *service3) nat(reals map[netip.Addr]real) {
 		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: as16(vip), ext: as16(ext)}
 		s.layer3.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
 
-		fmt.Println("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
+		//fmt.Println("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
 	}
 }
 
-func (s *service3) forwarding(reals map[netip.Addr]real) {
+func (s *service3) forwarding(reals map[netip.Addr]dest) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
@@ -250,7 +253,7 @@ func (s *service3) forwarding(reals map[netip.Addr]real) {
 		if v.weight != 0 && v.destinfo.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
-		s.layer3.createCounters(s.vrpp(k))
+		//s.layer3.createCounters(s.vrpp(k))
 	}
 
 	var val bpf_destinations
@@ -281,7 +284,9 @@ func (s *service3) forwarding(reals map[netip.Addr]real) {
 		dur = time.Now().Sub(now)
 	}
 
-	fmt.Println("MAG", val.hash[0:32], dur)
+	if false {
+		fmt.Println("MAG", s.service, val.hash[0:32], dur)
+	}
 
 	key := s.key()
 	s.layer3.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)

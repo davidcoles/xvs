@@ -198,8 +198,8 @@ func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) error {
 		}
 	}
 
-	fmt.Println("INFO4", l2info4, l3info4)
-	fmt.Println("INFO6", l2info6, l3info6)
+	//fmt.Println("INFO4", l2info4, l3info4)
+	//fmt.Println("INFO6", l2info6, l3info6)
 
 	n.l2info4 = l2info4
 	n.l2info6 = l2info6
@@ -219,6 +219,8 @@ func (n *netinfo) config2(vlan map[uint16]netip.Prefix, hw map[netip.Addr]mac) (
 		// identify which interface we will use for health probes on this vlan,
 		// the address that we should use as source IP, and the source MAC to use
 		if i, a := n.bestInterface(prefix.Masked()); i != nil {
+
+			//fmt.Println("BEST", i.Name, prefix)
 
 			f := fu{
 				ifindex: uint32(i.Index),
@@ -298,7 +300,6 @@ func (n *netinfo) bestInterface(prefix netip.Prefix) (*net.Interface, netip.Addr
 							ok = true
 							best = i
 							foo = p.Addr()
-							fmt.Println("BEST", i.Name, prefix)
 						}
 					}
 				}
@@ -365,7 +366,6 @@ func (n *netinfo) hw6() map[netip.Addr]neighbor {
 	return hw6
 }
 
-// should go into netinfo?
 func (netinfo *netinfo) vlaninfo(i uint32) (bpf_vlaninfo, uint32, uint32) {
 	f4 := netinfo.l2info4[uint16(i)]
 	f6 := netinfo.l2info6[uint16(i)]

@@ -27,7 +27,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"runtime"
+	//"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -191,10 +191,7 @@ func (l *layer3) destinfo(d Destination3) (bpf_destinfo, ninfo) {
 
 	if ni.l3 {
 		flags |= F_NOT_LOCAL
-		log.Println("NOT_LOCAL", d.Address)
 	}
-
-	fmt.Println("FWD", ni)
 
 	return bpf_destinfo{
 		daddr:    as16(ni.daddr),
@@ -291,12 +288,6 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	netns, err := x.FindMap("netns", 4, int(unsafe.Sizeof(bpf_netns{})))
-
-	if err != nil {
-		return nil, err
-	}
-
 	ns, err := nat3(x, "xdp_vetha", "xdp_vethb") // checks
 
 	if err != nil {
@@ -312,44 +303,12 @@ func newClient(interfaces ...string) (*layer3, error) {
 	}
 
 	setting := bpf_settings{
+		veth:   uint32(ns.a.idx),
 		vetha:  ns.a.mac,
 		vethb:  ns.b.mac,
 		multi:  multi,
 		active: 1,
 	}
-
-	var nics []uint32
-
-	for _, ifname := range interfaces {
-
-		iface, err := net.InterfaceByName(ifname)
-
-		if err != nil {
-			return nil, err
-		}
-
-		nic := uint32(iface.Index)
-
-		if err != nil {
-			return nil, err
-		}
-
-		x.LinkDetach(nic)
-
-		nics = append(nics, nic)
-	}
-
-	for _, nic := range nics {
-		if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
-			return nil, err
-		}
-	}
-
-	fmt.Println("VETH", ns.a.mac.String(), ns.b.mac.String())
-
-	netns.UpdateElem(uP(&ZERO), uP(&(bpf_netns{i: uint32(ns.a.idx), a: ns.a.mac, b: ns.b.mac})), xdp.BPF_ANY)
-
-	fmt.Println("NumCPU", runtime.NumCPU())
 
 	l3 := &layer3{
 		config:   Config{},
@@ -377,6 +336,33 @@ func newClient(interfaces ...string) (*layer3, error) {
 	}
 
 	l3.updateSettings(setting)
+
+	var nics []uint32
+
+	for _, ifname := range interfaces {
+
+		iface, err := net.InterfaceByName(ifname)
+
+		if err != nil {
+			return nil, err
+		}
+
+		nic := uint32(iface.Index)
+
+		if err != nil {
+			return nil, err
+		}
+
+		x.LinkDetach(nic)
+
+		nics = append(nics, nic)
+	}
+
+	for _, nic := range nics {
+		if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
+			return nil, err
+		}
+	}
 
 	go l3.background()
 
@@ -417,7 +403,8 @@ func (l *layer3) initialiseFlows(x *xdp.XDP) error {
 		return fmt.Errorf("Error looking up size of the CPU flow state map")
 	}
 
-	num_cpu := uint32(runtime.NumCPU())
+	//num_cpu := uint32(runtime.NumCPU())
+	num_cpu := uint32(xdp.BpfNumPossibleCpus())
 
 	if num_cpu > uint32(max_cpu) {
 		return fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
@@ -521,16 +508,31 @@ func (l *layer3) clean() {
 		}
 	}
 
+	// TODO - reveal any clean-up bugs
+	clean_map2 := func(m xdp.Map, a map[bpf_vrpp3]bool) {
+
+		var key, next, nul bpf_vrpp3
+		for r := 0; r == 0; key = next {
+			r = m.GetNextKey(uP(&key), uP(&next))
+			if _, exists := a[key]; !exists && key != nul {
+				//m.DeleteElem(uP(&key))
+				log.Fatal(key)
+			}
+		}
+	}
+
 	now := time.Now()
 
 	vips := map[netip.Addr]bool{}
 	nats := map[netip.Addr]bool{}
 	nmap := map[[2]netip.Addr]bool{}
+	vrpp := map[bpf_vrpp3]bool{}
 
 	for k, v := range l.services {
 		vips[k.address] = true
 		for r, _ := range v.dests {
 			nmap[[2]netip.Addr{k.address, r}] = true
+			vrpp[v.vrpp(r)] = true
 		}
 	}
 
@@ -547,6 +549,8 @@ func (l *layer3) clean() {
 
 	clean_map(l.nat_to_vip_rip, nats)
 	clean_map(l.nat_to_vip_rip, nats)
+
+	clean_map2(l.stats, vrpp)
 
 	log.Println("Clean-up took", time.Now().Sub(now))
 }

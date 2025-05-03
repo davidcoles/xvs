@@ -216,19 +216,6 @@ struct {
 
 /**********************************************************************/
 
-struct netns {
-    __u32 i;
-    __u8 a[6];
-    __u8 b[6];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32);
-    __type(value, struct netns);
-    __uint(max_entries, 1);
-} netns SEC(".maps");
-    
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t); // nat
@@ -264,13 +251,15 @@ struct {
 
 struct settings {
     __u64 watchdog;
-    __u8 _vetha[6];
-    __u8 _vethb[6];
+    __u32 veth;
+    __u8 vetha[6];
+    __u8 vethb[6];
     __u8 multi;
     __u8 era;
     __u8 active;
-    __u8 pad;
+    __u8 pad[5]; // must be multiple of 8 bytes
 };
+typedef struct settings settings_t;
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -779,14 +768,13 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 }
 
 static __always_inline
-int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, __u8 era)
+int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
 {
 
     int mtu = MTU;
     int overhead = 0;
     enum lookup_result result = NOT_A_VIP;
     int vip_is_ipv6 = 0;
-    struct netns *ns = NULL;
 	
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
@@ -818,12 +806,12 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, __u8 era)
     case bpf_htons(ETH_P_IPV6):
 	vip_is_ipv6 = 1;
 	overhead = sizeof(struct ip6_hdr);
-	result = lookup6(ctx, next_header, ft, t, era);
+	result = lookup6(ctx, next_header, ft, t, settings->era);
 	break;
     case bpf_htons(ETH_P_IP):
 	vip_is_ipv6 = 0;
 	overhead = sizeof(struct iphdr);
-	result = lookup4(ctx, next_header, ft, t, era);
+	result = lookup4(ctx, next_header, ft, t, settings->era);
 	break;
     default:
 	return XDP_PASS;
@@ -842,16 +830,16 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, __u8 era)
     case NOT_FOUND: return XDP_DROP;
     case BOUNCE_ICMP: return XDP_TX;
     case PROBE_REPLY:
-        if (!(ns = bpf_map_lookup_elem(&netns, &ZERO)) || nulmac(ns->a) || nulmac(ns->b) || !ns->i)
-            return XDP_DROP;
-	
-        memcpy(eth->h_dest, ns->b, 6);
-        memcpy(eth->h_source, ns->a, 6);
+	if (!settings->veth || nulmac(settings->vetha) || nulmac(settings->vethb))
+	    return XDP_DROP;
+
+        memcpy(eth->h_dest, settings->vethb, 6);
+        memcpy(eth->h_source, settings->vetha, 6);
 	
 	if (vlan && vlan_pop(ctx) < 0)
 	    return XDP_DROP;
 
-	return bpf_redirect(ns->i, 0);
+	return bpf_redirect(settings->veth, 0);
     }
 
     if (vlan) {
@@ -1482,15 +1470,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
     fivetuple_t ft = {};    
     tunnel_t t = {};
     
-    int action = xdp_fwd_func_(ctx, &ft, &t, s->era);
+    int action = xdp_fwd_func_(ctx, &ft, &t, s);
     
     struct vrpp vrpp = { .vaddr = ft.daddr, .raddr = t.daddr, .vport = ntohs(ft.dport), .protocol = ft.proto };
-    struct counters *c = bpf_map_lookup_elem(&stats, &vrpp);
-
-    if (c) {
-	c->packets++;
-	c->octets += data_end - data;
-    }
+    struct counters *c = NULL;
     
     // handle stats here
     switch (action) {
@@ -1498,6 +1481,14 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_DROP: return XDP_DROP;
     case XDP_TX:
 
+	if ((c = bpf_map_lookup_elem(&stats, &vrpp))) {
+	    c->packets++;
+	    c->octets += data_end - data;
+	} else {
+	    // counter for this backend does not exist - backend was deleted, so this flow should be terminated
+	    return XDP_DROP;
+	}
+	
 	switch (s->multi) {
 	case 0: // untagged bond - multi NIC, but only single VLAN in config
 	    return XDP_TX;
@@ -1505,7 +1496,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    return XDP_TX;
 	}
 	
-	// muti-interface, if tagged packets then just TX to appropriate VLAN (previously set)
+	// multi-interface, if tagged packets then just TX to appropriate VLAN (previously set)
 	if (dot1q)
 	    return XDP_TX; 
 	

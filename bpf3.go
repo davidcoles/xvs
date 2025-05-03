@@ -39,22 +39,24 @@ func (c *bpf_counters3) add(x bpf_counters3) {
 	c.errors += x.errors
 }
 
-func (c bpf_counters3) stats() (s Stats3) {
+func (c bpf_counters3) stats(sessions uint64) (s Stats3) {
 	s.Packets = c.packets
 	s.Octets = c.octets
 	s.Flows = c.flows
 	s.Errors = c.errors
+	s.Current = sessions
 	return
 }
 
 type bpf_settings struct {
 	watchdog uint64 // periodically reset to 0
+	veth     uint32
 	vetha    mac
 	vethb    mac
 	multi    uint8
 	era      uint8
 	active   uint8
-	pad      uint8
+	pad      [5]uint8
 }
 
 type bpf_destinfo struct {
@@ -90,12 +92,6 @@ type bpf_servicekey struct {
 	addr  addr16
 	port  uint16
 	proto uint16
-}
-
-type bpf_netns struct {
-	i uint32
-	a [6]byte
-	b [6]byte
 }
 
 type bpf_vip_rip struct {
