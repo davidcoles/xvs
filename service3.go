@@ -30,29 +30,6 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
-func (d *Destination3) is4() bool {
-	return d.Address.Is4()
-}
-
-func (d *Destination3) as16() (r addr16) {
-	if d.is4() {
-		ip := d.Address.As4()
-		copy(r[12:], ip[:])
-	} else {
-		r = d.Address.As16()
-	}
-	return
-}
-
-func (d Destination3) check() error {
-
-	if !d.Address.IsValid() || d.Address.IsUnspecified() || d.Address.IsMulticast() || d.Address.IsLoopback() {
-		return fmt.Errorf("Bad destination address: %s", d.Address)
-	}
-
-	return nil
-}
-
 type real struct {
 	weight   uint8
 	destinfo bpf_destinfo

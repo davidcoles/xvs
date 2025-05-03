@@ -140,7 +140,6 @@ func (l *layer3) createCounters(vrpp bpf_vrpp3) {
 	l.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 
 	sessions := make([]int64, xdp.BpfNumPossibleCpus())
-	log.Println("createCounters", vrpp)
 	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 	vrpp.protocol |= 0xff00
 	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
@@ -385,8 +384,6 @@ func newClient(interfaces ...string) (*layer3, error) {
 }
 
 func (l *layer3) initialiseFlows(x *xdp.XDP) error {
-	/**********************************************************************/
-	//var flow_size uint32 = 8
 	var flow_size uint32 = 72
 	var ft_size uint32 = 36
 
@@ -432,7 +429,7 @@ func (l *layer3) initialiseFlows(x *xdp.XDP) error {
 			return fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
 		}
 	}
-	/**********************************************************************/
+
 	return nil
 }
 func (l *layer3) background() error {
@@ -488,50 +485,13 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 	}
 
 	for i := uint32(1); i < 4095; i++ {
-		f := l.netinfo.l2info4[uint16(i)]
-		if f.ifindex == 0 {
-			f = l.netinfo.l2info6[uint16(i)]
-		}
-		nic := f.ifindex
-		if nic != 0 {
-			fmt.Println(">>>>>>", f)
-		}
-		l.redirect_map4.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
-
-		vi, _, f6_ifindex := l.vlaninfo_(i)
-
-		if nic != 0 {
-			fmt.Println("<<<<<<", vi)
-		}
-
-		nic = f6_ifindex
-		l.redirect_map6.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
-
+		vi, v4, v6 := l.netinfo.vlaninfo(i)
+		l.redirect_map4.UpdateElem(uP(&i), uP(&v4), xdp.BPF_ANY)
+		l.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
 		l.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
 	}
 
 	return nil
-}
-
-// should go into netinfo?
-func (l *layer3) vlaninfo_(i uint32) (bpf_vlaninfo, uint32, uint32) {
-	f4 := l.netinfo.l2info4[uint16(i)]
-	f6 := l.netinfo.l2info6[uint16(i)]
-
-	g4 := l.netinfo.l3info4[uint16(i)]
-	g6 := l.netinfo.l3info6[uint16(i)]
-
-	vi := bpf_vlaninfo{
-		ip4: as4(f4.ip),
-		gw4: as4(g4.ip),
-		ip6: as16(f6.ip),
-		gw6: as16(g6.ip),
-		hw4: f4.hw,
-		hw6: f6.hw,
-		gh4: g4.hw,
-		gh6: g6.hw,
-	}
-	return vi, f4.ifindex, f6.ifindex
 }
 
 func (l *layer3) reconfig() {

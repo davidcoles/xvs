@@ -364,3 +364,24 @@ func (n *netinfo) hw6() map[netip.Addr]neighbor {
 
 	return hw6
 }
+
+// should go into netinfo?
+func (netinfo *netinfo) vlaninfo(i uint32) (bpf_vlaninfo, uint32, uint32) {
+	f4 := netinfo.l2info4[uint16(i)]
+	f6 := netinfo.l2info6[uint16(i)]
+
+	g4 := netinfo.l3info4[uint16(i)]
+	g6 := netinfo.l3info6[uint16(i)]
+
+	vi := bpf_vlaninfo{
+		ip4: as4(f4.ip),
+		gw4: as4(g4.ip),
+		ip6: as16(f6.ip),
+		gw6: as16(g6.ip),
+		hw4: f4.hw,
+		hw6: f6.hw,
+		gh4: g4.hw,
+		gh6: g6.hw,
+	}
+	return vi, f4.ifindex, f6.ifindex
+}

@@ -33,7 +33,6 @@ const (
 
 type Client3 interface {
 	Info() (Info, error)
-	//Clean()
 
 	Config() (Config, error)
 	SetConfig(Config) error
@@ -112,13 +111,6 @@ func (l *layer3) Info() (Info, error) {
 	return Info{}, nil
 }
 
-//func (l *layer3) Clean() {
-//	l.mutex.Lock()
-//	defer l.mutex.Unlock()
-//
-//	l.clean()
-//}
-
 func (l *layer3) Config() (Config, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
@@ -131,11 +123,6 @@ func (l *layer3) SetConfig(c Config) error {
 	defer l.mutex.Unlock()
 
 	l.config = c
-	//err := l.vlans(c.VLAN4, c.VLAN6)
-
-	//if err != nil {
-	//	return err
-	//}
 
 	l.reconfig()
 
@@ -267,6 +254,30 @@ func (l *layer3) SetService(s Service3, ds ...Destination3) (err error) {
 
 	return service.set(s, false, ds...)
 }
+
 func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return l.nat(vip, rip)
+}
+
+func (d *Destination3) is4() bool {
+	return d.Address.Is4()
+}
+
+func (d *Destination3) as16() (r addr16) {
+	if d.is4() {
+		ip := d.Address.As4()
+		copy(r[12:], ip[:])
+	} else {
+		r = d.Address.As16()
+	}
+	return
+}
+
+func (d Destination3) check() error {
+
+	if !d.Address.IsValid() || d.Address.IsUnspecified() || d.Address.IsMulticast() || d.Address.IsLoopback() {
+		return fmt.Errorf("Bad destination address: %s", d.Address)
+	}
+
+	return nil
 }
