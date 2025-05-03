@@ -231,7 +231,8 @@ func (s *service3) set(service Service3, more bool, ds ...Destination3) error {
 
 	for d, _ := range s.dests {
 		if _, exists := m[d]; !exists {
-			s.layer3.removeSessions_(s.service, d) // d was deleted
+			//s.layer3.removeSessions(s.service, d) // d was deleted
+			s.layer3.removeSessions(s.vrpp(d)) // d was deleted
 		}
 	}
 
@@ -306,7 +307,21 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 	return nil
 }
 
-func (l *layer3) getStats(s, d netip.Addr, port, protocol uint16) (c bpf_counters2) {
+func (l *layer3) getStats(vrpp bpf_vrpp2) (c bpf_counters2) {
+
+	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+
+	l.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
+
+	for _, v := range all {
+		c.add(v)
+	}
+
+	return c
+}
+
+/*
+func (l *layer3) getStats_(s, d netip.Addr, port, protocol uint16) (c bpf_counters2) {
 
 	vrpp := bpf_vrpp2{vaddr: as16(s), raddr: as16(d), vport: port, protocol: protocol}
 	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
@@ -319,11 +334,13 @@ func (l *layer3) getStats(s, d netip.Addr, port, protocol uint16) (c bpf_counter
 
 	return c
 }
+*/
 
 func (s *service3) extend() Service3Extended {
 	var c bpf_counters2
 	for d, _ := range s.dests {
-		c.add(s.layer3.getStats(s.service.Address, d, s.service.Port, uint16(s.service.Protocol)))
+		//c.add(s.layer3.getStats(s.service.Address, d, s.service.Port, uint16(s.service.Protocol)))
+		c.add(s.layer3.getStats(s.vrpp(d)))
 	}
 	return Service3Extended{Service: s.service, Stats: c.stats()}
 }
@@ -342,7 +359,8 @@ func (s *service3) remove() error {
 	key := s.key()
 
 	for d, _ := range s.dests {
-		s.layer3.removeSessions_(s.service, d)
+		//s.layer3.removeSessions(s.service, d)
+		s.layer3.removeSessions(s.vrpp(d))
 	}
 
 	s.layer3.destinations.DeleteElem(uP(&key))
@@ -356,7 +374,8 @@ func (s *service3) removeDestination(d Destination3) error {
 		return fmt.Errorf("Destination does not exist")
 	}
 
-	s.layer3.removeSessions_(s.service, d.Address)
+	//s.layer3.removeSessions(s.service, d.Address)
+	s.layer3.removeSessions(s.vrpp(d.Address))
 
 	delete(s.dests, d.Address)
 	s.recalc()
@@ -380,7 +399,8 @@ func (s *service3) updateDestination(d Destination3) error {
 func (s *service3) destinations() (r []Destination3Extended, e error) {
 	for a, d := range s.dests {
 
-		stats := s.layer3.getStats(s.service.Address, d.Address, s.service.Port, uint16(s.service.Protocol)).stats()
+		//stats := s.layer3.getStats_(s.service.Address, d.Address, s.service.Port, uint16(s.service.Protocol)).stats()
+		stats := s.layer3.getStats(s.vrpp(a)).stats()
 		stats.Current = s.sess[a]
 
 		r = append(r, Destination3Extended{Destination: d, Stats: stats})
@@ -400,23 +420,24 @@ type real struct {
 
 func (l *layer3) createSessions(vrpp bpf_vrpp2) {
 	vrpp.protocol &= 0xff
-	all := make([]int64, xdp.BpfNumPossibleCpus())
+
+	counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+	l.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
+
+	sessions := make([]int64, xdp.BpfNumPossibleCpus())
 	log.Println("createSessions", vrpp)
-	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_NOEXIST)
+	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 	vrpp.protocol |= 0xff00
-	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_NOEXIST)
+	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
-//func (l *layer3) removeSessions(vrpp bpf_vrpp2) {
-//	vrpp.protocol &= 0xff
-//	l.sessions.DeleteElem(uP(&vrpp))
-//	vrpp.protocol |= 0xff00
-//	l.sessions.DeleteElem(uP(&vrpp))
-//}
+// func (l *layer3) removeSessions(s Service3, d netip.Addr) {
+func (l *layer3) removeSessions(vrpp bpf_vrpp2) {
 
-func (l *layer3) removeSessions_(s Service3, d netip.Addr) {
-	vrpp := bpf_vrpp2{vaddr: as16(s.Address), raddr: as16(d), vport: s.Port, protocol: uint16(s.Protocol)}
 	vrpp.protocol &= 0xff
+
+	l.stats.DeleteElem(uP(&vrpp))
+
 	l.sessions.DeleteElem(uP(&vrpp))
 	vrpp.protocol |= 0xff00
 	l.sessions.DeleteElem(uP(&vrpp))
@@ -484,6 +505,13 @@ func (s *service3) sessions() {
 	s.sess = sess
 }
 
+func (s *service3) a16() addr16   { return as16(s.service.Address) }
+func (s *service3) port() uint16  { return s.service.Port }
+func (s *service3) proto() uint16 { return uint16(s.service.Protocol) }
+func (s *service3) vrpp(d netip.Addr) bpf_vrpp2 {
+	return bpf_vrpp2{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
+}
+
 func (s *service3) recalc() {
 
 	reals := make(map[netip.Addr]real, len(s.dests))
@@ -491,42 +519,41 @@ func (s *service3) recalc() {
 	for k, d := range s.dests {
 		di, ni := destinfo(s.layer3, d)
 		reals[k] = real{destinfo: di, netinfo: ni, weight: d.Weight}
-
-		svc := s.service
-		vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d.Address), vport: svc.Port, protocol: uint16(svc.Protocol)}
-		counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
-		s.layer3.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
-		s.layer3.createSessions(vrpp)
 	}
 
 	s.forwarding(reals)
+	s.nat(reals)
 
+	v16 := as16(s.service.Address)
+	s.layer3.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
+}
+
+func (s *service3) nat(reals map[netip.Addr]real) {
 	vip := s.service.Address
-	vip_ := as16(vip)
 
 	for k, v := range reals {
 		nat := s.layer3.nat(s.service.Address, k)
-		nat_ := as16(nat)
+		n16 := as16(nat)
 		ext := s.layer3.netinfo.ext(v.destinfo.vlanid, s.service.Address.Is6())
 
 		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: as16(vip), ext: as16(ext)}
-		s.layer3.nat_to_vip_rip.UpdateElem(uP(&nat_), uP(&vip_rip), xdp.BPF_ANY)
+		s.layer3.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
 
 		fmt.Println("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
 	}
-
-	s.layer3.vips.UpdateElem(uP(&vip_), uP(&ZERO), xdp.BPF_ANY) // value is not used
 }
 
 func (s *service3) forwarding(reals map[netip.Addr]real) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
-	// filter out unusable destinations
 	for k, v := range reals {
 		if v.weight != 0 && v.destinfo.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
+		//vrpp := bpf_vrpp2{vaddr: s.a16(), raddr: as16(k), vport: s.port(), protocol: s.proto()}
+		//s.layer3.createSessions(vrpp)
+		s.layer3.createSessions(s.vrpp(k))
 	}
 
 	var val bpf_destinations
@@ -535,7 +562,6 @@ func (s *service3) forwarding(reals map[netip.Addr]real) {
 	var dur time.Duration
 
 	if len(addrs) > 0 {
-
 		// we need the list to be sorted for maglev to be stable
 		sort.Slice(addrs, func(i, j int) bool { return addrs[i].Less(addrs[j]) })
 
