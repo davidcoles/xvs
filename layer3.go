@@ -28,13 +28,11 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
-	//"sort"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/davidcoles/xvs/bpf"
-	//"github.com/davidcoles/xvs/maglev"
 	"github.com/davidcoles/xvs/xdp"
 )
 
@@ -72,91 +70,6 @@ var ZERO uint32 = 0
 
 const F_NOT_LOCAL = 0x80
 
-type bpf_vrpp2 struct {
-	vaddr    addr16 // virtual service IP
-	raddr    addr16 // real server IP
-	vport    uint16 // virtual service port
-	protocol uint16
-}
-
-type bpf_counters2 struct {
-	packets uint64
-	octets  uint64
-	flows   uint64
-	errors  uint64
-}
-
-func (c *bpf_counters2) add(x bpf_counters2) {
-	c.packets += x.packets
-	c.octets += x.octets
-	c.flows += x.flows
-	c.errors += x.errors
-}
-
-func (c bpf_counters2) stats() (s Stats3) {
-	s.Packets = c.packets
-	s.Octets = c.octets
-	s.Flows = c.flows
-	s.Errors = c.errors
-	return
-}
-
-type bpf_settings struct {
-	watchdog uint64 // periodically reset to 0
-	vetha    mac
-	vethb    mac
-	multi    uint8
-	era      uint8
-	pad      [2]uint8
-}
-
-type bpf_destinfo struct {
-	daddr    addr16
-	saddr    addr16
-	dport    uint16
-	sport    uint16
-	vlanid   uint16
-	method   TunnelType // uint8
-	flags    uint8
-	h_dest   mac
-	h_source mac
-	pad      [12]byte // pad to 64 bytes
-}
-
-type bpf_vlaninfo struct {
-	ip4 addr4
-	gw4 addr4
-	ip6 addr16
-	gw6 addr16
-	hw4 mac
-	hw6 mac
-	gh4 mac
-	gh6 mac
-}
-
-type bpf_destinations struct {
-	destinfo [256]bpf_destinfo
-	hash     [8192]uint8
-}
-
-type bpf_servicekey struct {
-	addr  addr16
-	port  uint16
-	proto uint16
-}
-
-type bpf_netns struct {
-	i uint32
-	a [6]byte
-	b [6]byte
-}
-
-type bpf_vip_rip struct {
-	destinfo bpf_destinfo
-	vip      addr16
-	ext      addr16
-}
-
 type addr16 [16]byte
 type addr4 [4]byte
 
@@ -186,11 +99,6 @@ type layer3 struct {
 	vips           xdp.Map
 }
 
-type neighbor struct {
-	dev string
-	mac mac
-}
-
 func (l *layer3) getStats(vrpp bpf_vrpp2) (c bpf_counters2) {
 
 	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
@@ -206,12 +114,6 @@ func (l *layer3) getStats(vrpp bpf_vrpp2) (c bpf_counters2) {
 
 func (l *layer3) nat(v, r netip.Addr) netip.Addr {
 	return l.netns.addr(l.natmap.get(v, r), v.Is6())
-}
-
-type real struct {
-	weight   uint8
-	destinfo bpf_destinfo
-	netinfo  ninfo // only used for debug purposes atm
 }
 
 func (l *layer3) createCounters(vrpp bpf_vrpp2) {

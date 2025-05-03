@@ -38,6 +38,10 @@ type netinfo struct {
 	hwinfo  hwinfo
 	rtinfo  rtinfo
 }
+type neighbor struct {
+	dev string
+	mac mac
+}
 
 type fu struct {
 	ifindex uint32

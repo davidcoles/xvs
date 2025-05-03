@@ -53,6 +53,12 @@ func (d Destination3) check() error {
 	return nil
 }
 
+type real struct {
+	weight   uint8
+	destinfo bpf_destinfo
+	netinfo  ninfo // only used for debug purposes atm
+}
+
 type service3 struct {
 	dests   map[netip.Addr]Destination3
 	service Service3
