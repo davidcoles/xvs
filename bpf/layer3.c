@@ -263,7 +263,7 @@ struct {
 /**********************************************************************/
 
 struct settings {
-    __u64 ticker;
+    __u64 watchdog;
     __u8 vetha[6];
     __u8 vethb[6];
     __u8 multi;
@@ -441,8 +441,6 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
     
     flow_t flow = { .tunnel = *t, time = time_s, .era = era };
     bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
-    
-    //bpf_printk("STORE");
     
     return 0;
 }
@@ -856,7 +854,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, __u8 era)
     }
 
     if (vlan) {
-	vlan->h_vlan_TCI = bpf_htons(t->vlanid); // TODO mask
+	//vlan->h_vlan_TCI = bpf_htons(t->vlanid); // TODO mask
+	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | bpf_htons(t->vlanid);
     }
 
     switch (result) {
@@ -1382,9 +1381,9 @@ int xdp_vethb(struct xdp_md *ctx)
 	return XDP_PASS;
 
     // settings is a per-CPU map, so no concurrency issues
-    if (s->ticker == 0) {
-	s->ticker = start_s;
-    } else if (s->ticker + TIMEOUT < start_s) {
+    if (s->watchdog == 0) {
+	s->watchdog = start_s;
+    } else if (s->watchdog + TIMEOUT < start_s) {
 	return XDP_PASS;
     }
 
@@ -1457,9 +1456,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_PASS;
 
     // settings is a per-CPU map, so no concurrency issues
-    if (s->ticker == 0) {
-	s->ticker = start_s;
-    } else if (s->ticker + TIMEOUT < start_s) {
+    if (s->watchdog == 0) {
+	s->watchdog = start_s;
+    } else if (s->watchdog + TIMEOUT < start_s) {
 	return XDP_PASS;
     }
 
