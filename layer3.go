@@ -79,6 +79,27 @@ type threetuple struct {
 	protocol uint8
 }
 
+func as16(a netip.Addr) (r addr16) {
+	if a.Is6() {
+		return a.As16()
+	}
+
+	if a.Is4() {
+		ip := a.As4()
+		copy(r[12:], ip[:])
+	}
+
+	return
+}
+
+func as4(a netip.Addr) (r addr4) {
+	if a.Is4() {
+		return a.As4()
+	}
+
+	return
+}
+
 type layer3 struct {
 	config   Config
 	services map[threetuple]*service3
@@ -99,9 +120,11 @@ type layer3 struct {
 	vips           xdp.Map
 }
 
-func (l *layer3) getStats(vrpp bpf_vrpp2) (c bpf_counters2) {
+func (l *layer3) nat(v, r netip.Addr) netip.Addr { return l.netns.addr(l.natmap.get(v, r), v.Is6()) }
+func (l *layer3) era() bool                      { return l.setting.era%2 > 0 }
 
-	all := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+func (l *layer3) counters(vrpp bpf_vrpp3) (c bpf_counters3) {
+	all := make([]bpf_counters3, xdp.BpfNumPossibleCpus())
 
 	l.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
 
@@ -112,12 +135,8 @@ func (l *layer3) getStats(vrpp bpf_vrpp2) (c bpf_counters2) {
 	return c
 }
 
-func (l *layer3) nat(v, r netip.Addr) netip.Addr {
-	return l.netns.addr(l.natmap.get(v, r), v.Is6())
-}
-
-func (l *layer3) createCounters(vrpp bpf_vrpp2) {
-	counters := make([]bpf_counters2, xdp.BpfNumPossibleCpus())
+func (l *layer3) createCounters(vrpp bpf_vrpp3) {
+	counters := make([]bpf_counters3, xdp.BpfNumPossibleCpus())
 	l.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 
 	sessions := make([]int64, xdp.BpfNumPossibleCpus())
@@ -127,19 +146,17 @@ func (l *layer3) createCounters(vrpp bpf_vrpp2) {
 	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
-func (l *layer3) removeCounters(vrpp bpf_vrpp2) {
+func (l *layer3) removeCounters(vrpp bpf_vrpp3) {
 	l.stats.DeleteElem(uP(&vrpp))
 	l.sessions.DeleteElem(uP(&vrpp))
 	vrpp.protocol |= 0xff00
 	l.sessions.DeleteElem(uP(&vrpp))
 }
 
-func (l *layer3) read_and_clear(vrpp bpf_vrpp2) (total uint64) {
+func (l *layer3) read_and_clear(vrpp bpf_vrpp3) (total uint64) {
 	all := make([]int64, xdp.BpfNumPossibleCpus())
 
-	vrpp.protocol &= 0xff
-
-	if !(l.setting.era%2 > 0) {
+	if !l.era() {
 		vrpp.protocol |= 0xff00
 	}
 
@@ -158,7 +175,7 @@ func (l *layer3) read_and_clear(vrpp bpf_vrpp2) (total uint64) {
 }
 
 // empty vlanid in di/ni indicates error
-func destinfo(l *layer3, d Destination3) (bpf_destinfo, ninfo) {
+func (l *layer3) destinfo(d Destination3) (bpf_destinfo, ninfo) {
 	ni, err := l.netinfo.info(d.Address)
 
 	if err != nil || ni.vlanid == 0 {
@@ -193,25 +210,14 @@ func destinfo(l *layer3, d Destination3) (bpf_destinfo, ninfo) {
 	}, ni
 }
 
-func as16(a netip.Addr) (r addr16) {
-	if a.Is6() {
-		return a.As16()
+func (l *layer3) updateSettings(setting bpf_settings) {
+
+	all := make([]bpf_settings, xdp.BpfNumPossibleCpus())
+	for i, _ := range all {
+		all[i] = setting
 	}
 
-	if a.Is4() {
-		ip := a.As4()
-		copy(r[12:], ip[:])
-	}
-
-	return
-}
-
-func as4(a netip.Addr) (r addr4) {
-	if a.Is4() {
-		return a.As4()
-	}
-
-	return
+	l.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
 func newClient(interfaces ...string) (*layer3, error) {
@@ -274,13 +280,13 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	stats, err := x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp2{})), int(unsafe.Sizeof(bpf_counters2{})))
+	stats, err := x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp3{})), int(unsafe.Sizeof(bpf_counters3{})))
 
 	if err != nil {
 		return nil, err
 	}
 
-	sessions, err := x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp2{})), 8)
+	sessions, err := x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp3{})), 8)
 
 	if err != nil {
 		return nil, err
@@ -307,14 +313,11 @@ func newClient(interfaces ...string) (*layer3, error) {
 	}
 
 	setting := bpf_settings{
-		vetha: ns.a.mac,
-		vethb: ns.b.mac,
-		multi: multi,
+		vetha:  ns.a.mac,
+		vethb:  ns.b.mac,
+		multi:  multi,
+		active: 1,
 	}
-
-	//settings.UpdateElem(uP(&ZERO), uP(&setting), xdp.BPF_ANY)
-
-	updateSettings(settings, setting)
 
 	var nics []uint32
 
@@ -349,55 +352,6 @@ func newClient(interfaces ...string) (*layer3, error) {
 
 	fmt.Println("NumCPU", runtime.NumCPU())
 
-	/**********************************************************************/
-	//var flow_size uint32 = 8
-	var flow_size uint32 = 72
-	var ft_size uint32 = 36
-
-	flows_tcp, err := x.FindMap("flows_tcp", 4, 4)
-
-	if err != nil {
-		return nil, err
-	}
-
-	reference, err := x.FindMap("reference", 4, int(flow_size))
-
-	if err != nil {
-		return nil, err
-	}
-
-	// flow_share map has the same size as the inner map, so use this as a reference
-	max_entries := reference.MaxEntries()
-
-	if max_entries < 0 {
-		return nil, fmt.Errorf("Error looking up size of the flow state map")
-	}
-
-	//if c.MaxFlows > 0 {
-	//	max_entries = int(c.MaxFlows)
-	//	}
-
-	//max_entries := 1000
-	max_cpu := flows_tcp.MaxEntries()
-
-	if max_cpu < 0 {
-		return nil, fmt.Errorf("Error looking up size of the CPU flow state map")
-	}
-
-	num_cpu := uint32(runtime.NumCPU())
-
-	if num_cpu > uint32(max_cpu) {
-		return nil, fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
-	}
-
-	for cpu := uint32(0); cpu < num_cpu; cpu++ {
-		name := fmt.Sprintf("flows_tcp_inner_%d", cpu)
-		if r := flows_tcp.CreateLruHash(cpu, name, ft_size, flow_size, uint32(max_entries)); r != 0 {
-			return nil, fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
-		}
-	}
-	/**********************************************************************/
-
 	l3 := &layer3{
 		config:   Config{},
 		services: map[threetuple]*service3{},
@@ -417,11 +371,70 @@ func newClient(interfaces ...string) (*layer3, error) {
 		vips:           vips,
 	}
 
+	err = l3.initialiseFlows(x)
+
+	if err != nil {
+		return nil, err
+	}
+
+	l3.updateSettings(setting)
+
 	go l3.background()
 
 	return l3, nil
 }
 
+func (l *layer3) initialiseFlows(x *xdp.XDP) error {
+	/**********************************************************************/
+	//var flow_size uint32 = 8
+	var flow_size uint32 = 72
+	var ft_size uint32 = 36
+
+	flows_tcp, err := x.FindMap("flows_tcp", 4, 4)
+
+	if err != nil {
+		return err
+	}
+
+	reference, err := x.FindMap("reference", 4, int(flow_size))
+
+	if err != nil {
+		return err
+	}
+
+	// flow_share map has the same size as the inner map, so use this as a reference
+	max_entries := reference.MaxEntries()
+
+	if max_entries < 0 {
+		return fmt.Errorf("Error looking up size of the flow state map")
+	}
+
+	//if c.MaxFlows > 0 {
+	//	max_entries = int(c.MaxFlows)
+	//	}
+
+	//max_entries := 1000
+	max_cpu := flows_tcp.MaxEntries()
+
+	if max_cpu < 0 {
+		return fmt.Errorf("Error looking up size of the CPU flow state map")
+	}
+
+	num_cpu := uint32(runtime.NumCPU())
+
+	if num_cpu > uint32(max_cpu) {
+		return fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
+	}
+
+	for cpu := uint32(0); cpu < num_cpu; cpu++ {
+		name := fmt.Sprintf("flows_tcp_inner_%d", cpu)
+		if r := flows_tcp.CreateLruHash(cpu, name, ft_size, flow_size, uint32(max_entries)); r != 0 {
+			return fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
+		}
+	}
+	/**********************************************************************/
+	return nil
+}
 func (l *layer3) background() error {
 	ticker := time.NewTicker(time.Minute)
 	session := time.NewTicker(time.Second * 5)
@@ -435,7 +448,7 @@ func (l *layer3) background() error {
 			l.setting.era++
 
 			l.mutex.Lock()
-			updateSettings(l.settings, l.setting)
+			l.updateSettings(l.setting)
 			for _, s := range l.services {
 				s.sessions()
 			}
@@ -485,34 +498,40 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 		}
 		l.redirect_map4.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 
-		f4 := l.netinfo.l2info4[uint16(i)]
-		f6 := l.netinfo.l2info6[uint16(i)]
-
-		g4 := l.netinfo.l3info4[uint16(i)]
-		g6 := l.netinfo.l3info6[uint16(i)]
-
-		vi := bpf_vlaninfo{
-			ip4: as4(f4.ip),
-			gw4: as4(g4.ip),
-			ip6: as16(f6.ip),
-			gw6: as16(g6.ip),
-			hw4: f4.hw,
-			hw6: f6.hw,
-			gh4: g4.hw,
-			gh6: g6.hw,
-		}
+		vi, _, f6_ifindex := l.vlaninfo_(i)
 
 		if nic != 0 {
 			fmt.Println("<<<<<<", vi)
 		}
 
-		nic = f6.ifindex
+		nic = f6_ifindex
 		l.redirect_map6.UpdateElem(uP(&i), uP(&nic), xdp.BPF_ANY)
 
 		l.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
 	}
 
 	return nil
+}
+
+// should go into netinfo?
+func (l *layer3) vlaninfo_(i uint32) (bpf_vlaninfo, uint32, uint32) {
+	f4 := l.netinfo.l2info4[uint16(i)]
+	f6 := l.netinfo.l2info6[uint16(i)]
+
+	g4 := l.netinfo.l3info4[uint16(i)]
+	g6 := l.netinfo.l3info6[uint16(i)]
+
+	vi := bpf_vlaninfo{
+		ip4: as4(f4.ip),
+		gw4: as4(g4.ip),
+		ip6: as16(f6.ip),
+		gw6: as16(g6.ip),
+		hw4: f4.hw,
+		hw6: f6.hw,
+		gh4: g4.hw,
+		gh6: g6.hw,
+	}
+	return vi, f4.ifindex, f6.ifindex
 }
 
 func (l *layer3) reconfig() {
@@ -524,25 +543,24 @@ func (l *layer3) reconfig() {
 	}
 }
 
-func clean_map(m xdp.Map, a map[netip.Addr]bool) {
+func (l *layer3) clean() {
 
-	b := map[addr16]bool{}
+	clean_map := func(m xdp.Map, a map[netip.Addr]bool) {
+		b := map[addr16]bool{}
 
-	for k, _ := range a {
-		b[as16(k)] = true
-	}
+		for k, _ := range a {
+			b[as16(k)] = true
+		}
 
-	var key, next addr16
-
-	for r := 0; r == 0; key = next {
-		r = m.GetNextKey(uP(&key), uP(&next))
-		if _, exists := b[key]; !exists {
-			m.DeleteElem(uP(&key))
+		var key, next addr16
+		for r := 0; r == 0; key = next {
+			r = m.GetNextKey(uP(&key), uP(&next))
+			if _, exists := b[key]; !exists {
+				m.DeleteElem(uP(&key))
+			}
 		}
 	}
-}
 
-func (l *layer3) clean() {
 	now := time.Now()
 
 	vips := map[netip.Addr]bool{}
@@ -571,14 +589,4 @@ func (l *layer3) clean() {
 	clean_map(l.nat_to_vip_rip, nats)
 
 	log.Println("Clean-up took", time.Now().Sub(now))
-}
-
-func updateSettings(settings xdp.Map, setting bpf_settings) {
-
-	all := make([]bpf_settings, xdp.BpfNumPossibleCpus())
-	for i, _ := range all {
-		all[i] = setting
-	}
-
-	settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }

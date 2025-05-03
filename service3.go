@@ -152,9 +152,9 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 }
 
 func (s *service3) extend() Service3Extended {
-	var c bpf_counters2
+	var c bpf_counters3
 	for d, _ := range s.dests {
-		c.add(s.layer3.getStats(s.vrpp(d)))
+		c.add(s.layer3.counters(s.vrpp(d)))
 	}
 	return Service3Extended{Service: s.service, Stats: c.stats()}
 }
@@ -210,7 +210,7 @@ func (s *service3) updateDestination(d Destination3) error {
 
 func (s *service3) destinations() (r []Destination3Extended, e error) {
 	for a, d := range s.dests {
-		stats := s.layer3.getStats(s.vrpp(a)).stats()
+		stats := s.layer3.counters(s.vrpp(a)).stats()
 		stats.Current = s.sess[a]
 		r = append(r, Destination3Extended{Destination: d, Stats: stats})
 	}
@@ -221,7 +221,7 @@ func (s *service3) sessions() {
 	svc := s.service
 	sess := make(map[netip.Addr]uint64, len(s.dests))
 	for d, _ := range s.dests {
-		vrpp := bpf_vrpp2{vaddr: as16(svc.Address), raddr: as16(d), vport: svc.Port, protocol: uint16(svc.Protocol)}
+		vrpp := bpf_vrpp3{vaddr: as16(svc.Address), raddr: as16(d), vport: svc.Port, protocol: uint16(svc.Protocol)}
 		sess[d] = s.layer3.read_and_clear(vrpp)
 	}
 	s.sess = sess
@@ -230,8 +230,8 @@ func (s *service3) sessions() {
 func (s *service3) a16() addr16   { return as16(s.service.Address) }
 func (s *service3) port() uint16  { return s.service.Port }
 func (s *service3) proto() uint16 { return uint16(s.service.Protocol) }
-func (s *service3) vrpp(d netip.Addr) bpf_vrpp2 {
-	return bpf_vrpp2{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
+func (s *service3) vrpp(d netip.Addr) bpf_vrpp3 {
+	return bpf_vrpp3{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
 }
 
 func (s *service3) recalc() {
@@ -239,7 +239,7 @@ func (s *service3) recalc() {
 	reals := make(map[netip.Addr]real, len(s.dests))
 
 	for k, d := range s.dests {
-		di, ni := destinfo(s.layer3, d)
+		di, ni := s.layer3.destinfo(d)
 		reals[k] = real{destinfo: di, netinfo: ni, weight: d.Weight}
 	}
 

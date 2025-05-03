@@ -18,28 +18,28 @@
 
 package xvs
 
-type bpf_vrpp2 struct {
+type bpf_vrpp3 struct {
 	vaddr    addr16 // virtual service IP
 	raddr    addr16 // real server IP
 	vport    uint16 // virtual service port
 	protocol uint16
 }
 
-type bpf_counters2 struct {
+type bpf_counters3 struct {
 	packets uint64
 	octets  uint64
 	flows   uint64
 	errors  uint64
 }
 
-func (c *bpf_counters2) add(x bpf_counters2) {
+func (c *bpf_counters3) add(x bpf_counters3) {
 	c.packets += x.packets
 	c.octets += x.octets
 	c.flows += x.flows
 	c.errors += x.errors
 }
 
-func (c bpf_counters2) stats() (s Stats3) {
+func (c bpf_counters3) stats() (s Stats3) {
 	s.Packets = c.packets
 	s.Octets = c.octets
 	s.Flows = c.flows
@@ -53,7 +53,8 @@ type bpf_settings struct {
 	vethb    mac
 	multi    uint8
 	era      uint8
-	pad      [2]uint8
+	active   uint8
+	pad      uint8
 }
 
 type bpf_destinfo struct {

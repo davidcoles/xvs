@@ -264,11 +264,12 @@ struct {
 
 struct settings {
     __u64 watchdog;
-    __u8 vetha[6];
-    __u8 vethb[6];
+    __u8 _vetha[6];
+    __u8 _vethb[6];
     __u8 multi;
     __u8 era;
-    __u8 pad[2];
+    __u8 active;
+    __u8 pad;
 };
 
 struct {
@@ -1377,7 +1378,7 @@ int xdp_vethb(struct xdp_md *ctx)
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
 
-    if (!s)
+    if (!s || !s->active)
 	return XDP_PASS;
 
     // settings is a per-CPU map, so no concurrency issues
@@ -1452,7 +1453,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
     
-    if (!s)
+    if (!s || !s->active)
 	return XDP_PASS;
 
     // settings is a per-CPU map, so no concurrency issues
