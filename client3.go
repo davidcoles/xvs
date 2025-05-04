@@ -32,7 +32,7 @@ const (
 )
 
 const (
-	TunnelEncapNoChecksums TunnelFlags = 0x01
+	TunnelEncapNoChecksums TunnelFlags = 0x01 // FIXME
 )
 
 type Client3 interface {

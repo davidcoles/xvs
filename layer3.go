@@ -101,12 +101,12 @@ func as4(a netip.Addr) (r addr4) {
 
 type layer3 struct {
 	config   Config
-	services map[threetuple]*service3
 	mutex    sync.Mutex
+	services map[threetuple]*service3
+	settings bpf_settings
 	natmap   natmap6
 	netinfo  *netinfo
 	netns    *newns
-	settings bpf_settings
 	maps     maps
 }
 
@@ -206,7 +206,7 @@ func (l *layer3) tunnel(d Destination3) (bpf_tunnel, ninfo) {
 		sport:    0,
 		vlanid:   ni.vlanid,
 		method:   d.TunnelType,
-		flags:    flags, // TODO
+		flags:    flags,
 		h_dest:   ni.h_dest,
 		h_source: ni.h_source,
 	}, ni
@@ -273,10 +273,10 @@ func newClient(interfaces ...string) (*layer3, error) {
 	l3 := &layer3{
 		config:   Config{},
 		services: map[threetuple]*service3{},
-		netns:    ns,
+		settings: settings,
 		natmap:   natmap6{},
 		netinfo:  ni,
-		settings: settings,
+		netns:    ns,
 		maps:     m,
 	}
 

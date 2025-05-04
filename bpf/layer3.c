@@ -269,6 +269,8 @@ struct {
     __uint(max_entries, 1);
 } settings SEC(".maps");
 
+
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t);
@@ -316,6 +318,7 @@ struct {
 } redirect_map6 SEC(".maps");
 
 /**********************************************************************/
+
 
 static __always_inline
 int send_l2(struct xdp_md *ctx, tunnel_t *t)
@@ -389,7 +392,7 @@ int is_ipv4_addr_p(struct addr *a) {
     return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
 }
 
-static __always_inline
+//static __always_inline
 flow_t *lookup_flow(void *flow_state, fourtuple_t *ft)
 {
     if (!flow_state)
