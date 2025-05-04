@@ -104,7 +104,7 @@ struct fivetuple {
 typedef struct fivetuple fivetuple_t;
 
 // will replace tunnel type
-struct destinfo {
+struct tunnel {
     addr_t daddr;
     addr_t saddr;
     __u16 dport;
@@ -117,7 +117,7 @@ struct destinfo {
     __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
 };
 
-typedef struct destinfo tunnel_t;
+typedef struct tunnel tunnel_t;
 
 static __always_inline
 int is_addr4(struct addr *a) {
@@ -128,7 +128,7 @@ int is_addr4(struct addr *a) {
 
 
 struct vip_rip {
-    struct destinfo destinfo;
+    tunnel_t tunnel;
     addr_t vip;
     addr_t ext;
 };
@@ -141,10 +141,11 @@ struct servicekey {
 
 typedef __u8 mac[6];
 
-struct destinations {
-    struct destinfo destinfo[256];
+struct service {
+    tunnel_t dest[256];
     __u8 hash[8192];
 };
+typedef struct service service_t;
 
 struct flow {
     tunnel_t tunnel; // contains real IP of server, etc (64)
@@ -268,8 +269,6 @@ struct {
     __uint(max_entries, 1);
 } settings SEC(".maps");
 
-
-
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t);
@@ -280,7 +279,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct servicekey);
-    __type(value, struct destinations);
+    __type(value, service_t);
     __uint(max_entries, 4096);
 } services SEC(".maps"); // rename to "services"?
 
@@ -317,7 +316,6 @@ struct {
 } redirect_map6 SEC(".maps");
 
 /**********************************************************************/
-
 
 static __always_inline
 int send_l2(struct xdp_md *ctx, tunnel_t *t)
@@ -391,7 +389,7 @@ int is_ipv4_addr_p(struct addr *a) {
     return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
 }
 
-//static __always_inline
+static __always_inline
 flow_t *lookup_flow(void *flow_state, fourtuple_t *ft)
 {
     if (!flow_state)
@@ -502,12 +500,12 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags, __u
 	*t = flow->tunnel;
     } else {
 	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };
-	struct destinations *service = bpf_map_lookup_elem(&services, &key);
+	service_t *service = bpf_map_lookup_elem(&services, &key);
 	
 	if (!service)
 	    return NOT_FOUND;
     
-	__u8 sticky = service->destinfo[0].flags & F_STICKY;
+	__u8 sticky = service->dest[0].flags & F_STICKY;
 	__u16 hash3 = l3_hash((fourtuple_t *) ft);
 	__u16 hash4 = l4_hash((fourtuple_t *) ft);
 	__u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
@@ -515,7 +513,7 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags, __u
 	if (!index)
 	    return NOT_FOUND;
 	
-	*t = service->destinfo[index];
+	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
     }
 
@@ -926,7 +924,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     __be16 svc = 0;
 
     struct l4 ft = { .saddr = src.addr4.addr, .daddr = nat.addr4.addr, .sport = eph, .dport = svc };
-    struct destinfo *destinfo = (void *) vip_rip;
+    struct tunnel *destinfo = (void *) vip_rip;
 
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
@@ -1047,7 +1045,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     __be16 svc = 0;
 
     struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };
-    struct destinfo *destinfo = (void *) vip_rip;
+    struct tunnel *destinfo = (void *) vip_rip;
     
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));

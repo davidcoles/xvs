@@ -59,7 +59,7 @@ type bpf_settings struct {
 	pad      [5]uint8
 }
 
-type bpf_destinfo struct {
+type bpf_tunnel struct {
 	daddr    addr16
 	saddr    addr16
 	dport    uint16
@@ -72,6 +72,8 @@ type bpf_destinfo struct {
 	pad      [12]byte // pad to 64 bytes
 }
 
+//type bpf_destinfo = bpf_tunnel
+
 type bpf_vlaninfo struct {
 	ip4 addr4
 	gw4 addr4
@@ -83,9 +85,9 @@ type bpf_vlaninfo struct {
 	gh6 mac
 }
 
-type bpf_destinations struct {
-	destinfo [256]bpf_destinfo
-	hash     [8192]uint8
+type bpf_service3 struct {
+	dest [256]bpf_tunnel
+	hash [8192]uint8
 }
 
 type bpf_servicekey struct {
@@ -95,7 +97,7 @@ type bpf_servicekey struct {
 }
 
 type bpf_vip_rip struct {
-	destinfo bpf_destinfo
-	vip      addr16
-	ext      addr16
+	tunnel bpf_tunnel
+	vip    addr16
+	ext    addr16
 }

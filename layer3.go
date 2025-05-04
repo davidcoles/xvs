@@ -179,18 +179,18 @@ func (l *layer3) readAndClearSession(vrpp bpf_vrpp3) (total uint64) {
 	return
 }
 
-// empty vlanid in di/ni indicates error
-func (l *layer3) destinfo(d Destination3) (bpf_destinfo, ninfo) {
+// empty vlanid in tunnel/ni indicates error
+func (l *layer3) tunnel(d Destination3) (bpf_tunnel, ninfo) {
 	ni, err := l.netinfo.info(d.Address)
 
 	if err != nil || ni.vlanid == 0 {
 		log.Fatal("FWD ERROR", err)
-		return bpf_destinfo{}, ninfo{}
+		return bpf_tunnel{}, ninfo{}
 	}
 
 	if d.TunnelType == NONE && ni.l3 {
 		log.Fatal("LOOP ERROR", ni)
-		return bpf_destinfo{}, ninfo{}
+		return bpf_tunnel{}, ninfo{}
 	}
 
 	flags := uint8(d.TunnelFlags & 0x7f)
@@ -199,7 +199,7 @@ func (l *layer3) destinfo(d Destination3) (bpf_destinfo, ninfo) {
 		flags |= F_NOT_LOCAL
 	}
 
-	return bpf_destinfo{
+	return bpf_tunnel{
 		daddr:    as16(ni.daddr),
 		saddr:    as16(ni.saddr),
 		dport:    d.TunnelPort,
@@ -371,25 +371,24 @@ func (l *layer3) initialiseFlows(x *xdp.XDP) error {
 	return nil
 }
 func (l *layer3) background() error {
-	ticker := time.NewTicker(time.Minute)
-	session := time.NewTicker(time.Second * 5)
+	reconfig := time.NewTicker(time.Minute)
+	sessions := time.NewTicker(time.Second * 5)
 
-	defer ticker.Stop()
-	defer session.Stop()
+	defer reconfig.Stop()
+	defer sessions.Stop()
 
 	for {
 		select {
-		case <-session.C:
-			l.settings.era++
-
+		case <-sessions.C:
 			l.mutex.Lock()
+			l.settings.era++
 			l.updateSettings()
 			for _, s := range l.services {
 				s.readSessions()
 			}
 			l.mutex.Unlock()
 
-		case <-ticker.C:
+		case <-reconfig.C:
 			// re-scan network interfaces and match to VLANs
 			// recalc all services as parameters may have changed
 			l.mutex.Lock()
@@ -463,7 +462,6 @@ func (l *layer3) clean() {
 
 	// TODO - reveal any clean-up bugs
 	clean_map2 := func(m xdp.Map, a map[bpf_vrpp3]bool) {
-
 		var key, next, nul bpf_vrpp3
 		for r := 0; r == 0; key = next {
 			r = m.GetNextKey(uP(&key), uP(&next))
@@ -489,22 +487,19 @@ func (l *layer3) clean() {
 			vrpp[vv] = true
 			vv.protocol |= 0xff00
 			vrpp[vv] = true
-
 		}
 	}
 
 	// update natmap
 	l.natmap.clean(nmap)
 
-	clean_map(l.maps.vips, vips)
-
 	for k, v := range l.natmap.all() {
 		nat := l.netns.addr(v, k[0].Is6()) // k[0] is the vip
 		nats[nat] = true
 	}
 
+	clean_map(l.maps.vips, vips)
 	clean_map(l.maps.nat_to_vip_rip, nats)
-
 	clean_map2(l.maps.stats, vrpp)
 	clean_map2(l.maps.sessions, vrpp)
 
@@ -531,7 +526,7 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_destinations{})))
+	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service3{})))
 
 	if err != nil {
 		return err

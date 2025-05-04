@@ -31,6 +31,10 @@ const (
 	Sticky Flags = 0x01
 )
 
+const (
+	TunnelEncapNoChecksums TunnelFlags = 0x01
+)
+
 type Client3 interface {
 	Info() (Info, error)
 

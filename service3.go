@@ -29,9 +29,9 @@ import (
 )
 
 type dest struct {
-	weight   uint8
-	destinfo bpf_destinfo
-	netinfo  ninfo // only used for debug purposes atm
+	weight  uint8
+	tunnel  bpf_tunnel
+	netinfo ninfo // only used for debug purposes atm
 }
 
 type service3 struct {
@@ -45,18 +45,18 @@ func (s *service3) debug(info ...any) {
 	//fmt.Println(info...)
 }
 
-func (s *service3) set(service Service3, ds ...Destination3) (del bool, err error) {
+func (s *service3) set(service Service3, ds ...Destination3) (deleted bool, err error) {
 
-	m := make(map[netip.Addr]Destination3, len(ds))
+	destinations := make(map[netip.Addr]Destination3, len(ds))
 
 	for _, d := range ds {
-		m[d.Address] = d
+		destinations[d.Address] = d
 		if err = d.check(); err != nil {
 			return
 		}
 	}
 
-	for d, _ := range m {
+	for d, _ := range destinations {
 		if _, exists := s.dests[d]; !exists {
 			s.debug("ADDING", d)
 			s.layer3.createCounters(s.vrpp(d))
@@ -65,22 +65,18 @@ func (s *service3) set(service Service3, ds ...Destination3) (del bool, err erro
 	}
 
 	for d, _ := range s.dests {
-		if _, exists := m[d]; !exists {
-			del = true
+		if _, exists := destinations[d]; !exists {
 			s.layer3.removeCounters(s.vrpp(d)) // d was deleted
+			deleted = true
 		}
 	}
 
-	for _, d := range m {
-		s.layer3.natmap.add(s.service.Address, d.Address)
-	}
-
 	s.service = service
-	s.dests = m
+	s.dests = destinations
 	s.layer3.natmap.index()
 	s.recalc()
 
-	return
+	return // do NOT run a clean here, let caller do it - service may not yet be in the client's service map
 }
 
 func (s *service3) createDestination(d Destination3) error {
@@ -219,12 +215,16 @@ func (s *service3) recalc() {
 	reals := make(map[netip.Addr]dest, len(s.dests))
 
 	for k, d := range s.dests {
-		di, ni := s.layer3.destinfo(d)
-		reals[k] = dest{destinfo: di, netinfo: ni, weight: d.Weight}
+		di, ni := s.layer3.tunnel(d)
+		reals[k] = dest{tunnel: di, netinfo: ni, weight: d.Weight}
 		s.debug("FWD", ni, di.flags)
 	}
 
-	s.forwarding(reals)
+	key := s.key()
+	fwd := s.forwarding(reals)
+
+	s.layer3.maps.services.UpdateElem(uP(&key), uP(&fwd), xdp.BPF_ANY)
+
 	s.nat(reals)
 
 	v16 := as16(s.service.Address)
@@ -237,56 +237,52 @@ func (s *service3) nat(reals map[netip.Addr]dest) {
 	for k, v := range reals {
 		nat := s.layer3.nat(s.service.Address, k)
 		n16 := as16(nat)
-		ext := s.layer3.netinfo.ext(v.destinfo.vlanid, s.service.Address.Is6())
-
-		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: as16(vip), ext: as16(ext)}
+		ext := s.layer3.netinfo.ext(v.tunnel.vlanid, s.service.Address.Is6())
+		vip_rip := bpf_vip_rip{tunnel: v.tunnel, vip: as16(vip), ext: as16(ext)}
 		s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
 
 		s.debug("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
 	}
 }
 
-func (s *service3) forwarding(reals map[netip.Addr]dest) {
+func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service3) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
 	for k, v := range reals {
-		if v.weight != 0 && v.destinfo.vlanid != 0 {
+		if v.weight != 0 && v.tunnel.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
-		//s.layer3.createCounters(s.vrpp(k))
 	}
 
-	var val bpf_destinations
-	val.destinfo[0] = bpf_destinfo{flags: uint8(s.service.Flags)}
+	fwd.dest[0].flags = uint8(s.service.Flags)
 
-	var dur time.Duration
+	var duration time.Duration
 
 	if len(addrs) > 0 {
 		// we need the list to be sorted for maglev to be stable
 		sort.Slice(addrs, func(i, j int) bool { return addrs[i].Less(addrs[j]) })
 
-		dests := make([]bpf_destinfo, len(addrs))
+		dests := make([]bpf_tunnel, len(addrs))
 		nodes := make([][]byte, len(addrs))
 
 		for i, a := range addrs {
-			dests[i] = reals[a].destinfo
+			dests[i] = reals[a].tunnel
 			nodes[i] = []byte(a.String())
 		}
 
 		for i, v := range dests {
-			val.destinfo[i+1] = v
+			fwd.dest[i+1] = v
 		}
 
 		now := time.Now()
 		for i, v := range maglev.Maglev8192(nodes) {
-			val.hash[i] = uint8(v + 1)
+			fwd.hash[i] = uint8(v + 1)
 		}
-		dur = time.Now().Sub(now)
+		duration = time.Now().Sub(now)
 	}
 
-	s.debug("MAG", s.service, val.hash[0:32], dur)
+	s.debug("MAG", s.service, fwd.hash[0:32], duration)
 
-	key := s.key()
-	s.layer3.maps.services.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+	return
 }
