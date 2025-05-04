@@ -269,6 +269,21 @@ struct {
 } settings SEC(".maps");
 
 
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, addr_t);
+    __type(value, __u32); // value no longer used
+    __uint(max_entries, 4096);
+} vips SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct servicekey);
+    __type(value, struct destinations);
+    __uint(max_entries, 4096);
+} services SEC(".maps"); // rename to "services"?
+
 struct vlaninfo {
     __be32 ip4;
     __be32 gw4;
@@ -286,28 +301,6 @@ struct {
     __type(value, struct vlaninfo);
     __uint(max_entries, 4096);
 } vlaninfo SEC(".maps");
-
-
-//struct {
-//    __uint(type, BPF_MAP_TYPE_HASH);
-//    __type(key, struct fourtuple);
-//    __type(value, struct flow);
-//    __uint(max_entries, 100);
-//} flows SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, addr_t);
-    __type(value, __u32); // value no longer used
-    __uint(max_entries, 4096);
-} vips SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct servicekey);
-    __type(value, struct destinations);
-    __uint(max_entries, 4096);
-} destinations SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_DEVMAP);
@@ -509,7 +502,7 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags, __u
 	*t = flow->tunnel;
     } else {
 	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };
-	struct destinations *service = bpf_map_lookup_elem(&destinations, &key);
+	struct destinations *service = bpf_map_lookup_elem(&services, &key);
 	
 	if (!service)
 	    return NOT_FOUND;

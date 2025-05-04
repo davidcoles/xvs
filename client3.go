@@ -242,7 +242,7 @@ func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
 	return service.removeDestination(d)
 }
 
-func (l *layer3) SetService(s Service3, ds ...Destination3) (err error) {
+func (l *layer3) SetService(s Service3, ds ...Destination3) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -252,9 +252,13 @@ func (l *layer3) SetService(s Service3, ds ...Destination3) (err error) {
 		return l.createService(s, ds...)
 	}
 
-	defer l.clean()
+	del, err := service.set(s, ds...)
 
-	return service.set(s, ds...)
+	if del {
+		l.clean()
+	}
+
+	return err
 }
 
 func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {

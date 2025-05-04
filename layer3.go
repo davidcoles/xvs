@@ -27,7 +27,6 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	//"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -107,12 +106,15 @@ type layer3 struct {
 	natmap   natmap6
 	netinfo  *netinfo
 	netns    *newns
-	setting  bpf_settings
+	settings bpf_settings
+	maps     maps
+}
 
+type maps struct {
 	nat_to_vip_rip xdp.Map
 	redirect_map4  xdp.Map
 	redirect_map6  xdp.Map
-	destinations   xdp.Map
+	services       xdp.Map
 	vlaninfo       xdp.Map
 	settings       xdp.Map
 	sessions       xdp.Map
@@ -121,12 +123,12 @@ type layer3 struct {
 }
 
 func (l *layer3) nat(v, r netip.Addr) netip.Addr { return l.netns.addr(l.natmap.get(v, r), v.Is6()) }
-func (l *layer3) era() bool                      { return l.setting.era%2 > 0 }
+func (l *layer3) era() bool                      { return l.settings.era%2 > 0 }
 
 func (l *layer3) counters(vrpp bpf_vrpp3) (c bpf_counters3) {
 	all := make([]bpf_counters3, xdp.BpfNumPossibleCpus())
 
-	l.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
+	l.maps.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
 
 	for _, v := range all {
 		c.add(v)
@@ -137,29 +139,33 @@ func (l *layer3) counters(vrpp bpf_vrpp3) (c bpf_counters3) {
 
 func (l *layer3) createCounters(vrpp bpf_vrpp3) {
 	counters := make([]bpf_counters3, xdp.BpfNumPossibleCpus())
-	l.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
+	l.maps.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 
 	sessions := make([]int64, xdp.BpfNumPossibleCpus())
-	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
+	//fmt.Println("ADD", vrpp)
+	l.maps.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 	vrpp.protocol |= 0xff00
-	l.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
+	//fmt.Println("ADD", vrpp)
+	l.maps.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
 func (l *layer3) removeCounters(vrpp bpf_vrpp3) {
-	l.stats.DeleteElem(uP(&vrpp))
-	l.sessions.DeleteElem(uP(&vrpp))
+	l.maps.stats.DeleteElem(uP(&vrpp))
+	//fmt.Println("DEL", vrpp)
+	l.maps.sessions.DeleteElem(uP(&vrpp))
 	vrpp.protocol |= 0xff00
-	l.sessions.DeleteElem(uP(&vrpp))
+	//fmt.Println("DEL", vrpp)
+	l.maps.sessions.DeleteElem(uP(&vrpp))
 }
 
-func (l *layer3) read_and_clear(vrpp bpf_vrpp3) (total uint64) {
+func (l *layer3) readAndClearSession(vrpp bpf_vrpp3) (total uint64) {
 	all := make([]int64, xdp.BpfNumPossibleCpus())
 
 	if !l.era() {
 		vrpp.protocol |= 0xff00
 	}
 
-	l.sessions.LookupElem(uP(&vrpp), uP(&all[0]))
+	l.maps.sessions.LookupElem(uP(&vrpp), uP(&all[0]))
 
 	for i, v := range all {
 		if v > 0 {
@@ -168,7 +174,7 @@ func (l *layer3) read_and_clear(vrpp bpf_vrpp3) (total uint64) {
 		all[i] = 0
 	}
 
-	l.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_EXIST)
+	l.maps.sessions.UpdateElem(uP(&vrpp), uP(&all[0]), xdp.BPF_EXIST)
 
 	return
 }
@@ -206,14 +212,14 @@ func (l *layer3) destinfo(d Destination3) (bpf_destinfo, ninfo) {
 	}, ni
 }
 
-func (l *layer3) updateSettings(setting bpf_settings) {
+func (l *layer3) updateSettings() {
 
 	all := make([]bpf_settings, xdp.BpfNumPossibleCpus())
 	for i, _ := range all {
-		all[i] = setting
+		all[i] = l.settings
 	}
 
-	l.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
+	l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
 func newClient(interfaces ...string) (*layer3, error) {
@@ -234,55 +240,9 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	redirect_map4, err := x.FindMap("redirect_map4", 4, 4)
+	var m maps
 
-	if err != nil {
-		return nil, err
-	}
-
-	redirect_map6, err := x.FindMap("redirect_map6", 4, 4)
-
-	if err != nil {
-		return nil, err
-	}
-
-	vips, err := x.FindMap("vips", 16, 4)
-
-	if err != nil {
-		return nil, err
-	}
-
-	destinations, err := x.FindMap("destinations", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_destinations{})))
-
-	if err != nil {
-		return nil, err
-	}
-
-	nat_to_vip_rip, err := x.FindMap("nat_to_vip_rip", 16, int(unsafe.Sizeof(bpf_vip_rip{})))
-
-	if err != nil {
-		return nil, err
-	}
-
-	vlaninfo, err := x.FindMap("vlaninfo", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
-
-	if err != nil {
-		return nil, err
-	}
-
-	settings, err := x.FindMap("settings", 4, int(unsafe.Sizeof(bpf_settings{})))
-
-	if err != nil {
-		return nil, err
-	}
-
-	stats, err := x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp3{})), int(unsafe.Sizeof(bpf_counters3{})))
-
-	if err != nil {
-		return nil, err
-	}
-
-	sessions, err := x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp3{})), 8)
+	err = m.init(x)
 
 	if err != nil {
 		return nil, err
@@ -302,7 +262,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		multi = 0
 	}
 
-	setting := bpf_settings{
+	settings := bpf_settings{
 		veth:   uint32(ns.a.idx),
 		vetha:  ns.a.mac,
 		vethb:  ns.b.mac,
@@ -316,17 +276,8 @@ func newClient(interfaces ...string) (*layer3, error) {
 		netns:    ns,
 		natmap:   natmap6{},
 		netinfo:  ni,
-		setting:  setting,
-
-		nat_to_vip_rip: nat_to_vip_rip,
-		redirect_map4:  redirect_map4,
-		redirect_map6:  redirect_map6,
-		destinations:   destinations,
-		vlaninfo:       vlaninfo,
-		settings:       settings,
-		sessions:       sessions,
-		stats:          stats,
-		vips:           vips,
+		settings: settings,
+		maps:     m,
 	}
 
 	err = l3.initialiseFlows(x)
@@ -335,7 +286,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 		return nil, err
 	}
 
-	l3.updateSettings(setting)
+	l3.updateSettings()
 
 	var nics []uint32
 
@@ -429,12 +380,12 @@ func (l *layer3) background() error {
 	for {
 		select {
 		case <-session.C:
-			l.setting.era++
+			l.settings.era++
 
 			l.mutex.Lock()
-			l.updateSettings(l.setting)
+			l.updateSettings()
 			for _, s := range l.services {
-				s.sessions()
+				s.readSessions()
 			}
 			l.mutex.Unlock()
 
@@ -473,9 +424,9 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 
 	for i := uint32(1); i < 4095; i++ {
 		vi, v4, v6 := l.netinfo.vlaninfo(i)
-		l.redirect_map4.UpdateElem(uP(&i), uP(&v4), xdp.BPF_ANY)
-		l.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
-		l.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
+		l.maps.redirect_map4.UpdateElem(uP(&i), uP(&v4), xdp.BPF_ANY)
+		l.maps.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
+		l.maps.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
 	}
 
 	return nil
@@ -492,6 +443,8 @@ func (l *layer3) reconfig() {
 
 func (l *layer3) clean() {
 
+	fmt.Println("CLEAN")
+
 	clean_map := func(m xdp.Map, a map[netip.Addr]bool) {
 		b := map[addr16]bool{}
 
@@ -499,10 +452,10 @@ func (l *layer3) clean() {
 			b[as16(k)] = true
 		}
 
-		var key, next addr16
+		var key, next, nul addr16
 		for r := 0; r == 0; key = next {
 			r = m.GetNextKey(uP(&key), uP(&next))
-			if _, exists := b[key]; !exists {
+			if _, exists := b[key]; !exists && key != nul {
 				m.DeleteElem(uP(&key))
 			}
 		}
@@ -515,8 +468,8 @@ func (l *layer3) clean() {
 		for r := 0; r == 0; key = next {
 			r = m.GetNextKey(uP(&key), uP(&next))
 			if _, exists := a[key]; !exists && key != nul {
-				//m.DeleteElem(uP(&key))
-				log.Fatal(key)
+				m.DeleteElem(uP(&key))
+				log.Fatal("clean_map2", key)
 			}
 		}
 	}
@@ -532,25 +485,87 @@ func (l *layer3) clean() {
 		vips[k.address] = true
 		for r, _ := range v.dests {
 			nmap[[2]netip.Addr{k.address, r}] = true
-			vrpp[v.vrpp(r)] = true
+			vv := v.vrpp(r)
+			vrpp[vv] = true
+			vv.protocol |= 0xff00
+			vrpp[vv] = true
+
 		}
 	}
 
 	// update natmap
 	l.natmap.clean(nmap)
 
-	clean_map(l.vips, vips)
-	clean_map(l.vips, vips)
+	clean_map(l.maps.vips, vips)
 
 	for k, v := range l.natmap.all() {
 		nat := l.netns.addr(v, k[0].Is6()) // k[0] is the vip
 		nats[nat] = true
 	}
 
-	clean_map(l.nat_to_vip_rip, nats)
-	clean_map(l.nat_to_vip_rip, nats)
+	clean_map(l.maps.nat_to_vip_rip, nats)
 
-	clean_map2(l.stats, vrpp)
+	clean_map2(l.maps.stats, vrpp)
+	clean_map2(l.maps.sessions, vrpp)
 
 	log.Println("Clean-up took", time.Now().Sub(now))
+}
+
+func (m *maps) init(x *xdp.XDP) (err error) {
+
+	m.redirect_map4, err = x.FindMap("redirect_map4", 4, 4)
+
+	if err != nil {
+		return err
+	}
+
+	m.redirect_map6, err = x.FindMap("redirect_map6", 4, 4)
+
+	if err != nil {
+		return err
+	}
+
+	m.vips, err = x.FindMap("vips", 16, 4)
+
+	if err != nil {
+		return err
+	}
+
+	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_destinations{})))
+
+	if err != nil {
+		return err
+	}
+
+	m.nat_to_vip_rip, err = x.FindMap("nat_to_vip_rip", 16, int(unsafe.Sizeof(bpf_vip_rip{})))
+
+	if err != nil {
+		return err
+	}
+
+	m.vlaninfo, err = x.FindMap("vlaninfo", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
+
+	if err != nil {
+		return err
+	}
+
+	m.settings, err = x.FindMap("settings", 4, int(unsafe.Sizeof(bpf_settings{})))
+
+	if err != nil {
+		return err
+	}
+
+	m.stats, err = x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp3{})), int(unsafe.Sizeof(bpf_counters3{})))
+
+	if err != nil {
+		return err
+	}
+
+	m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp3{})), 8)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

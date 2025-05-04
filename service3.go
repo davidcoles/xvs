@@ -35,26 +35,30 @@ type dest struct {
 }
 
 type service3 struct {
-	dests   map[netip.Addr]Destination3
-	service Service3
-	layer3  *layer3
-	sess    map[netip.Addr]uint64
+	dests    map[netip.Addr]Destination3
+	service  Service3
+	layer3   *layer3
+	sessions map[netip.Addr]uint64
 }
 
-func (s *service3) set(service Service3, ds ...Destination3) error {
+func (s *service3) debug(info ...any) {
+	//fmt.Println(info...)
+}
+
+func (s *service3) set(service Service3, ds ...Destination3) (del bool, err error) {
 
 	m := make(map[netip.Addr]Destination3, len(ds))
 
 	for _, d := range ds {
 		m[d.Address] = d
-		if err := d.check(); err != nil {
-			return err
+		if err = d.check(); err != nil {
+			return
 		}
 	}
 
 	for d, _ := range m {
 		if _, exists := s.dests[d]; !exists {
-			//fmt.Println("ADDING", d)
+			s.debug("ADDING", d)
 			s.layer3.createCounters(s.vrpp(d))
 			s.layer3.natmap.add(s.service.Address, d)
 		}
@@ -62,6 +66,7 @@ func (s *service3) set(service Service3, ds ...Destination3) error {
 
 	for d, _ := range s.dests {
 		if _, exists := m[d]; !exists {
+			del = true
 			s.layer3.removeCounters(s.vrpp(d)) // d was deleted
 		}
 	}
@@ -75,7 +80,7 @@ func (s *service3) set(service Service3, ds ...Destination3) error {
 	s.layer3.natmap.index()
 	s.recalc()
 
-	return nil
+	return
 }
 
 func (s *service3) createDestination(d Destination3) error {
@@ -126,15 +131,13 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 
 	service := &service3{dests: map[netip.Addr]Destination3{}, service: s, layer3: l}
 
-	err := service.set(s, ds...)
+	_, err := service.set(s, ds...)
 
 	if err != nil {
 		return err
 	}
 
 	l.services[s.key()] = service
-
-	//l.clean() // do we need to clean? nothing would have been deleted
 
 	return nil
 }
@@ -144,7 +147,7 @@ func (s *service3) extend() Service3Extended {
 	var t uint64
 	for d, _ := range s.dests {
 		c.add(s.layer3.counters(s.vrpp(d)))
-		t += s.sess[d]
+		t += s.sessions[d]
 	}
 	return Service3Extended{Service: s.service, Stats: c.stats(t)}
 }
@@ -166,7 +169,7 @@ func (s *service3) remove() error {
 		s.layer3.removeCounters(s.vrpp(d))
 	}
 
-	s.layer3.destinations.DeleteElem(uP(&key))
+	s.layer3.maps.services.DeleteElem(uP(&key))
 	delete(s.layer3.services, s.service.key())
 	s.layer3.clean()
 	return nil
@@ -186,7 +189,7 @@ func (s *service3) updateDestination(d Destination3) error {
 }
 
 func (s *service3) stats(d netip.Addr) Stats3 {
-	return s.layer3.counters(s.vrpp(d)).stats(s.sess[d])
+	return s.layer3.counters(s.vrpp(d)).stats(s.sessions[d])
 }
 
 func (s *service3) destinations() (r []Destination3Extended, e error) {
@@ -196,14 +199,12 @@ func (s *service3) destinations() (r []Destination3Extended, e error) {
 	return
 }
 
-func (s *service3) sessions() {
-	svc := s.service
-	sess := make(map[netip.Addr]uint64, len(s.dests))
+func (s *service3) readSessions() {
+	sessions := make(map[netip.Addr]uint64, len(s.dests))
 	for d, _ := range s.dests {
-		vrpp := bpf_vrpp3{vaddr: as16(svc.Address), raddr: as16(d), vport: svc.Port, protocol: uint16(svc.Protocol)}
-		sess[d] = s.layer3.read_and_clear(vrpp)
+		sessions[d] = s.layer3.readAndClearSession(s.vrpp(d))
 	}
-	s.sess = sess
+	s.sessions = sessions
 }
 
 func (s *service3) a16() addr16   { return as16(s.service.Address) }
@@ -220,14 +221,14 @@ func (s *service3) recalc() {
 	for k, d := range s.dests {
 		di, ni := s.layer3.destinfo(d)
 		reals[k] = dest{destinfo: di, netinfo: ni, weight: d.Weight}
-		//fmt.Println("FWD", ni, di.flags)
+		s.debug("FWD", ni, di.flags)
 	}
 
 	s.forwarding(reals)
 	s.nat(reals)
 
 	v16 := as16(s.service.Address)
-	s.layer3.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
+	s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
 }
 
 func (s *service3) nat(reals map[netip.Addr]dest) {
@@ -239,9 +240,9 @@ func (s *service3) nat(reals map[netip.Addr]dest) {
 		ext := s.layer3.netinfo.ext(v.destinfo.vlanid, s.service.Address.Is6())
 
 		vip_rip := bpf_vip_rip{destinfo: v.destinfo, vip: as16(vip), ext: as16(ext)}
-		s.layer3.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
+		s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
 
-		//fmt.Println("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
+		s.debug("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
 	}
 }
 
@@ -284,10 +285,8 @@ func (s *service3) forwarding(reals map[netip.Addr]dest) {
 		dur = time.Now().Sub(now)
 	}
 
-	if false {
-		fmt.Println("MAG", s.service, val.hash[0:32], dur)
-	}
+	s.debug("MAG", s.service, val.hash[0:32], dur)
 
 	key := s.key()
-	s.layer3.destinations.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
+	s.layer3.maps.services.UpdateElem(uP(&key), uP(&val), xdp.BPF_ANY)
 }
