@@ -45,8 +45,8 @@ const __u8 F_NOT_LOCAL = 0x80;
 
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
-//const __u64 TIMEOUT = 300; // seconds
-const __u64 TIMEOUT = 120; // seconds
+const __u64 TIMEOUT = 300; // seconds
+//const __u64 TIMEOUT = 120; // seconds
 
 //const __u8 F_STICKY = 0x01;
 

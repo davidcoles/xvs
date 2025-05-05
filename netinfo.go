@@ -24,6 +24,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"regexp"
 )
@@ -419,4 +420,120 @@ func (netinfo *netinfo) vlaninfo(i uint32) (bpf_vlaninfo, uint32, uint32) {
 		gh6: g6.hw,
 	}
 	return vi, f4.ifindex, f6.ifindex
+}
+
+func arp() (map[ip4]mac, map[ip4]raw) {
+
+	var nul mac
+
+	ip2mac := make(map[ip4]mac)
+	ip2nic := make(map[ip4]*net.Interface)
+	ip2raw := make(map[ip4]raw)
+
+	// flags: https://superuser.com/questions/822054/definition-of-arp-result-flags/822089#822089
+	// 0x0 incomplete
+	// 0x2 complete
+	// 0x6 complete and manually set
+
+	re := regexp.MustCompile(`^(\S+)\s+0x1\s+0x[26]\s+(\S+)\s+\S+\s+(\S+)$`)
+
+	file, err := os.OpenFile("/proc/net/arp", os.O_RDONLY, os.ModePerm)
+	if err != nil {
+		return nil, nil
+	}
+	defer file.Close()
+
+	s := bufio.NewScanner(file)
+	for s.Scan() {
+		line := s.Text()
+
+		m := re.FindStringSubmatch(line)
+
+		if len(m) > 3 {
+
+			ip := net.ParseIP(m[1])
+
+			if ip == nil {
+				continue
+			}
+
+			ip = ip.To4()
+
+			if ip == nil || len(ip) != 4 {
+				continue
+			}
+
+			hw, err := net.ParseMAC(m[2])
+
+			if err != nil || len(hw) != 6 {
+				continue
+			}
+
+			iface, err := net.InterfaceByName(m[3])
+
+			if err != nil {
+				continue
+			}
+
+			var ip4 ip4
+			var mac [6]byte
+
+			copy(ip4[:], ip[:])
+			copy(mac[:], hw[:])
+
+			if ip4.String() == "0.0.0.0" {
+				continue
+			}
+
+			if mac == [6]byte{0, 0, 0, 0, 0, 0} {
+				continue
+			}
+
+			ip2mac[ip4] = mac
+			ip2nic[ip4] = iface
+
+			if iface != nil && len(iface.HardwareAddr) == 6 {
+
+				var src MAC
+
+				copy(src[:], iface.HardwareAddr[:])
+
+				if mac != nul {
+					ip2raw[ip4] = raw{
+						idx: iface.Index,
+						src: src,
+						dst: mac,
+					}
+				}
+			}
+		}
+	}
+
+	return ip2mac, ip2raw
+}
+
+type nic struct {
+	idx int
+	ip4 ip4
+	ip6 ip6
+	mac mac
+	nic string
+}
+
+// how to send raw packets
+type raw struct {
+	idx int // interface index
+	src mac // source MAC (local interface HW address)
+	dst mac // dest MAC (backend's HW address)
+	//nic string // interface name
+}
+
+func (n *nic) String() string {
+	return fmt.Sprintf("%s|%d|%s|%s", n.nic, n.idx, b4s(n.ip4), b6s(n.mac))
+}
+
+type ip6 [16]byte
+
+func (i *ip6) String() string {
+	return netip.AddrFrom16(*i).String()
 }

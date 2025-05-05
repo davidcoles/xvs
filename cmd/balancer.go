@@ -57,14 +57,6 @@ func main() {
 		log.Fatal("Unknown tunnel type")
 	}
 
-	fmt.Println("Starting ...")
-
-	client, err := xvs.New(iface)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	/**********************************************************************/
 
 	vlan4 := map[uint16]netip.Prefix{}
@@ -86,6 +78,16 @@ func main() {
 		} else {
 			vlan6[1] = prefix
 		}
+	}
+
+	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6}
+
+	fmt.Println("Starting ...")
+
+	client, err := xvs.NewWithOptions(options, iface)
+
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	err = client.SetConfig(xvs.Config{VLANs4: vlan4, VLANs6: vlan6})

@@ -2,11 +2,11 @@ BPFVER  ?= v1.5.0
 LIBBPF  := $(PWD)/bpf/libbpf
 INCLUDE ?= 
 
-default: cmd/balancer3
+default: cmd/balancer
 
-cmd/balancer3:
-	cd bpf && $(MAKE) libbpf/bpf/libbpf.a bpf.o.gz
-	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -race -o balancer3 balancer3.go
+cmd/balancer: cmd/balancer.go *.go
+	cd bpf && $(MAKE) libbpf/bpf/libbpf.a layer3.o.gz
+	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -race -o balancer balancer.go
 
 clean:
 	rm -f cmd/balancer

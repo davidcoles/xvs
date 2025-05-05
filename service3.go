@@ -35,9 +35,9 @@ type dest struct {
 }
 
 type service3 struct {
-	dests    map[netip.Addr]Destination3
+	dests    map[netip.Addr]Destination
 	mac      map[netip.Addr]mac
-	service  Service3
+	service  Service
 	layer3   *layer3
 	sessions map[netip.Addr]uint64
 }
@@ -46,9 +46,9 @@ func (s *service3) debug(info ...any) {
 	//fmt.Println(info...)
 }
 
-func (s *service3) set(service Service3, ds ...Destination3) (deleted bool, err error) {
+func (s *service3) set(service Service, ds ...Destination) (deleted bool, err error) {
 
-	destinations := make(map[netip.Addr]Destination3, len(ds))
+	destinations := make(map[netip.Addr]Destination, len(ds))
 
 	for _, d := range ds {
 		destinations[d.Address] = d
@@ -80,7 +80,7 @@ func (s *service3) set(service Service3, ds ...Destination3) (deleted bool, err 
 	return // do NOT run a clean here, let caller do it - service may not yet be in the client's service map
 }
 
-func (s *service3) createDestination(d Destination3) error {
+func (s *service3) createDestination(d Destination) error {
 
 	if _, exists := s.dests[d.Address]; exists {
 		return fmt.Errorf("Destination exists")
@@ -98,7 +98,7 @@ func (s *service3) createDestination(d Destination3) error {
 	return nil
 }
 
-func (s *service3) removeDestination(d Destination3) error {
+func (s *service3) removeDestination(d Destination) error {
 
 	if _, exists := s.dests[d.Address]; !exists {
 		return fmt.Errorf("Destination does not exist")
@@ -112,7 +112,7 @@ func (s *service3) removeDestination(d Destination3) error {
 	return nil
 }
 
-func (l *layer3) createService(s Service3, ds ...Destination3) error {
+func (l *layer3) createService(s Service, ds ...Destination) error {
 
 	if !s.Address.IsValid() || s.Address.IsUnspecified() || s.Address.IsMulticast() || s.Address.IsLoopback() {
 		return fmt.Errorf("Bad IP address")
@@ -126,7 +126,7 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 		return fmt.Errorf("Unsupported protocol")
 	}
 
-	service := &service3{dests: map[netip.Addr]Destination3{}, service: s, layer3: l}
+	service := &service3{dests: map[netip.Addr]Destination{}, service: s, layer3: l}
 
 	_, err := service.set(s, ds...)
 
@@ -139,17 +139,17 @@ func (l *layer3) createService(s Service3, ds ...Destination3) error {
 	return nil
 }
 
-func (s *service3) extend() Service3Extended {
+func (s *service3) extend() ServiceExtended {
 	var c bpf_counters3
 	var t uint64
 	for d, _ := range s.dests {
 		c.add(s.layer3.counters(s.vrpp(d)))
 		t += s.sessions[d]
 	}
-	return Service3Extended{Service: s.service, Stats: c.stats(t)}
+	return ServiceExtended{Service: s.service, Stats: c.stats(t)}
 }
 
-func (s *service3) update(service Service3) error {
+func (s *service3) update(service Service) error {
 	s.service = service
 	s.recalc()
 	return nil
@@ -172,7 +172,7 @@ func (s *service3) remove() error {
 	return nil
 }
 
-func (s *service3) updateDestination(d Destination3) error {
+func (s *service3) updateDestination(d Destination) error {
 
 	if _, exists := s.dests[d.Address]; !exists {
 		return fmt.Errorf("Destination does not exist")
@@ -185,13 +185,13 @@ func (s *service3) updateDestination(d Destination3) error {
 	return nil
 }
 
-func (s *service3) stats(d netip.Addr) Stats3 {
+func (s *service3) stats(d netip.Addr) Stats {
 	return s.layer3.counters(s.vrpp(d)).stats(s.sessions[d])
 }
 
-func (s *service3) destinations() (r []Destination3Extended, e error) {
+func (s *service3) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
-		r = append(r, Destination3Extended{Destination: d, Stats: s.stats(a), MAC: s.mac[a]})
+		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), MAC: s.mac[a]})
 	}
 	return
 }
