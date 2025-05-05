@@ -108,7 +108,7 @@ On a Raspberry Pi (B+) ... don't get your hopes up!
 
 I initially had problems with the Intel X710 card, but some
 combination of SFP+ module/optics replacement and moving to Ubuntu
-22.04 seems to have fixed the issue.
+24.04 seems to have fixed the issue.
 
 The Intel X520 cards that I had previously used work flawlessly.
 
