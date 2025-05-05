@@ -359,7 +359,7 @@ func (n *netinfo) hw6() map[netip.Addr]neighbor {
 	//stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 
-	re := regexp.MustCompile(`^(\S+)\s+dev\s+(\S+)\s+lladdr\s+(\S+)\s+(\S+)$`)
+	re := regexp.MustCompile(`^(\S+)\s+dev\s+(\S+)\s+lladdr\s+(\S+)\s+(\S+)\s*$`)
 
 	if err := cmd.Start(); err != nil {
 		return nil
