@@ -2,14 +2,7 @@ BPFVER  ?= v1.5.0
 LIBBPF  := $(PWD)/bpf/libbpf
 INCLUDE ?= 
 
-default: cmd/balancer
-
-stuff:
-	cd bpf && $(MAKE) layer3.o.gz
-
-cmd/balancer:
-	cd bpf && $(MAKE) libbpf/bpf/libbpf.a bpf.o.gz
-	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -o balancer balancer.go
+default: cmd/balancer3
 
 cmd/balancer3:
 	cd bpf && $(MAKE) libbpf/bpf/libbpf.a bpf.o.gz

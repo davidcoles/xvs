@@ -45,22 +45,22 @@ type Options struct {
 	KillSwitch bool
 }
 
-type Client3 interface {
+type Client interface {
 	Info() (Info, error)
 
 	Config() (Config, error)
 	SetConfig(Config) error
 
-	Services() ([]Service3Extended, error)
-	Service(Service3) (Service3Extended, error)
-	CreateService(Service3) error
-	UpdateService(Service3) error
-	RemoveService(Service3) error
+	Services() ([]ServiceExtended, error)
+	Service(Service) (ServiceExtended, error)
+	CreateService(Service) error
+	UpdateService(Service) error
+	RemoveService(Service) error
 
-	Destinations(Service3) ([]Destination3Extended, error)
-	CreateDestination(Service3, Destination3) error
-	UpdateDestination(Service3, Destination3) error
-	RemoveDestination(Service3, Destination3) error
+	Destinations(Service) ([]DestinationExtended, error)
+	CreateDestination(Service, Destination) error
+	UpdateDestination(Service, Destination) error
+	RemoveDestination(Service, Destination) error
 
 	SetService(Service3, ...Destination3) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
@@ -75,14 +75,20 @@ func (s *Service3) key() threetuple {
 	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 }
 
-type Service3 struct {
+type Service3 = Service
+type Stats3 = Stats
+type Service3Extended = ServiceExtended
+type Destination3 = Destination
+type Destination3Extended = DestinationExtended
+
+type Service struct {
 	Address  netip.Addr
 	Port     uint16
 	Protocol Protocol
 	Flags    Flags
 }
 
-type Stats3 struct {
+type Stats struct {
 	Packets uint64
 	Octets  uint64
 	Flows   uint64
@@ -90,12 +96,12 @@ type Stats3 struct {
 	Errors  uint64
 }
 
-type Service3Extended struct {
-	Service Service3
-	Stats   Stats3
+type ServiceExtended struct {
+	Service Service
+	Stats   Stats
 }
 
-type Destination3 struct {
+type Destination struct {
 	Address     netip.Addr
 	TunnelType  TunnelType
 	TunnelPort  uint16
@@ -103,9 +109,9 @@ type Destination3 struct {
 	Weight      uint8
 }
 
-type Destination3Extended struct {
-	Destination Destination3
-	Stats       Stats3
+type DestinationExtended struct {
+	Destination Destination
+	Stats       Stats
 	MAC         MAC
 }
 
@@ -130,11 +136,11 @@ func (c *Config) copy() (r Config) {
 	return
 }
 
-func New(interfaces ...string) (Client3, error) {
+func New(interfaces ...string) (Client, error) {
 	return newClient(interfaces...)
 }
 
-func NewWithOptions(options Options, interfaces ...string) (Client3, error) {
+func NewWithOptions(options Options, interfaces ...string) (Client, error) {
 	return newClientWithOptions(options, interfaces...)
 }
 
@@ -169,18 +175,18 @@ func (l *layer3) SetConfig(c Config) error {
 	return nil
 }
 
-func (l *layer3) Services() (r []Service3Extended, e error) {
+func (l *layer3) Services() (r []ServiceExtended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
 	for _, v := range l.services {
-		r = append(r, Service3Extended{Service: v.service})
+		r = append(r, ServiceExtended{Service: v.service})
 	}
 
 	return
 }
 
-func (l *layer3) Service(s Service3) (r Service3Extended, e error) {
+func (l *layer3) Service(s Service) (r ServiceExtended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -193,7 +199,7 @@ func (l *layer3) Service(s Service3) (r Service3Extended, e error) {
 	return service.extend(), nil
 }
 
-func (l *layer3) CreateService(s Service3) error {
+func (l *layer3) CreateService(s Service) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -204,7 +210,7 @@ func (l *layer3) CreateService(s Service3) error {
 	return l.createService(s)
 }
 
-func (l *layer3) UpdateService(s Service3) error {
+func (l *layer3) UpdateService(s Service) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -217,7 +223,7 @@ func (l *layer3) UpdateService(s Service3) error {
 	return service.update(s)
 }
 
-func (l *layer3) RemoveService(s Service3) error {
+func (l *layer3) RemoveService(s Service) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -230,7 +236,7 @@ func (l *layer3) RemoveService(s Service3) error {
 	return service.remove()
 }
 
-func (l *layer3) Destinations(s Service3) (r []Destination3Extended, e error) {
+func (l *layer3) Destinations(s Service) (r []DestinationExtended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -243,7 +249,7 @@ func (l *layer3) Destinations(s Service3) (r []Destination3Extended, e error) {
 	return service.destinations()
 }
 
-func (l *layer3) CreateDestination(s Service3, d Destination3) error {
+func (l *layer3) CreateDestination(s Service, d Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -256,7 +262,7 @@ func (l *layer3) CreateDestination(s Service3, d Destination3) error {
 	return service.createDestination(d)
 }
 
-func (l *layer3) UpdateDestination(s Service3, d Destination3) error {
+func (l *layer3) UpdateDestination(s Service, d Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -269,7 +275,7 @@ func (l *layer3) UpdateDestination(s Service3, d Destination3) error {
 	return service.updateDestination(d)
 }
 
-func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
+func (l *layer3) RemoveDestination(s Service, d Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -282,7 +288,7 @@ func (l *layer3) RemoveDestination(s Service3, d Destination3) error {
 	return service.removeDestination(d)
 }
 
-func (l *layer3) SetService(s Service3, ds ...Destination3) error {
+func (l *layer3) SetService(s Service, ds ...Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -305,11 +311,11 @@ func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return l.nat(vip, rip)
 }
 
-func (d *Destination3) is4() bool {
+func (d *Destination) is4() bool {
 	return d.Address.Is4()
 }
 
-func (d *Destination3) as16() (r addr16) {
+func (d *Destination) as16() (r addr16) {
 	if d.is4() {
 		ip := d.Address.As4()
 		copy(r[12:], ip[:])
@@ -319,7 +325,7 @@ func (d *Destination3) as16() (r addr16) {
 	return
 }
 
-func (d Destination3) check() error {
+func (d Destination) check() error {
 
 	if !d.Address.IsValid() || d.Address.IsUnspecified() || d.Address.IsMulticast() || d.Address.IsLoopback() {
 		return fmt.Errorf("Bad destination address: %s", d.Address)

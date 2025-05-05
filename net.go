@@ -27,41 +27,6 @@ import (
 	"regexp"
 )
 
-type b4 = [4]byte
-type b6 = [6]byte
-
-const _b4s = "%d.%d.%d.%d"
-const _b6s = "%02x:%02x:%02x:%02x:%02x:%02x"
-
-func b4s(i b4) string { return fmt.Sprintf(_b4s, i[0], i[1], i[2], i[3]) }
-func b6s(i b6) string { return fmt.Sprintf(_b6s, i[0], i[1], i[2], i[3], i[4], i[5]) }
-
-type mac [6]byte
-type ip4 [4]byte
-
-func (i *ip4) String() string { return b4s(*i) }
-func (m *mac) String() string { return b6s(*m) }
-
-type Protocol = uint8
-
-const (
-	TCP Protocol = 0x06
-	UDP Protocol = 0x11
-)
-
-type MAC = mac
-
-type Info struct {
-	Packets   uint64 // Total number of packets received by XDP hooks
-	Octets    uint64 // Total number of bytes received by XDP hooks
-	Flows     uint64 // Total number of new flow entries created in hash tables
-	Latency   uint64 // Average measurable latency for XDP hook
-	Dropped   uint64 // Number of non-conforming packets dropped
-	Blocked   uint64 // Number of packets dropped by prefix
-	NotQueued uint64 // Failed attempts to queue flow state updates to userspace
-	TooBig    uint64 // ICMP destination unreachable/fragmentation needed
-}
-
 func htons(p uint16) [2]byte {
 	var hl [2]byte
 	hl[0] = byte(p >> 8)
