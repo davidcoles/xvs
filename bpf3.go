@@ -18,6 +18,10 @@
 
 package xvs
 
+import "unsafe"
+
+type uP = unsafe.Pointer
+
 type bpf_vrpp3 struct {
 	vaddr    addr16 // virtual service IP
 	raddr    addr16 // real server IP
