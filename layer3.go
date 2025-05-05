@@ -228,9 +228,7 @@ func (l *layer3) updateSettings() {
 		all[i] = l.settings
 	}
 
-	if !l.killswitch {
-		l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
-	}
+	l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
 func newClient(interfaces ...string) (*layer3, error) {
@@ -398,7 +396,9 @@ func (l *layer3) background() error {
 		case <-sessions.C:
 			l.mutex.Lock()
 			l.settings.era++
-			l.updateSettings()
+			if !l.killswitch {
+				l.updateSettings() // reset the watchdog, but not if the killswitch is set
+			}
 			for _, s := range l.services {
 				s.readSessions()
 			}

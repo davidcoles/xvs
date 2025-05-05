@@ -88,7 +88,7 @@ func main() {
 		}
 	}
 
-	err = client.SetConfig(xvs.Config{VLAN4: vlan4, VLAN6: vlan6})
+	err = client.SetConfig(xvs.Config{VLANs4: vlan4, VLANs6: vlan6})
 
 	if err != nil {
 		log.Fatal(err)

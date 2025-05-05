@@ -12,7 +12,17 @@ balancer with an eBPF data plane that is loaded into the kernel, and a
 supporting Go library to configure the balancer through the XDP
 API.
 
-IPv6 and layer 3 tunnels are now supported.
+IPv6 and layer 3 tunnels are now supported! Supported tunnel types
+are: IP-in-IP (all flavours), GRE, FOU and GUE. The NAT system which
+can be used to perform healthchecks against the virtual IP address on
+backend servers is no longer needs the client to use the network
+namespace, which makes life significantly simpler.
+
+There is no requirement to use the same address family for virtual and
+real server addresses.
+
+Some facilities (eg.: shared flow queues) have not been implemented in
+the new code yet, but will be added shortly.
 
 A compiled BPF ELF object file is committed to this repository (tagged
 versions) and is accessed via Go's embed feature, which means that it

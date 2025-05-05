@@ -31,6 +31,8 @@ import (
 type newns struct {
 	a, b nic
 	ns   string
+	ip4  netip.Addr
+	ip6  netip.Addr
 }
 
 //func (n *newns) namespace() string { return n.ns }
@@ -70,6 +72,9 @@ func (n *newns) addr(idx uint16, ipv6 bool) (r netip.Addr) {
 func (n *newns) ipv4() [4]byte  { return n.b.ip4 }
 func (n *newns) ipv6() [16]byte { return n.b.ip6 }
 
+func (n *newns) address4() netip.Addr { return netip.MustParseAddr("255.255.255.253") } // FIXME
+func (n *newns) address6() netip.Addr { return netip.MustParseAddr("fefe::ffff:fffd") } //FIXME
+
 func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 
 	const IPA = "fefe::ffff:fffd"
@@ -87,6 +92,8 @@ func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 
 	copy(n.a.ip4[:], n.a.ip6[12:])
 	copy(n.b.ip4[:], n.b.ip6[12:])
+
+	//return &n, nil
 
 	if err := n.create_pair(n.a.nic, n.b.nic); err != nil {
 		return nil, err

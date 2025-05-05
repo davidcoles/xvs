@@ -64,6 +64,11 @@ type Client3 interface {
 
 	SetService(Service3, ...Destination3) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
+	Addresses() (netip.Addr, netip.Addr) // temporary
+}
+
+func (l *layer3) Addresses() (netip.Addr, netip.Addr) {
+	return l.netns.address4(), l.netns.address6()
 }
 
 func (s *Service3) key() threetuple {
