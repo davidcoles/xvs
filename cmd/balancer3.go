@@ -154,8 +154,6 @@ func main() {
 		}
 	}
 
-	client.Info()
-
 	if *remove != 0 {
 
 		for n := uint(0); n < *remove; n++ {
@@ -187,10 +185,6 @@ func main() {
 				client.RemoveService(service)
 			}
 		}
-
-		//client.Clean()
-		client.Info()
-
 	}
 
 	fmt.Println("OK")

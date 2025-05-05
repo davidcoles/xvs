@@ -45,12 +45,12 @@ const __u8 F_NOT_LOCAL = 0x80;
 
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
-const __u64 TIMEOUT = 300; // seconds
-//const __u64 TIMEOUT = 120; // seconds
+//const __u64 TIMEOUT = 300; // seconds
+const __u64 TIMEOUT = 120; // seconds
 
 //const __u8 F_STICKY = 0x01;
 
-const __u8 F_CHECKSUM_DISABLE = 0x01;
+//const __u8 F_CHECKSUM_DISABLE = 0x01;
 
 // https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
@@ -176,11 +176,11 @@ struct {
 
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, fourtuple_t);
     __type(value, flow_t);
     __uint(max_entries, FLOW_STATE_SIZE);
-} reference SEC(".maps");
+} shared SEC(".maps");
 
 /**********************************************************************/
 

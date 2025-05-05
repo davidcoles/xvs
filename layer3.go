@@ -49,6 +49,14 @@ import (
 //go:embed bpf/layer3.o.gz
 var layer3_gz []byte
 
+// startup options:
+// bpf file
+// max flows
+// native
+// interfaces
+// vlans
+// routing
+
 func layer3_o() ([]byte, error) {
 	z, err := gzip.NewReader(bytes.NewReader(layer3_gz))
 	if err != nil {
@@ -64,8 +72,6 @@ const (
 	FOU  TunnelType = bpf.T_FOU
 	GUE  TunnelType = bpf.T_GUE
 )
-
-var ZERO uint32 = 0
 
 const F_NOT_LOCAL = 0x80
 
@@ -108,6 +114,8 @@ type layer3 struct {
 	netinfo  *netinfo
 	netns    *newns
 	maps     maps
+
+	killswitch bool
 }
 
 type maps struct {
@@ -184,7 +192,7 @@ func (l *layer3) tunnel(d Destination3) (bpf_tunnel, ninfo) {
 	ni, err := l.netinfo.info(d.Address)
 
 	if err != nil || ni.vlanid == 0 {
-		log.Fatal("FWD ERROR", err)
+		//log.Fatal("FWD ERROR", err)
 		return bpf_tunnel{}, ninfo{}
 	}
 
@@ -213,28 +221,34 @@ func (l *layer3) tunnel(d Destination3) (bpf_tunnel, ninfo) {
 }
 
 func (l *layer3) updateSettings() {
+	var ZERO uint32 = 0
 
 	all := make([]bpf_settings, xdp.BpfNumPossibleCpus())
 	for i, _ := range all {
 		all[i] = l.settings
 	}
 
-	l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
+	if !l.killswitch {
+		l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
+	}
 }
 
 func newClient(interfaces ...string) (*layer3, error) {
+	return newClientWithOptions(Options{}, interfaces...)
+}
 
-	ni := &netinfo{}
+func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err error) {
 
-	var native bool
+	if len(options.BPF) == 0 {
 
-	bpf_file, err := layer3_o()
+		options.BPF, err = layer3_o()
 
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	x, err := xdp.LoadBpfFile(bpf_file)
+	x, err := xdp.LoadBpfFile(options.BPF)
 
 	if err != nil {
 		return nil, err
@@ -270,23 +284,27 @@ func newClient(interfaces ...string) (*layer3, error) {
 		active: 1,
 	}
 
+	config := &Config{VLANs4: options.VLANs4, VLANs6: options.VLANs6}
+
 	l3 := &layer3{
-		config:   Config{},
-		services: map[threetuple]*service3{},
-		settings: settings,
-		natmap:   natmap6{},
-		netinfo:  ni,
-		netns:    ns,
-		maps:     m,
+		config:     config.copy(),
+		services:   map[threetuple]*service3{},
+		settings:   settings,
+		natmap:     natmap6{},
+		netinfo:    &netinfo{},
+		netns:      ns,
+		maps:       m,
+		killswitch: options.KillSwitch,
 	}
 
-	err = l3.initialiseFlows(x)
+	err = l3.initialiseFlows(x, options.Flows)
 
 	if err != nil {
 		return nil, err
 	}
 
 	l3.updateSettings()
+	l3.reconfig()
 
 	var nics []uint32
 
@@ -310,7 +328,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 	}
 
 	for _, nic := range nics {
-		if err = x.LoadBpfSection("xdp_fwd_func", native, nic); err != nil {
+		if err = x.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
 			return nil, err
 		}
 	}
@@ -320,7 +338,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 	return l3, nil
 }
 
-func (l *layer3) initialiseFlows(x *xdp.XDP) error {
+func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
 	var flow_size uint32 = 72
 	var ft_size uint32 = 36
 
@@ -330,31 +348,29 @@ func (l *layer3) initialiseFlows(x *xdp.XDP) error {
 		return err
 	}
 
-	reference, err := x.FindMap("reference", 4, int(flow_size))
+	shared, err := x.FindMap("shared", int(ft_size), int(flow_size))
 
 	if err != nil {
 		return err
 	}
 
-	// flow_share map has the same size as the inner map, so use this as a reference
-	max_entries := reference.MaxEntries()
+	// default max entries to be the same as the shared map
+	max_entries := shared.MaxEntries()
 
 	if max_entries < 0 {
 		return fmt.Errorf("Error looking up size of the flow state map")
 	}
 
-	//if c.MaxFlows > 0 {
-	//	max_entries = int(c.MaxFlows)
-	//	}
+	if max > 0 {
+		max_entries = int(max)
+	}
 
-	//max_entries := 1000
 	max_cpu := flows_tcp.MaxEntries()
 
 	if max_cpu < 0 {
 		return fmt.Errorf("Error looking up size of the CPU flow state map")
 	}
 
-	//num_cpu := uint32(runtime.NumCPU())
 	num_cpu := uint32(xdp.BpfNumPossibleCpus())
 
 	if num_cpu > uint32(max_cpu) {
@@ -433,7 +449,7 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 
 func (l *layer3) reconfig() {
 
-	l.vlans(l.config.VLAN4, l.config.VLAN6)
+	l.vlans(l.config.VLANs4, l.config.VLANs6)
 
 	for _, s := range l.services {
 		s.recalc()
@@ -441,8 +457,6 @@ func (l *layer3) reconfig() {
 }
 
 func (l *layer3) clean() {
-
-	fmt.Println("CLEAN")
 
 	clean_map := func(m xdp.Map, a map[netip.Addr]bool) {
 		b := map[addr16]bool{}

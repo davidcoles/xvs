@@ -21,6 +21,10 @@ enum {
 };
 
 enum {
+    F_CHECKSUM_DISABLE = 0x01,
+};
+
+enum {
       VETH_ID = 4095,
 };
 

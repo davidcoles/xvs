@@ -36,6 +36,7 @@ type dest struct {
 
 type service3 struct {
 	dests    map[netip.Addr]Destination3
+	mac      map[netip.Addr]mac
 	service  Service3
 	layer3   *layer3
 	sessions map[netip.Addr]uint64
@@ -190,7 +191,7 @@ func (s *service3) stats(d netip.Addr) Stats3 {
 
 func (s *service3) destinations() (r []Destination3Extended, e error) {
 	for a, d := range s.dests {
-		r = append(r, Destination3Extended{Destination: d, Stats: s.stats(a)})
+		r = append(r, Destination3Extended{Destination: d, Stats: s.stats(a), MAC: s.mac[a]})
 	}
 	return
 }
@@ -213,12 +214,18 @@ func (s *service3) vrpp(d netip.Addr) bpf_vrpp3 {
 func (s *service3) recalc() {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
+	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
 		di, ni := s.layer3.tunnel(d)
 		reals[k] = dest{tunnel: di, netinfo: ni, weight: d.Weight}
+		if di.flags&F_NOT_LOCAL == 0 {
+			macs[k] = di.h_dest
+		}
 		s.debug("FWD", ni, di.flags)
 	}
+
+	s.mac = macs
 
 	key := s.key()
 	fwd := s.forwarding(reals)
@@ -227,6 +234,7 @@ func (s *service3) recalc() {
 
 	s.nat(reals)
 
+	var ZERO uint32 = 0
 	v16 := as16(s.service.Address)
 	s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
 }

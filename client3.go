@@ -32,8 +32,18 @@ const (
 )
 
 const (
-	TunnelEncapNoChecksums TunnelFlags = 0x01 // FIXME
+	TunnelEncapNoChecksums TunnelFlags = 0x01 // FIXME - add check?
 )
+
+type Options struct {
+	Native bool
+	BPF    []byte
+	Flows  uint32
+	VLANs4 map[uint16]netip.Prefix
+	VLANs6 map[uint16]netip.Prefix
+	//Bonded    bool
+	KillSwitch bool
+}
 
 type Client3 interface {
 	Info() (Info, error)
@@ -91,15 +101,36 @@ type Destination3 struct {
 type Destination3Extended struct {
 	Destination Destination3
 	Stats       Stats3
+	MAC         MAC
 }
 
 type Config struct {
-	VLAN4 map[uint16]netip.Prefix
-	VLAN6 map[uint16]netip.Prefix
+	VLANs4 map[uint16]netip.Prefix
+	VLANs6 map[uint16]netip.Prefix
+}
+
+func (c *Config) copy() (r Config) {
+	r.VLANs4 = make(map[uint16]netip.Prefix, len(c.VLANs4))
+	r.VLANs6 = make(map[uint16]netip.Prefix, len(c.VLANs6))
+	for k, v := range c.VLANs4 {
+		if v.Addr().Is4() {
+			r.VLANs4[k] = v
+		}
+	}
+	for k, v := range c.VLANs6 {
+		if v.Addr().Is6() {
+			r.VLANs6[k] = v
+		}
+	}
+	return
 }
 
 func New(interfaces ...string) (Client3, error) {
 	return newClient(interfaces...)
+}
+
+func NewWithOptions(options Options, interfaces ...string) (Client3, error) {
+	return newClientWithOptions(options, interfaces...)
 }
 
 func (l *layer3) Info() (Info, error) {
