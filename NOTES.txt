@@ -6,6 +6,7 @@
 // On multiple interfaces with a single VLAN then TX always (bond)
 // On multiple interfaces then REDIRECT always
 
+// https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 https://www.etb-tech.com/netronome-agilio-cx-40gb-qsfp-dual-port-low-profile-network-card-pcbd0097-005-nic00476.html
 

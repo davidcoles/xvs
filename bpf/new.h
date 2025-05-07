@@ -916,3 +916,83 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     return 0;
 }
+
+
+
+
+
+
+
+
+
+static __always_inline
+int send_l2(struct xdp_md *ctx, tunnel_t *t)
+{
+    return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+{
+    struct pointers p = {};
+
+    if (is_addr4(&(t->daddr)))
+	return push_xin4(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
+
+    return push_xin6(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
+    
+    return push_gre6(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+int send_fou(struct xdp_md *ctx, tunnel_t *t)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
+
+    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
+}
+
+static __always_inline
+int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+{
+    if (is_addr4(&(t->daddr)))
+	return push_gue4(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
+    
+    return push_gue6(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
+}
+
+static __always_inline
+__u16 l3_hash(fourtuple_t *ft)
+{
+    return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
+}
+
+static __always_inline
+__u16 l4_hash(fourtuple_t *ft)
+{
+    return sdbm((unsigned char *) ft, sizeof(fourtuple_t));
+}
+
+static __always_inline
+__u16 l4_hash_(struct l4 *ft)
+{
+    return sdbm((unsigned char *) ft, sizeof(*ft));
+}
+
+static __always_inline
+int is_ipv4_addr(struct addr a) {
+    return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
+}
+
+//static __always_inline
+int is_ipv4_addr_p(struct addr *a) {
+    return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
+}

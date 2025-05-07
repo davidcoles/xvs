@@ -49,13 +49,7 @@ const __u64 TIMEOUT = 300; // seconds
 #define EXT_FRAG 253
 #define EXT_ICMP 254
 #define EXT_VETH 255
-//const __u64 TIMEOUT = 120; // seconds
 
-//const __u8 F_STICKY = 0x01;
-
-//const __u8 F_CHECKSUM_DISABLE = 0x01;
-
-// https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
 
 enum lookup_result {
 		    NOT_FOUND = 0,
@@ -75,10 +69,6 @@ struct addr4 {
     __be32 pad3;
     __be32 addr;
 };
-
-//struct addr6 {
-//    __u8 addr[16];
-//};
 
 struct addr {
     union {
@@ -129,20 +119,37 @@ int is_addr4(struct addr *a) {
 
 #include "new.h"
 
-
-struct vip_rip {
-    tunnel_t tunnel;
-    addr_t vip;
-    addr_t ext;
+struct five_tuple {
+    addr_t saddr;
+    addr_t daddr;
+    __be16 sport;
+    __be16 dport;
+    __u8 protocol;
 };
+
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 4096);
+} redirect_map4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 4096);
+} redirect_map6 SEC(".maps");
+
+
+#include "nat.h"
+
 
 struct servicekey {
     addr_t addr;
     __be16 port;
     __u16 proto;
 };
-
-typedef __u8 mac[6];
 
 struct service {
     tunnel_t dest[256];
@@ -225,38 +232,6 @@ struct {
 } stats SEC(".maps");
 
 
-/**********************************************************************/
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, addr_t); // nat
-    __type(value, struct vip_rip); // vip/rip    
-    __uint(max_entries, 4096);
-} nat_to_vip_rip SEC(".maps");
-
-struct five_tuple {
-    addr_t saddr;
-    addr_t daddr;
-    __be16 sport;
-    __be16 dport;
-    __u8 protocol;
-};
-
-struct addr_port_time {
-    __u64 time;
-    addr_t nat;
-    addr_t src;
-    __be16 port;
-    __be16 pad[3];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct five_tuple);
-    __type(value, struct addr_port_time);
-    __uint(max_entries, 65556);
-} reply SEC(".maps");
-
 
 /**********************************************************************/
 
@@ -280,8 +255,6 @@ struct {
     __type(value, struct settings);
     __uint(max_entries, 1);
 } settings SEC(".maps");
-
-
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -315,132 +288,44 @@ struct {
     __uint(max_entries, 4096);
 } vlaninfo SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_DEVMAP);
-    __type(key, __u32);
-    __type(value, __u32);
-    __uint(max_entries, 4096);
-} redirect_map4 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_DEVMAP);
-    __type(key, __u32);
-    __type(value, __u32);
-    __uint(max_entries, 4096);
-} redirect_map6 SEC(".maps");
-
 /**********************************************************************/
 
 
 static __always_inline
-int send_l2(struct xdp_md *ctx, tunnel_t *t)
+flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft)
 {
-    return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    struct pointers p = {};
-
-    if (is_addr4(&(t->daddr)))
-	return push_xin4(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_xin6(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_gre6(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int send_fou(struct xdp_md *ctx, tunnel_t *t)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
-}
-
-static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_gue6(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-__u16 l3_hash(fourtuple_t *ft)
-{
-    return sdbm((unsigned char *) ft, sizeof(addr_t) * 2);
-}
-
-static __always_inline
-__u16 l4_hash(fourtuple_t *ft)
-{
-    return sdbm((unsigned char *) ft, sizeof(fourtuple_t));
-}
-
-static __always_inline
-__u16 l4_hash_(struct l4 *ft)
-{
-    return sdbm((unsigned char *) ft, sizeof(*ft));
-}
-
-static __always_inline
-int is_ipv4_addr(struct addr a) {
-    return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
-}
-
-//static __always_inline
-int is_ipv4_addr_p(struct addr *a) {
-    return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
-}
-
-static __always_inline
-flow_t *lookup_tcp_flow(void *flow_state, fourtuple_t *ft)
-{
-    if (!flow_state)
+    if (!flows)
 	return NULL;
     
-    flow_t *flow = bpf_map_lookup_elem(flow_state, ft);
+    flow_t *flow = bpf_map_lookup_elem(flows, ft);
 
     if (!flow)
 	return NULL;
 
     __u64 time = bpf_ktime_get_ns();
-    __u64 time_s = time / SECOND_NS;
 
-    if (flow->time + 30 < time_s)
+    if (flow->time + (30 * SECOND_NS) < time)
     	return NULL;
 
-    flow->time = time_s;
+    flow->time = time;
     
     return flow;
 }
 
-//static __always_inline
-flow_t *lookup_udp_flow(void *flow_state, fourtuple_t *ft)
+static __always_inline
+flow_t *lookup_udp_flow(void *flows, fourtuple_t *ft)
 {
-    if (!flow_state)
+    if (!flows)
 	return NULL;
     
-    flow_t *flow = bpf_map_lookup_elem(flow_state, ft);
+    flow_t *flow = bpf_map_lookup_elem(flows, ft);
 
     if (!flow)
 	return NULL;
 
     __u64 time = bpf_ktime_get_ns();
-    __u64 time_s = time / SECOND_NS;
 
-    if (flow->time + 120 < time_s)
+    if (flow->time + (120 * SECOND_NS) < time)
     	return NULL;
 
     return flow;
@@ -453,9 +338,7 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
 	return -1;
 
     __u64 time = bpf_ktime_get_ns();
-    __u64 time_s = time / SECOND_NS;
-    
-    flow_t flow = { .tunnel = *t, time = time_s, .era = era };
+    flow_t flow = { .tunnel = *t, .time = time, .era = era };
     bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
     
     return 0;
@@ -874,471 +757,6 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
 
 
 
-static __always_inline
-int xdp_request_v6(struct xdp_md *ctx) {
-   
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-    
-    struct ethhdr *eth = data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IPV6))
-       	return XDP_PASS;
-    
-    struct ip6_hdr *ip6 = (void *)(eth + 1);
-    
-    if (ip6 + 1 > data_end)
-        return XDP_DROP;
-    
-
-    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
-        return XDP_DROP;
-    
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
-	//return XDP_DROP;
-	return XDP_PASS;
-
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
-    	return XDP_DROP;
-    
-
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-
-    addr_t src = { .addr6 = ip6->ip6_src };
-    addr_t nat = { .addr6 = ip6->ip6_dst };
-    struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
-    
-    if (!vip_rip)
-        return XDP_PASS;
-
-    __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
-    addr_t vip = vip_rip->vip;
-    addr_t ext = vip_rip->ext;
-    __be16 eph = 0;
-    __be16 svc = 0;
-
-    struct l4 ft = { .saddr = src.addr4.addr, .daddr = nat.addr4.addr, .sport = eph, .dport = svc };
-    struct tunnel *destinfo = (void *) vip_rip;
-
-    tunnel_t t = *destinfo;
-    t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
-
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
-    
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp = (void *) (ip6 + 1);
-	if (tcp + 1 > data_end)
-	    return XDP_DROP;
-	eph = tcp->source;
-	svc = tcp->dest;
-	break;
-    case IPPROTO_UDP:
-	udp = (void *) (ip6 + 1);
-	if (udp + 1 > data_end)
-	    return XDP_DROP;
-	eph = udp->source;
-	svc = udp->dest;
-	break;
-    default:
-	return XDP_DROP;
-    }
-    
-    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
-    struct l4v6 n = o;
-    
-    n.saddr = ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
-    n.daddr = ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
-    
-     switch(proto) {
-     case IPPROTO_TCP:
-	 tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
-	 break;
-     case IPPROTO_UDP:
-	 udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
-	 break;
-     }
-
-    int action = XDP_DROP;
-
-    switch (t.method) {
-    case T_NONE: action = send_l2(ctx, &t); break;
-    case T_IPIP: action = send_ipip(ctx, &t, 1); break;
-    case T_GRE:  action = send_gre(ctx, &t, 1); break;
-    case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_GUE:  action = send_gue(ctx, &t, 1); break;
-    }
-
-    if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
-        return XDP_DROP;
-
-
-    // to match returning packet
-    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
-    rep.saddr = vip; // ???? upsets verifier if in declaration above
-    rep.daddr = ext; // ???? upsets verifier if in declaration above
-
-    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
-    map.nat = nat; // ??? upsets verifier if in declaration above
-    map.src = src; // ??? upsets verifier if in declaration above    
-
-    bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
-    
-    return is_ipv4_addr(t.daddr) ?
-	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
-	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
-}
-
-static __always_inline
-int xdp_request_v4(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-
-    struct ethhdr *eth = data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-	return XDP_PASS;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    
-    if (ip + 1 > data_end)
-	return XDP_DROP;
-
-    if (ip->version != 4)
-	return XDP_DROP;
-    
-    if (ip->ihl != 5)
-        return XDP_DROP;
-    
-    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
-    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-        return XDP_DROP;
-
-    if (ip->ttl <= 1)
-	return XDP_DROP;
-
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-
-    
-    addr_t src = { .addr4.addr = ip->saddr };
-    addr_t nat = { .addr4.addr = ip->daddr };
-    struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
-
-    if (!vip_rip)
-    	return XDP_PASS;
-    
-    __u8 proto = ip->protocol;
-    addr_t vip = vip_rip->vip;
-    addr_t ext = vip_rip->ext;
-    __be16 eph = 0;
-    __be16 svc = 0;
-
-    struct l4 ft = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };
-    struct tunnel *destinfo = (void *) vip_rip;
-    
-    tunnel_t t = *destinfo;
-    t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
-
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
-
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp = (void *)(ip + 1);
-	if (tcp + 1 > data_end)
-	    return XDP_DROP;
-	eph = tcp->source;
-	svc = tcp->dest;
-	break;
-    case IPPROTO_UDP:
-	udp = (void *)(ip + 1);
-	if (udp + 1 > data_end)
-	    return XDP_DROP;
-	eph = udp->source;
-	svc = udp->dest;
-	break;
-    default:
-	return XDP_DROP;
-    }
-
-    int overhead = 0;
-    int mtu = MTU;
-
-    switch (t.method) {
-    case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
-    case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
-    case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
-    case T_IPIP: overhead = sizeof(struct iphdr);  break;
-    case T_NONE: break;
-    default: return XDP_DROP;
-    }
-
-    if ((data_end - (void *) ip) + overhead > mtu) {
-	return XDP_DROP;
-    }
-
-    /*
-    if ((data_end - (void *) ip) + overhead > mtu) {
-	bpf_printk("IPv4 FRAG_NEEDED\n");
-	__be32 internal = vlaninfo->source_ipv4;
-	return send_frag_needed4(ctx, internal, mtu - overhead);
-    }
-    */
-
-    // save l3/l4 parameters for checksum diffs
-    struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr, .sport = eph, .dport = svc };    
-    struct l4 n = o;
-    struct iphdr old = *ip;
-    
-    // update l3 addresses
-    n.saddr = ip->saddr = ext.addr4.addr;
-    n.daddr = ip->daddr = vip.addr4.addr;
-
-    // calculate new l3 checksum
-    ip->check = ip4_csum_diff(ip, &old);
-
-    // calculate new l4 checksum
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp->check = l4_csum_diff(&n, &o, tcp->check);
-	break;
-    case IPPROTO_UDP:
-	udp->check = l4_csum_diff(&n, &o, udp->check);
-	break;
-    }
-
-    
-    /**********************************************************************/
-
-    int is_ipv6 = 0;
-    int action = XDP_DROP;
-    
-    switch (t.method) {
-    case T_NONE: action = send_l2(ctx, &t); break;
-    case T_IPIP: action = send_ipip(ctx, &t, is_ipv6); break;
-    case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
-    case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
-    }
-
-    if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
-	return XDP_DROP;
-
-    // to match returning packet
-    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
-    rep.saddr = vip; // ???? upsets verifier if in declaration above
-    rep.daddr = ext; // ???? upsets verifier if in declaration above
-    
-    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
-    map.nat = nat; // ??? upsets verifier if in declaration above
-    map.src = src; // ??? upsets verifier if in declaration above    
-    
-    bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
-    
-    return is_ipv4_addr(t.daddr) ?
-        bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
-        bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
-}
-
-static __always_inline
-int xdp_reply_v6(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-    
-    struct ethhdr *eth = data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IPV6))
-       	return XDP_PASS;
-    
-    struct ip6_hdr *ip6 = (void *)(eth + 1);
-    
-    if (ip6 + 1 > data_end)
-        return XDP_DROP;
-    
-    if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
-        return XDP_DROP;
-    
-    if(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
-        //return XDP_PASS;
-	return XDP_DROP;
-    }
-
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
-	return XDP_DROP;
-
-        
-    __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
-    addr_t saddr = { .addr6 = ip6->ip6_src };
-    addr_t daddr = { .addr6 = ip6->ip6_dst };    
-    
-    struct five_tuple rep = { .protocol = proto };
-    rep.saddr = saddr; // ??? upsets verifier if in declaration above
-    rep.daddr = daddr; // ??? upsets verifier if in declaration above
-
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
-	
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp = (void *) (ip6 + 1);
-	if (tcp + 1 > data_end)
-	    return XDP_DROP;
-	rep.sport = tcp->source;
-	rep.dport = tcp->dest;
-	break;
-    case IPPROTO_UDP:
-	udp = (void *) (ip6 + 1);
-	if (udp + 1 > data_end)
-	    return XDP_DROP;
-	rep.sport = udp->source;
-	rep.dport = udp->dest;
-	break;
-    default:
-	return XDP_DROP;
-    }
-
-    struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
-    
-    if (!match)
-	return XDP_DROP;
-    
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-
-    __u64 time = bpf_ktime_get_ns();
-    
-    if (time < match->time)
-	return XDP_DROP;
-    
-    if ((time - match->time) > (5 * SECOND_NS))
-	return XDP_DROP;
-
-    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = rep.sport, .dport = rep.dport };
-    struct l4v6 n = o;
-    
-    n.saddr = ip6->ip6_src = match->nat.addr6; // reply comes from the NAT addr
-    n.daddr = ip6->ip6_dst = match->src.addr6; // to the internal NETNS address
-    
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp->check = l4v6_csum_diff(&n, &o, tcp->check);
-	break;
-    case IPPROTO_UDP:
-	udp->check = l4v6_csum_diff(&n, &o, udp->check);
-	break;
-    }
-    
-    return XDP_PASS;
-}
-
-static __always_inline
-int xdp_reply_v4(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-	return XDP_DROP;
-    
-    struct iphdr *ip = (void *)(eth + 1);
-    
-    if (ip + 1 > data_end)
-	return XDP_DROP;
-        
-    if (ip->version != 4)
-        return XDP_DROP;
-    
-    if (ip->ihl != 5)
-        return XDP_DROP;
-    
-    if (ip->ttl <= 1)
-        return XDP_DROP;
-    
-    // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
-    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-        return XDP_DROP;
-    
-    __u8 proto = ip->protocol;
-    addr_t saddr = { .addr4.addr = ip->saddr };
-    addr_t daddr = { .addr4.addr = ip->daddr };    
-
-    struct five_tuple rep = { .protocol = proto };
-    rep.saddr = saddr; // ??? upsets verifier if in declaration above
-    rep.daddr = daddr; // ??? upsets verifier if in declaration above
-    
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;    
-
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp = (void *)(ip + 1);
-	if (tcp + 1 > data_end)
-	    return XDP_DROP;
-	rep.sport = tcp->source;
-	rep.dport = tcp->dest;
-	break;
-    case IPPROTO_UDP:
-	udp = (void *)(ip + 1);
-	if (udp + 1 > data_end)
-	    return XDP_DROP;
-	rep.sport = udp->source;
-	rep.dport = udp->dest;
-	break;
-    default:
-	return XDP_DROP;    
-    }
-
-    struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
-    
-    if (!match)
-	return XDP_DROP;
-    
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-    
-    struct l4 o = { .saddr = ip->saddr, .daddr = ip->daddr };
-    struct l4 n = o;
-    struct iphdr old = *ip;
-
-    __u64 time = bpf_ktime_get_ns();
-    
-    if (time < match->time)
-	return XDP_DROP;
-    
-    if ((time - match->time) > (5 * SECOND_NS))
-	return XDP_DROP;
-    
-    n.saddr = ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
-    n.daddr = ip->daddr = match->src.addr4.addr; // to the internal NETNS address
-    
-    ip->check = ip4_csum_diff(ip, &old);
-    
-    switch(proto) {
-    case IPPROTO_TCP:
-	tcp->check = l4_csum_diff(&n, &o, tcp->check);
-	break;
-    case IPPROTO_UDP:
-	udp->check = l4_csum_diff(&n, &o, udp->check);
-	break;
-    }
-    
-    return XDP_PASS;
-}
-
-
 
 SEC("xdp")
 int xdp_pass(struct xdp_md *ctx)
@@ -1350,7 +768,6 @@ SEC("xdp")
 int xdp_vethb(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
-    __u64 start_s = start / SECOND_NS;
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
 
@@ -1359,8 +776,8 @@ int xdp_vethb(struct xdp_md *ctx)
 
     // settings is a per-CPU map, so no concurrency issues
     if (s->watchdog == 0) {
-	s->watchdog = start_s;
-    } else if (s->watchdog + TIMEOUT < start_s) {
+	s->watchdog = start;
+    } else if (s->watchdog + (TIMEOUT * SECOND_NS) < start) {
 	return XDP_PASS;
     }
 
@@ -1421,11 +838,12 @@ int xdp_vetha(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
+
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
-    __u64 start_s = start / SECOND_NS;
+    //__u64 start_s = start / SECOND_NS;
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
     
@@ -1434,8 +852,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
     // settings is a per-CPU map, so no concurrency issues
     if (s->watchdog == 0) {
-	s->watchdog = start_s;
-    } else if (s->watchdog + TIMEOUT < start_s) {
+	s->watchdog = start;
+    } else if (s->watchdog + (TIMEOUT * SECOND_NS) < start) {
 	return XDP_PASS;
     }
 
