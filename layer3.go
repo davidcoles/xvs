@@ -280,7 +280,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 		return nil, err
 	}
 
-	ns, err := nat3(x, "xdp_vetha", "xdp_vethb") // checks
+	ns, err := nat3(x, "xdp_vetha_func", "xdp_vethb_func") // checks
 
 	if err != nil {
 		return nil, err
@@ -357,7 +357,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 }
 
 func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
-	var flow_size uint32 = 72
+	var flow_size uint32 = 80
 	var ft_size uint32 = 36
 
 	flows_tcp, err := x.FindMap("flows_tcp", 4, 4)

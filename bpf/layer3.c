@@ -46,6 +46,8 @@ const __u8 F_NOT_LOCAL = 0x80;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 300; // seconds
+
+#define EXT_CORRUPT 252
 #define EXT_FRAG 253
 #define EXT_ICMP 254
 #define EXT_VETH 255
@@ -61,6 +63,19 @@ enum lookup_result {
 		    LAYER3_FOU,
 		    LAYER3_IPIP,
 		    LAYER3_GUE,
+};
+
+enum fwd_action {
+    FWD_PASS = XDP_PASS,
+    FWD_DROP = XDP_DROP,
+    FWD_TX = XDP_TX,
+    FWD_REDIRECT = XDP_REDIRECT,
+    FWD_ABORTED = XDP_ABORTED,
+
+    FWD_ICMP = EXT_ICMP,
+    FWD_VETH = EXT_VETH,
+    FWD_FRAG = EXT_FRAG,
+    FWD_CORRUPT = EXT_CORRUPT,
 };
 
 struct addr4 {
@@ -159,11 +174,12 @@ typedef struct service service_t;
 
 struct flow {
     tunnel_t tunnel; // contains real IP of server, etc (64)
-    __u32 time; // +4 = 68
+    __u64 time; // +8 = 72
+    __u32 syn_seqn_reserved;
     __u8 finrst;
     __u8 era;
     __u8 pad;
-    __u8 version; // +4 = 72
+    __u8 version; // +8 = 80
 };
 typedef struct flow flow_t;
 
@@ -176,15 +192,18 @@ struct {
             values,
             struct {
                 __uint(type, BPF_MAP_TYPE_LRU_HASH);
-                __type(key, fourtuple_t);
-                // strangely, this doesn't work for all systems, but the following __u8 array workaround does:
+		// strangely, some struct names don't work for all systems, but the following __u8 array workaround does:
+                //__type(key, fourtuple_t);
 		//__type(value, flow_t);
+                __type(key, __u8[sizeof(fourtuple_t)]);
                 __type(value, __u8[sizeof(flow_t)]);
                 __uint(max_entries, FLOW_STATE_SIZE);
             });
 } flows_tcp SEC(".maps");
 
-
+// eventually, track flow for ~30s, reselect backend, and time flow
+// out after ~120s - allows for breaking tie to a down server, whilst
+// getting a rough idea about concurrent users
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, fourtuple_t);
@@ -198,6 +217,12 @@ struct {
     __type(value, flow_t);
     __uint(max_entries, FLOW_STATE_SIZE);
 } shared SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u8[sizeof(fourtuple_t) + sizeof(flow_t)]);
+    __uint(max_entries, FLOW_QUEUE_SIZE);
+} flow_queue SEC(".maps");
 
 /**********************************************************************/
 
@@ -290,24 +315,57 @@ struct {
 
 /**********************************************************************/
 
+/*
+
+  assumes some method of screening out bogus SYN/ACK - anti DDoS box which sees both legs of the conversation
+
+  
+  if existing flow and SYN received:
+
+  if flow older than 60s - drop old flow. Don't store SYN
+
+  if live flow then store sequence number in flow but return NULL - new b/e lookup don't store SYN flows, so won't get overwritten
+
+  when next packet comes in flow is found: compare seqn - if correct then delete flow, same backend will the chosen
+
+  if incorrect then continue regular flow
+  
+ */
 
 static __always_inline
-flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft)
+flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
 {
     if (!flows)
 	return NULL;
+
+    if (syn) {
+	bpf_map_delete_elem(flows, ft);
+	return NULL;
+    }
     
     flow_t *flow = bpf_map_lookup_elem(flows, ft);
-
+    
     if (!flow)
 	return NULL;
 
     __u64 time = bpf_ktime_get_ns();
 
-    if (flow->time + (30 * SECOND_NS) < time)
+    if (flow->time + (90 * SECOND_NS) < time)
     	return NULL;
 
+    if (flow->time + (60 * SECOND_NS) > time)
+	return flow;
+
     flow->time = time;
+
+    struct flow_queue_entry {
+	fourtuple_t ft;
+	flow_t flow;
+    } flow_queue_entry = { .ft = *ft, .flow = *flow };
+
+    int r = bpf_map_push_elem(&flow_queue, &flow_queue_entry, 0);
+
+    bpf_printk("FQE %d", r);
     
     return flow;
 }
@@ -340,7 +398,7 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
     __u64 time = bpf_ktime_get_ns();
     flow_t flow = { .tunnel = *t, .time = time, .era = era };
     bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
-    
+
     return 0;
 }
 
@@ -364,6 +422,7 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     vr.protocol |= era%2 ? 0xff00 : 0x0000;
     __s64 *concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr);
 
+    // we don't get SYNs any more - they will delete a session instead
     if (tcp->syn == 1)
         flow->finrst = 0;
     
@@ -397,7 +456,6 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     }
 }
 
-
 static __always_inline
 enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u8 era)
 {
@@ -405,9 +463,9 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
     
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if (metadata.syn)
-	    break;
-	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft))) {
+	//if (metadata.syn)
+	//    break;
+	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata.syn))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
 	    tcp_concurrent(vrpp, &metadata, flow, era);
 	}
@@ -417,6 +475,7 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
 	flow = lookup_udp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
 	break;
     }
+
     
     if (flow) {
 	flow->era = era;
@@ -463,7 +522,8 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
     counters->packets++;
     counters->octets += metadata.octets;
 
-    if (!flow) {
+    // don't store a flow with a SYN - should stop SYN floods from wiping out the LRU hash
+    if (!flow && !metadata.syn) {
 	counters->flows++;
 	switch(ft->proto) {
 	case IPPROTO_TCP:
@@ -664,9 +724,8 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 }
 
 static __always_inline
-int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
+int xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
 {
-
     int mtu = MTU;
     int overhead = 0;
     enum lookup_result result = NOT_A_VIP;
@@ -674,13 +733,11 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
 	
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
-    //int ingress    = ctx->ingress_ifindex;
-    //int octets = data_end - data;
 
     struct ethhdr *eth = data;
     
     if (eth + 1 > data_end)
-        return XDP_DROP;
+        return FWD_CORRUPT;
     
     __be16 next_proto = eth->h_proto;
     void *next_header = eth + 1;
@@ -688,11 +745,11 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
     struct vlan_hdr *vlan = NULL;
     
     if (next_proto == bpf_htons(ETH_P_8021Q)) {
-	return XDP_PASS; // not yet fully implmented
+	return FWD_PASS; // FIXME - not yet fully implmented
 	vlan = next_header;
 	
 	if (vlan + 1 > data_end)
-	    return XDP_DROP;
+	    return FWD_CORRUPT;
 	
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
@@ -710,17 +767,17 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
 	result = lookup4(ctx, next_header, ft, t, settings->era);
 	break;
     default:
-	return XDP_PASS;
+	return FWD_PASS;
     }
 
     overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
     // no default here - handle all cases explicitly
     switch (result) {
-    case NOT_A_VIP: return XDP_PASS;
-    case NOT_FOUND: return XDP_DROP;
-    case BOUNCE_ICMP: return EXT_ICMP;
-    case PROBE_REPLY: return EXT_VETH;
+    case NOT_A_VIP: return FWD_PASS;
+    case NOT_FOUND: return FWD_DROP;
+    case BOUNCE_ICMP: return FWD_ICMP;
+    case PROBE_REPLY: return FWD_VETH;
 
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
@@ -732,11 +789,10 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
     if (overhead && (data_end - next_header) + overhead > mtu) {
 	if (vip_is_ipv6) {
 	    bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
-	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? XDP_ABORTED : EXT_FRAG;
-	    
+	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? FWD_ABORTED : FWD_FRAG;
 	} else {
 	    bpf_printk("IPv4 FRAG_NEEDED - FIXME\n");
-	    return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? XDP_ABORTED : EXT_FRAG;
+	    return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? FWD_ABORTED : FWD_FRAG;
 	}
     }
     
@@ -751,7 +807,8 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
     case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6); // TODO - breaks verifier on 22.04
     default: break;
     }
-    return XDP_DROP; 
+
+    return FWD_DROP;
 }
 
 
@@ -759,13 +816,13 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
 
 
 SEC("xdp")
-int xdp_pass(struct xdp_md *ctx)
+int xdp_pass_func(struct xdp_md *ctx)
 {
     return XDP_PASS;
 }
 
 SEC("xdp")
-int xdp_vethb(struct xdp_md *ctx)
+int xdp_vethb_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
 
@@ -820,7 +877,7 @@ int xdp_vethb(struct xdp_md *ctx)
 }
 
 SEC("xdp")
-int xdp_vetha(struct xdp_md *ctx)
+int xdp_vetha_func(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -843,7 +900,6 @@ SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
-    //__u64 start_s = start / SECOND_NS;
 
     struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
     
@@ -875,16 +931,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
     tunnel_t t = {};
     
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
-    int action = xdp_fwd_func_(ctx, &ft, &t, s);
+    enum fwd_action action = xdp_fwd(ctx, &ft, &t, s);
+    // int action = xdp_fwd(ctx, &ft, &t, s);
 
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);
     
     // handle stats here
     switch (action) {
-    case XDP_PASS: return XDP_PASS;
-    case XDP_DROP: return XDP_DROP;
-    case XDP_TX:
+    case FWD_PASS: return XDP_PASS;
+    case FWD_DROP: return XDP_DROP;
+    case FWD_TX:
 		
 	switch (s->multi) {
 	case 0: // untagged bond - multi NIC, but only single VLAN in config
@@ -902,13 +959,14 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
-    case XDP_ABORTED: return XDP_DROP;
-    case XDP_REDIRECT: return XDP_REDIRECT;
-    case EXT_ICMP: return XDP_TX;
-    case EXT_VETH:
+    case FWD_ABORTED: return XDP_DROP;
+    case FWD_REDIRECT: return XDP_REDIRECT;
+    case FWD_FRAG: return XDP_TX; // packet is bounced back to source
+    case FWD_ICMP: return XDP_TX; // packet is bounced back to source
+    case FWD_VETH:
 	if (!s->veth || nulmac(s->vetha) || nulmac(s->vethb))
 	    return XDP_DROP;
-
+	
         memcpy(eth->h_dest, s->vethb, 6);
         memcpy(eth->h_source, s->vetha, 6);
 	
@@ -916,6 +974,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    return XDP_DROP;
 
 	return bpf_redirect(s->veth, 0);
+
+    case FWD_CORRUPT: return XDP_DROP;
     }
     return XDP_PASS;
 }
