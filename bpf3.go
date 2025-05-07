@@ -54,6 +54,8 @@ func (c bpf_counters3) stats(sessions uint64) (s Stats3) {
 
 type bpf_settings struct {
 	watchdog uint64 // periodically reset to 0
+	packets  uint64
+	latency  uint64
 	veth     uint32
 	vetha    mac
 	vethb    mac

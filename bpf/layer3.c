@@ -46,6 +46,9 @@ const __u8 F_NOT_LOCAL = 0x80;
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 300; // seconds
+#define EXT_FRAG 253
+#define EXT_ICMP 254
+#define EXT_VETH 255
 //const __u64 TIMEOUT = 120; // seconds
 
 //const __u8 F_STICKY = 0x01;
@@ -252,6 +255,8 @@ struct {
 
 struct settings {
     __u64 watchdog;
+    __u64 packets;
+    __u64 latency;
     __u32 veth;
     __u8 vetha[6];
     __u8 vethb[6];
@@ -489,6 +494,8 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags, __u
     
     switch(ft->proto) {
     case IPPROTO_TCP:
+	if (tcpflags.syn)
+	    break;
 	if ((flow = lookup_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
 	    tcp_concurrent(vrpp, &tcpflags, flow, era);
@@ -530,39 +537,8 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, tcpflags_t tcpflags, __u
     if (!vlan)
 	return NOT_FOUND;
 
-    /*
-    if (0) {
-	addr_t saddr = {};
-	__u8 h_source[6];
-	__u8 h_gw[6];
-	
-	// migrate to using per-VLAN details for the tunnel source params - why?
-	// oh, yeah, to allow failover from one LB to another rather than store LB local params
-	// don't need to do this - just need this unless copying session from shared table
-	// useful to test here though
-	if (is_ipv4_addr_p(&(t->daddr))) {
-	    saddr.addr4.addr = vlan->ip4;
-	    memcpy(h_source, vlan->hw4, 6);
-	    memcpy(h_gw, vlan->gh4, 6);
-	} else {
-	    saddr = vlan->ip6;
-	    memcpy(h_source, vlan->hw6, 6);
-	    memcpy(h_gw, vlan->gh6, 6);
-	}
-	
-	t->saddr = saddr;
-	memcpy(t->h_source, h_source, 6);
-	
-	if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
-	    bpf_printk("F_NOT_LOCAL\n");
-	    memcpy(t->h_dest, h_gw, 6); // send packet to router
-	}
-    }
-    */
-
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
-
 
     if (!flow) {
 	switch(ft->proto) {
@@ -815,64 +791,39 @@ int xdp_fwd_func_(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settin
 
     // no default here - handle all cases explicitly
     switch (result) {
-    case LAYER2_DSR: break; //return send_l2(ctx, t);
+    case NOT_A_VIP: return XDP_PASS;
+    case NOT_FOUND: return XDP_DROP;
+    case BOUNCE_ICMP: return EXT_ICMP;
+    case PROBE_REPLY: return EXT_VETH;
+
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
+    case LAYER2_DSR: overhead = 0; break;
     case LAYER3_IPIP: break;
-    case NOT_A_VIP: return XDP_PASS;
-    case NOT_FOUND: return XDP_DROP;
-    case BOUNCE_ICMP: return XDP_TX;
-    case PROBE_REPLY:
-	if (!settings->veth || nulmac(settings->vetha) || nulmac(settings->vethb))
-	    return XDP_DROP;
-
-        memcpy(eth->h_dest, settings->vethb, 6);
-        memcpy(eth->h_source, settings->vetha, 6);
-	
-	if (vlan && vlan_pop(ctx) < 0)
-	    return XDP_DROP;
-
-	return bpf_redirect(settings->veth, 0);
     }
 
-    if (vlan) {
-	//vlan->h_vlan_TCI = bpf_htons(t->vlanid); // TODO mask
-	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | bpf_htons(t->vlanid);
-    }
-
-    switch (result) {
-    case LAYER3_GRE: // fallthough
-    case LAYER3_FOU: // fallthough
-    case LAYER3_GUE: // fallthough
-    case LAYER3_IPIP:
-	if ((data_end - next_header) + overhead > mtu) {
-	    if (vip_is_ipv6) {
-		bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
-		return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? XDP_ABORTED : XDP_TX;
-		
-	    } else {
-		bpf_printk("IPv4 FRAG_NEEDED - FIXME\n");
-		return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? XDP_ABORTED : XDP_TX;
-	    }
+    if (overhead && (data_end - next_header) + overhead > mtu) {
+	if (vip_is_ipv6) {
+	    bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
+	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? XDP_ABORTED : EXT_FRAG;
+	    
+	} else {
+	    bpf_printk("IPv4 FRAG_NEEDED - FIXME\n");
+	    return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? XDP_ABORTED : EXT_FRAG;
 	}
-	break;
-    default:
-	break;
     }
-
-    // update VLAN ID to that of the target if packet is tagged
-    if (vlan)
-	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
     
+    if (vlan) // update VLAN ID to that of the target if packet is tagged
+	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
+
     switch (result) {
     case LAYER2_DSR:  return send_l2(ctx, t);	
     case LAYER3_IPIP: return send_ipip(ctx, t, vip_is_ipv6);
     case LAYER3_GRE:  return send_gre(ctx, t, vip_is_ipv6);
     case LAYER3_FOU:  return send_fou(ctx, t);
     case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6); // TODO - breaks verifier on 22.04
-    default:
-	break;
+    default: break;
     }
     return XDP_DROP; 
 }
@@ -1463,11 +1414,19 @@ int xdp_fwd_func(struct xdp_md *ctx)
     //fourtuple_t ft = {};
     fivetuple_t ft = {};    
     tunnel_t t = {};
-    
+
+    // don't access packet pointers after here as it may have been adjusted by the forwarding functions
     int action = xdp_fwd_func_(ctx, &ft, &t, s);
+
+    s->packets++;
+    s->latency += (bpf_ktime_get_ns() - start);
     
     struct vrpp vrpp = { .vaddr = ft.daddr, .raddr = t.daddr, .vport = ntohs(ft.dport), .protocol = ft.proto };
-    struct counters *c = NULL;
+    struct counters *c = bpf_map_lookup_elem(&stats, &vrpp);
+    if (c) {
+	c->packets++;
+	c->octets += data_end - data;
+    }
     
     // handle stats here
     switch (action) {
@@ -1475,21 +1434,16 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case XDP_DROP: return XDP_DROP;
     case XDP_TX:
 
-	if ((c = bpf_map_lookup_elem(&stats, &vrpp))) {
-	    c->packets++;
-	    c->octets += data_end - data;
-	} else {
-	    // counter for this backend does not exist - backend was deleted, so this flow should be terminated
-	    return XDP_DROP;
-	}
-	
+	if (!c)
+	    return XDP_DROP; // counter for backend does not exist, so flow should be terminated
+		
 	switch (s->multi) {
 	case 0: // untagged bond - multi NIC, but only single VLAN in config
 	    return XDP_TX;
 	case 1: // single interface - TX either tagged or untagged
 	    return XDP_TX;
 	}
-	
+
 	// multi-interface, if tagged packets then just TX to appropriate VLAN (previously set)
 	if (dot1q)
 	    return XDP_TX; 
@@ -1499,15 +1453,27 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
-	//took = bpf_ktime_get_ns() - start;
-	//int ack = dest.flags.ack ? 1 : 0;	
-	//int syn = dest.flags.syn ? 1 : 0;	
-	//bpf_printk("TOOK: %d\n", took);
-	//bpf_printk("FT %d %d\n", bpf_ntohs(ft.sport), bpf_ntohs(ft.dport));
-	//update(&ft, &t);
-	return XDP_TX;
-    case XDP_ABORTED: return XDP_ABORTED;
+    case XDP_ABORTED:
+
+	if (c)
+            c->errors++;
+
+	return XDP_DROP;
+	
     case XDP_REDIRECT: return XDP_REDIRECT;
+    case EXT_ICMP:
+	return XDP_TX;
+    case EXT_VETH:
+	if (!s->veth || nulmac(s->vetha) || nulmac(s->vethb))
+	    return XDP_DROP;
+
+        memcpy(eth->h_dest, s->vethb, 6);
+        memcpy(eth->h_source, s->vetha, 6);
+	
+	if (dot1q && vlan_pop(ctx) < 0)
+	    return XDP_DROP;
+
+	return bpf_redirect(s->veth, 0);
     }
     return XDP_PASS;
 }

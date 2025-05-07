@@ -231,6 +231,26 @@ func (l *layer3) updateSettings() {
 	l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
+func (l *layer3) readSettings() uint64 {
+	var ZERO uint32 = 0
+	var packets uint64
+	var latency uint64
+
+	all := make([]bpf_settings, xdp.BpfNumPossibleCpus())
+	l.maps.settings.LookupElem(uP(&ZERO), uP(&all[0]))
+
+	for _, s := range all {
+		packets += s.packets
+		latency += s.latency
+	}
+
+	if packets > 0 {
+		return latency / packets
+	}
+
+	return 0
+}
+
 func newClient(interfaces ...string) (*layer3, error) {
 	return newClientWithOptions(Options{}, interfaces...)
 }
@@ -395,6 +415,9 @@ func (l *layer3) background() error {
 		select {
 		case <-sessions.C:
 			l.mutex.Lock()
+
+			fmt.Println("LATENCY", l.readSettings())
+
 			l.settings.era++
 			if !l.killswitch {
 				l.updateSettings() // reset the watchdog, but not if the killswitch is set

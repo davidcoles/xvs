@@ -489,8 +489,8 @@ int frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     // ensure DEST_UNREACH/FRAG_NEEDED is also allowed in to prevent MTU blackholes
     // respond to every occurence or keep a record of recent notifications?
     
-    struct icmphdr fou = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0, .un.frag.mtu = bpf_htons(mtu) };
-    *icmp = fou;
+    struct icmphdr msg = { .type = ICMP_DEST_UNREACH, .code = ICMP_FRAG_NEEDED, .checksum = 0, .un.frag.mtu = bpf_htons(mtu) };
+    *icmp = msg;
 
     ((__u8 *) icmp)[5] = ((__u8)(iplen >> 2)); // struct icmphdr lacks a length field
 
