@@ -47,22 +47,22 @@ const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 300; // seconds
 
-#define EXT_CORRUPT 252
-#define EXT_FRAG 253
-#define EXT_ICMP 254
-#define EXT_VETH 255
+//#define EXT_CORRUPT 252
+//#define EXT_FRAG 253
+//#define EXT_ICMP 254
+//#define EXT_VETH 255
 
 
 enum lookup_result {
-		    NOT_FOUND = 0,
-		    NOT_A_VIP,
-		    PROBE_REPLY,
-		    BOUNCE_ICMP,
-		    LAYER2_DSR,
-		    LAYER3_GRE,
-		    LAYER3_FOU,
-		    LAYER3_IPIP,
-		    LAYER3_GUE,
+    NOT_FOUND = 0,
+    NOT_A_VIP,
+    PROBE_REPLY,
+    BOUNCE_ICMP,
+    LAYER2_DSR,
+    LAYER3_GRE,
+    LAYER3_FOU,
+    LAYER3_IPIP,
+    LAYER3_GUE,
 };
 
 enum fwd_action {
@@ -72,10 +72,11 @@ enum fwd_action {
     FWD_REDIRECT = XDP_REDIRECT,
     FWD_ABORTED = XDP_ABORTED,
 
-    FWD_ICMP = EXT_ICMP,
-    FWD_VETH = EXT_VETH,
-    FWD_FRAG = EXT_FRAG,
-    FWD_CORRUPT = EXT_CORRUPT,
+    FWD_FAIL = 251,
+    FWD_ICMP = 252,
+    FWD_VETH = 253,
+    FWD_FRAG = 254,
+    FWD_CORRUPT = 255,
 };
 
 struct addr4 {
@@ -259,6 +260,20 @@ struct {
 
 
 /**********************************************************************/
+
+struct globals {
+    __u64 corrupt; // malformed packet
+    __u64 failed;  // modifying packet (adust head/tail) failed
+    __u64 fragmented; // fragmented l4 packets - per service?
+    __u64 icmp_echo_request;  // per vip?
+    
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct globals);
+    __uint(max_entries, 1);
+} globals SEC(".maps");
 
 struct settings {
     __u64 watchdog;
@@ -724,7 +739,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 }
 
 static __always_inline
-int xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
+enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
 {
     int mtu = MTU;
     int overhead = 0;
@@ -789,10 +804,10 @@ int xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *
     if (overhead && (data_end - next_header) + overhead > mtu) {
 	if (vip_is_ipv6) {
 	    bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
-	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? FWD_ABORTED : FWD_FRAG;
+	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? FWD_FAIL : FWD_FRAG;
 	} else {
 	    bpf_printk("IPv4 FRAG_NEEDED - FIXME\n");
-	    return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? FWD_ABORTED : FWD_FRAG;
+	    return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? FWD_FAIL : FWD_FRAG;
 	}
     }
     
@@ -800,11 +815,11 @@ int xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *
 	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
 
     switch (result) {
-    case LAYER2_DSR:  return send_l2(ctx, t);	
-    case LAYER3_IPIP: return send_ipip(ctx, t, vip_is_ipv6);
-    case LAYER3_GRE:  return send_gre(ctx, t, vip_is_ipv6);
-    case LAYER3_FOU:  return send_fou(ctx, t);
-    case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6); // TODO - breaks verifier on 22.04
+    case LAYER3_IPIP: return send_ipip(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_GRE:  return send_gre(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX; // breaks 22.04
+    case LAYER3_FOU:  return send_fou(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER2_DSR:  return send_l2(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
     default: break;
     }
 
@@ -963,6 +978,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case FWD_REDIRECT: return XDP_REDIRECT;
     case FWD_FRAG: return XDP_TX; // packet is bounced back to source
     case FWD_ICMP: return XDP_TX; // packet is bounced back to source
+    case FWD_FAIL: return XDP_DROP;	
     case FWD_VETH:
 	if (!s->veth || nulmac(s->vetha) || nulmac(s->vethb))
 	    return XDP_DROP;
