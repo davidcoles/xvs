@@ -809,26 +809,23 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
 {
     enum lookup_result result = NOT_A_VIP;
     int vip_is_ipv6 = 0;
-	
     void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-
-    struct ethhdr *eth = data;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    void *next_header = eth + 1;
     
     if (eth + 1 > data_end)
         return FWD_CORRUPT;
     
     __be16 next_proto = eth->h_proto;
-    void *next_header = eth + 1;
     
     struct vlan_hdr *vlan = NULL;
     
     if (next_proto == bpf_htons(ETH_P_8021Q)) {
-	return FWD_PASS; // FIXME - not yet fully implmented
+	//return FWD_PASS; // FIXME - not yet fully implmented
 	vlan = next_header;
 	
 	if (vlan + 1 > data_end)
-	    return FWD_CORRUPT;
+	    return FWD_DROP;
 	
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
@@ -837,12 +834,10 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	vip_is_ipv6 = 1;
-	//overhead = sizeof(struct ip6_hdr);
 	result = lookup6(ctx, next_header, ft, t, settings->era);
 	break;
     case bpf_htons(ETH_P_IP):
 	vip_is_ipv6 = 0;
-	//overhead = sizeof(struct iphdr);
 	result = lookup4(ctx, next_header, ft, t, settings->era);
 	break;
     default:
@@ -874,13 +869,13 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
     }
     
     if (vlan) // update VLAN ID to that of the target if packet is tagged
-	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
+    	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
 
     switch (result) {
     case LAYER3_IPIP: return send_ipip_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
     case LAYER3_GRE:  return send_gre_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
     case LAYER3_GUE:  return send_gue_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX; // breaks 22.04
-    case LAYER3_FOU:  return send_fou_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+	//case LAYER3_FOU:  return send_fou_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
     case LAYER2_DSR:  return send_l2_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
     default: break;
     }

@@ -122,7 +122,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     case T_NONE: action = send_l2(ctx, &t); break;
     case T_IPIP: action = send_ipip(ctx, &t, 1); break;
     case T_GRE:  action = send_gre(ctx, &t, 1); break;
-    case T_FOU:  action = send_fou(ctx, &t); break;
+	//case T_FOU:  action = send_fou(ctx, &t); break;
     case T_GUE:  action = send_gue(ctx, &t, 1); break;
     }
 
@@ -227,7 +227,7 @@ int xdp_request_v4(struct xdp_md *ctx)
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
-    case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
+	//case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
     case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
     case T_IPIP: overhead = sizeof(struct iphdr);  break;
     case T_NONE: break;
@@ -278,7 +278,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_NONE: action = send_l2(ctx, &t); break;
     case T_IPIP: action = send_ipip(ctx, &t, is_ipv6); break;
     case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
-    case T_FOU:  action = send_fou(ctx, &t); break;
+	//case T_FOU:  action = send_fou(ctx, &t); break;
     case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
     }
 
