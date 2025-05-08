@@ -35,6 +35,10 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
+const xdpBPF_ANY = xdp.BPF_ANY
+
+func ktime() uint64 { return xdp.KtimeGet() * uint64(time.Second) }
+
 // TODO:
 // ingress interface/vlan -> interface IPs, for correct ICMP "too big" responses?
 // process intermediate system ICMP too big messages and pass to backends
@@ -122,10 +126,12 @@ type maps struct {
 	nat_to_vip_rip xdp.Map
 	redirect_map4  xdp.Map
 	redirect_map6  xdp.Map
+	flow_queue     xdp.Map
 	services       xdp.Map
 	vlaninfo       xdp.Map
 	settings       xdp.Map
 	sessions       xdp.Map
+	shared         xdp.Map
 	stats          xdp.Map
 	vips           xdp.Map
 }
@@ -356,9 +362,10 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 	return l3, nil
 }
 
+const ft_size uint32 = 36
+const flow_size uint32 = 80
+
 func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
-	var flow_size uint32 = 80
-	var ft_size uint32 = 36
 
 	flows_tcp, err := x.FindMap("flows_tcp", 4, 4)
 
@@ -366,14 +373,14 @@ func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
 		return err
 	}
 
-	shared, err := x.FindMap("shared", int(ft_size), int(flow_size))
+	//shared, err := x.FindMap("shared", int(ft_size), int(flow_size))
 
-	if err != nil {
-		return err
-	}
+	//if err != nil {
+	//	return err
+	//}
 
 	// default max entries to be the same as the shared map
-	max_entries := shared.MaxEntries()
+	max_entries := l.maps.shared.MaxEntries()
 
 	if max_entries < 0 {
 		return fmt.Errorf("Error looking up size of the flow state map")
@@ -594,6 +601,18 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 	}
 
 	m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp3{})), 8)
+
+	if err != nil {
+		return err
+	}
+
+	m.flow_queue, err = x.FindMap("flow_queue", 0, int(ft_size+flow_size))
+
+	if err != nil {
+		return err
+	}
+
+	m.shared, err = x.FindMap("shared", int(ft_size), int(flow_size))
 
 	if err != nil {
 		return err

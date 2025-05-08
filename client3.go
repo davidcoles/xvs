@@ -19,8 +19,10 @@
 package xvs
 
 import (
+	//"encoding/binary"
 	"fmt"
 	"net/netip"
+	"time"
 )
 
 type TunnelType uint8
@@ -65,6 +67,9 @@ type Client interface {
 	SetService(Service3, ...Destination3) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
 	Addresses() (netip.Addr, netip.Addr) // temporary
+
+	ReadFlow() []byte
+	WriteFlow([]byte)
 }
 
 func (l *layer3) Addresses() (netip.Addr, netip.Addr) {
@@ -332,4 +337,44 @@ func (d Destination) check() error {
 	}
 
 	return nil
+}
+
+func (l *layer3) ReadFlow() []byte {
+	var entry [ft_size + flow_size]byte
+
+try:
+	if l.maps.flow_queue.LookupAndDeleteElem(nil, uP(&entry)) != 0 {
+		return nil
+	}
+
+	kern := ktime()
+	when := *((*uint64)(uP(&entry[ft_size])))
+
+	if when < kern {
+		// expected
+		if when+uint64(2*time.Second) < kern {
+			print("-")
+			goto try
+		}
+	} else {
+		if kern+uint64(2*time.Second) < when {
+			print("+")
+			goto try
+		}
+	}
+
+	return entry[:]
+}
+
+func (l *layer3) WriteFlow(f []byte) {
+
+	if len(f) != int(ft_size+flow_size) {
+		return
+	}
+
+	key := uP(&f[0])
+	val := uP(&f[ft_size])
+	time := (*uint64)(val)
+	*time = ktime() // set first 8 bytes of state to the local kernel time
+	fmt.Println(l.maps.shared.UpdateElem(key, val, xdpBPF_ANY))
 }

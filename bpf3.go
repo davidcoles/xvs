@@ -81,10 +81,10 @@ type bpf_tunnel struct {
 //type bpf_destinfo = bpf_tunnel
 
 type bpf_vlaninfo struct {
-	ip4 addr4
-	gw4 addr4
+	ip4 addr16
 	ip6 addr16
 	gw6 addr16
+	gw4 addr4
 	hw4 mac
 	hw6 mac
 	gh4 mac

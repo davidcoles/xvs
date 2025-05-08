@@ -568,15 +568,16 @@ __u16 sdbm(unsigned char *ptr, __u8 len)
 static __always_inline
 int redirect_eth(struct xdp_md *ctx, __u8 *dest)
 {
-    struct pointers p = {};
-    
-    if (preserve_l2_headers(ctx, &p) < 0)
-	return -1;
-    
-    memcpy(p.eth->h_source, p.eth->h_dest, 6);
-    memcpy(p.eth->h_dest, dest, 6);
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
 
-    if (nulmac(p.eth->h_source) || nulmac(p.eth->h_dest))
+    if (eth + 1 > data_end)
+	return -1;
+
+    memcpy(eth->h_source, eth->h_dest, 6);
+    memcpy(eth->h_dest, dest, 6);
+
+    if (nulmac(eth->h_source) || nulmac(eth->h_dest))
 	return -1;
 
     return 0;

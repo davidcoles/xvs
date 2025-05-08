@@ -174,13 +174,13 @@ struct service {
 typedef struct service service_t;
 
 struct flow {
-    tunnel_t tunnel; // contains real IP of server, etc (64)
-    __u64 time; // +8 = 72
-    __u32 syn_seqn_reserved;
+    __u64 time; // 8 
+    tunnel_t tunnel; // contains real IP of server, etc (+64 = 72)  
+    __u32 syn_seqn_reserved; 
     __u8 finrst;
     __u8 era;
     __u8 pad;
-    __u8 version; // +8 = 80
+    __u8 version; // +4 + 4 = 80
 };
 typedef struct flow flow_t;
 
@@ -202,9 +202,9 @@ struct {
             });
 } flows_tcp SEC(".maps");
 
-// eventually, track flow for ~30s, reselect backend, and time flow
-// out after ~120s - allows for breaking tie to a down server, whilst
-// getting a rough idea about concurrent users
+// UDP: eventually, track flow for ~30s, reselect backend, and time
+// flow out after ~120s - allows for breaking tie to a down server,
+// whilst getting a rough idea about concurrent users (array of maps?)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, fourtuple_t);
@@ -297,6 +297,13 @@ struct {
 } settings SEC(".maps");
 
 struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, __u8[128]);
+    __uint(max_entries, 1);
+} buffers SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, addr_t);
     __type(value, __u32); // value no longer used
@@ -311,10 +318,10 @@ struct {
 } services SEC(".maps"); // rename to "services"?
 
 struct vlaninfo {
-    __be32 ip4;
-    __be32 gw4;
+    addr_t ip4;
     addr_t ip6;
     addr_t gw6;
+    __be32 gw4;
     __u8 hw4[6];
     __u8 hw6[6];
     __u8 gh4[6];
@@ -350,6 +357,11 @@ struct {
 static __always_inline
 flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
 {
+    void *fqe = bpf_map_lookup_elem(&buffers, &ZERO);
+
+    if (!fqe)
+	return NULL;
+    
     if (!flows)
 	return NULL;
 
@@ -366,22 +378,17 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
     __u64 time = bpf_ktime_get_ns();
 
     if (flow->time + (90 * SECOND_NS) < time)
-    	return NULL;
+    	return NULL; // flow is older than 90s - it has expired
 
     if (flow->time + (60 * SECOND_NS) > time)
-	return flow;
+    	return flow; // flow updated less then 1m ago - leave for now
 
     flow->time = time;
 
-    struct flow_queue_entry {
-	fourtuple_t ft;
-	flow_t flow;
-    } flow_queue_entry = { .ft = *ft, .flow = *flow };
+    __builtin_memcpy(fqe, ft, sizeof(fourtuple_t));
+    __builtin_memcpy(fqe + sizeof(fourtuple_t), flow, sizeof(flow_t));
+    bpf_map_push_elem(&flow_queue, fqe, 0);
 
-    int r = bpf_map_push_elem(&flow_queue, &flow_queue_entry, 0);
-
-    bpf_printk("FQE %d", r);
-    
     return flow;
 }
 
@@ -415,6 +422,64 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
     bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
 
     return 0;
+}
+
+static __always_inline
+flow_t *lookup_shared(void *flows, fourtuple_t *ft)
+{
+    if (!flows)
+	return NULL;
+    
+    flow_t *flow = bpf_map_lookup_elem(&shared, ft);
+    
+    if (!flow)
+	return NULL;
+
+    
+    __u64 time = bpf_ktime_get_ns();
+    
+    if (flow->time + (90 * SECOND_NS) < time)
+	return NULL; // flow is older than 90s - it has expired
+    
+    flow->time = time;
+    
+    tunnel_t *t = &(flow->tunnel);
+    
+    __u32 vlanid = t->vlanid;
+
+    if (!vlanid)
+	return NULL;
+
+    struct vlaninfo *vlan = bpf_map_lookup_elem(&vlaninfo, &vlanid);
+
+    if (!vlan)
+	return NULL;
+
+    __u8 h_gw[6] = {};
+    
+    // some of the tunnel parameters will be node-local (source
+    // IP/MAC, etc.) - update to this node's details
+    if (is_ipv4_addr(t->daddr)) {
+	t->saddr = vlan->ip4;              // set to this node's IP address on this vlan
+	memcpy(t->h_source, vlan->hw4, 6); // set to this node's MAC address on this vlan
+	memcpy(h_gw, vlan->gh4, 6);        // copy this node's gateway MAC to temp addr
+    } else {
+	// same as above, but for IPv6 ...
+	t->saddr = vlan->ip6;
+	memcpy(t->h_source, vlan->hw6, 6);
+	memcpy(h_gw, vlan->gh6, 6);
+    }
+
+    // if the destination is not on a local VLAN then send the packet
+    // to the router using the temp addr we set earlier
+    if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
+	memcpy(t->h_dest, h_gw, 6);
+    }
+
+    // write to the cpu-local flow map
+    bpf_map_update_elem(flows, ft, flow, BPF_ANY);
+
+    return flow;
 }
 
 void *array_of_maps(void *outer) {
@@ -478,12 +543,13 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
     
     switch(ft->proto) {
     case IPPROTO_TCP:
-	//if (metadata.syn)
-	//    break;
 	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata.syn))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
 	    tcp_concurrent(vrpp, &metadata, flow, era);
+	    break;
 	}
+	
+	flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
 	break;
 
     case IPPROTO_UDP:
@@ -741,8 +807,6 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 static __always_inline
 enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
 {
-    int mtu = MTU;
-    int overhead = 0;
     enum lookup_result result = NOT_A_VIP;
     int vip_is_ipv6 = 0;
 	
@@ -773,19 +837,19 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
     switch (next_proto) {
     case bpf_htons(ETH_P_IPV6):
 	vip_is_ipv6 = 1;
-	overhead = sizeof(struct ip6_hdr);
+	//overhead = sizeof(struct ip6_hdr);
 	result = lookup6(ctx, next_header, ft, t, settings->era);
 	break;
     case bpf_htons(ETH_P_IP):
 	vip_is_ipv6 = 0;
-	overhead = sizeof(struct iphdr);
+	//overhead = sizeof(struct iphdr);
 	result = lookup4(ctx, next_header, ft, t, settings->era);
 	break;
     default:
 	return FWD_PASS;
     }
 
-    overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    int overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
 
     // no default here - handle all cases explicitly
     switch (result) {
@@ -801,13 +865,11 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
     case LAYER3_IPIP: break;
     }
 
-    if (overhead && (data_end - next_header) + overhead > mtu) {
+    if (overhead && (data_end - next_header) + overhead > MTU) {
 	if (vip_is_ipv6) {
-	    bpf_printk("IPv6 FRAG_NEEDED - FIXME\n");
-	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), mtu - overhead) < 0 ? FWD_FAIL : FWD_FRAG;
+	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), MTU - overhead) < 0 ? FWD_FAIL : FWD_FRAG;
 	} else {
-	    bpf_printk("IPv4 FRAG_NEEDED - FIXME\n");
-	    return frag_needed4(ctx, ft->saddr.addr4.addr, mtu) < 0 ? FWD_FAIL : FWD_FRAG;
+	    return frag_needed4(ctx, ft->saddr.addr4.addr, MTU) < 0 ? FWD_FAIL : FWD_FRAG; // FIXME - source addr
 	}
     }
     
@@ -815,11 +877,11 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
 	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
 
     switch (result) {
-    case LAYER3_IPIP: return send_ipip(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER3_GRE:  return send_gre(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER3_GUE:  return send_gue(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX; // breaks 22.04
-    case LAYER3_FOU:  return send_fou(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER2_DSR:  return send_l2(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_IPIP: return send_ipip_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_GRE:  return send_gre_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_GUE:  return send_gue_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX; // breaks 22.04
+    case LAYER3_FOU:  return send_fou_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER2_DSR:  return send_l2_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
     default: break;
     }
 

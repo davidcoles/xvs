@@ -410,7 +410,7 @@ func (netinfo *netinfo) vlaninfo(i uint32) (bpf_vlaninfo, uint32, uint32) {
 	g6 := netinfo.l3info6[uint16(i)]
 
 	vi := bpf_vlaninfo{
-		ip4: as4(f4.ip),
+		ip4: as16(f4.ip),
 		gw4: as4(g4.ip),
 		ip6: as16(f6.ip),
 		gw6: as16(g6.ip),
