@@ -32,7 +32,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
    
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
-    
+
     struct ethhdr *eth = data;
     
     if (eth + 1 > data_end)
@@ -117,18 +117,20 @@ int xdp_request_v6(struct xdp_md *ctx) {
      }
 
     int action = XDP_DROP;
+    __u8 gue_protocol = 0;
 
     switch (t.method) {
-    case T_NONE: action = send_l2(ctx, &t); break;
+    case T_NONE: action = send_l2(ctx, &t); break; // could be that we need to cater for switching MAC??? - somthing screwy here
     case T_IPIP: action = send_ipip(ctx, &t, 1); break;
     case T_GRE:  action = send_gre(ctx, &t, 1); break;
 	//case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_GUE:  action = send_gue(ctx, &t, 1); break;
+	//case T_GUE:  action = send_gue(ctx, &t, 1); break;
+    case T_GUE: gue_protocol = IPPROTO_IPV6;
+    case T_FOU: send_fou_gue(ctx, &t, gue_protocol) < 0 ? XDP_ABORTED : XDP_TX;
     }
 
     if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
         return XDP_DROP;
-
 
     // to match returning packet
     struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
@@ -272,6 +274,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     /**********************************************************************/
 
     int is_ipv6 = 0;
+    __u8 gue_protocol = 0;
     int action = XDP_DROP;
     
     switch (t.method) {
@@ -279,7 +282,9 @@ int xdp_request_v4(struct xdp_md *ctx)
     case T_IPIP: action = send_ipip(ctx, &t, is_ipv6); break;
     case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
 	//case T_FOU:  action = send_fou(ctx, &t); break;
-    case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
+	//case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
+    case T_GUE: gue_protocol = IPPROTO_IPIP;
+    case T_FOU: send_fou_gue(ctx, &t, gue_protocol) < 0 ? XDP_ABORTED : XDP_TX;
     }
 
     if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!

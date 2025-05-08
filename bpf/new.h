@@ -964,9 +964,18 @@ int is_ipv4_addr_p(struct addr *a) {
 /**********************************************************************/
 
 static __always_inline
-int send_l2(struct xdp_md *ctx, tunnel_t *t)
+int send_l2(struct xdp_md *ctx, tunnel_t *t) // FIXME - change to eth pointer
 {
-    return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
+    //return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    if (eth + 1 > data_end)
+        return XDP_ABORTED;
+    
+    memcpy(eth->h_dest, t->h_dest, 6);
+    memcpy(eth->h_source, t->h_source, 6);
+    return XDP_TX;
 }
 
 static __always_inline
@@ -1013,7 +1022,16 @@ int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 static __always_inline
 int send_l2_(struct xdp_md *ctx, tunnel_t *t)
 {
-    return redirect_eth(ctx, t->h_dest);
+    //return redirect_eth(ctx, t->h_dest);
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    if (eth + 1 > data_end)
+        return -1;
+
+    memcpy(eth->h_dest, t->h_dest, 6);
+    memcpy(eth->h_source, t->h_source, 6);
+    return 0;
 }
 
 static __always_inline
