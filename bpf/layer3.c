@@ -821,7 +821,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
     struct vlan_hdr *vlan = NULL;
     
     if (next_proto == bpf_htons(ETH_P_8021Q)) {
-	//return FWD_PASS; // FIXME - not yet fully implmented
 	vlan = next_header;
 	
 	if (vlan + 1 > data_end)
@@ -871,12 +870,19 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const 
     if (vlan) // update VLAN ID to that of the target if packet is tagged
     	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
 
+    __u8 gue = 0;
+    
     switch (result) {
     case LAYER3_IPIP: return send_ipip_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
     case LAYER3_GRE:  return send_gre_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER3_GUE:  return send_gue_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX; // breaks 22.04
-	//case LAYER3_FOU:  return send_fou_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
     case LAYER2_DSR:  return send_l2_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+	//case LAYER3_FOU:  return send_fou_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+	//case LAYER3_FOU: //fallthrough
+	//    case LAYER3_GUE:  return send_gue_(ctx, t, vip_is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? FWD_FAIL : FWD_TX; // breaks 22.04
+	
+    case LAYER3_GUE: gue = vip_is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP; // fallthrough ...
+    case LAYER3_FOU: return send_gue_(ctx, t, gue); // plain FOU has gue set to 0, if not 0 then a GUE header is added
+	
     default: break;
     }
 

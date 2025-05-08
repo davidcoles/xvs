@@ -853,8 +853,8 @@ static __always_inline
 int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
-    
-    int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
+    int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
+    int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, overhead);
     
     if (orig_len < 0)
         return -1;
@@ -869,14 +869,16 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
     udp->check = 0;
 
-     struct gue_hdr *gue = (void *) (udp + 1);
+    if (protocol) {
+	struct gue_hdr *gue = (void *) (udp + 1);
+	
+	if (gue + 1 > p.data_end)
+	    return -1;
+	
+	*((__be32 *) gue) = 0;
 
-    if (gue + 1 > p.data_end)
-        return -1;
-
-    *((__be32 *) gue) = 0;
-
-    gue->protocol = protocol;
+	gue->protocol = protocol;
+    }
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
 	udp->check = udp6_checksum((void *) p.ip, udp, p.data_end);
@@ -888,7 +890,8 @@ static __always_inline
 int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
     struct pointers p = {};
-    int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr) + sizeof(struct gue_hdr));
+    int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
+    int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, overhead);
 
     if (orig_len < 0)
 	return -1;
@@ -902,15 +905,17 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     udp->dest = bpf_htons(t->dport);
     udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
     udp->check = 0;
-    
-    struct gue_hdr *gue = (void *) (udp + 1);
-    
-    if (gue + 1 > p.data_end)
-	return -1;
 
-    *((__be32 *) gue) = 0;
-    
-    gue->protocol = protocol;
+    if (protocol) {
+	struct gue_hdr *gue = (void *) (udp + 1);
+	
+	if (gue + 1 > p.data_end)
+	    return -1;
+	
+	*((__be32 *) gue) = 0;
+	
+	gue->protocol = protocol;
+    }
     
     if (! (t->flags & F_CHECKSUM_DISABLE))
 	udp->check = udp4_checksum((void *) p.ip, udp, p.data_end);
@@ -1041,10 +1046,10 @@ int send_fou_(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_gue_(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_gue_(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
 {
     if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+	return push_gue4(ctx, t, protocol);
     
-    return push_gue6(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
+    return push_gue6(ctx, t, protocol);
 }
