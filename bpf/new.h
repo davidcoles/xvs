@@ -1046,7 +1046,7 @@ int send_fou_(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_gue_(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
+int send_fou_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
 {
     if (is_addr4(&(t->daddr)))
 	return push_gue4(ctx, t, protocol);

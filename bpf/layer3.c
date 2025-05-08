@@ -805,81 +805,69 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 }
 
 static __always_inline
-enum fwd_action xdp_fwd(struct xdp_md *ctx, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
-{
-    enum lookup_result result = NOT_A_VIP;
-    int vip_is_ipv6 = 0;
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    void *next_header = eth + 1;
-    __u8 gue = 0;
+int too_big(struct xdp_md *ctx, fivetuple_t *ft, int req_mtu, int vip_is_ipv6) {
+    if (vip_is_ipv6)
+	return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), req_mtu);
+    
+    return frag_needed4(ctx, ft->saddr.addr4.addr, req_mtu); // FIXME - source addr
+}
 
-    if (eth + 1 > data_end)
-        return FWD_CORRUPT;
-    
+static __always_inline
+enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    void *next_header = eth + 1;
     __be16 next_proto = eth->h_proto;
-    
+    __u8 ipv6 = 0, gue_protocol = 0;
     struct vlan_hdr *vlan = NULL;
+    enum lookup_result result = NOT_A_VIP;
     
-    if (next_proto == bpf_htons(ETH_P_8021Q)) {
-	vlan = next_header;
-	
-	if (vlan + 1 > data_end)
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {	
+	if ((vlan = next_header) + 1 > data_end)
 	    return FWD_DROP;
-	
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
     
     switch (next_proto) {
-    case bpf_htons(ETH_P_IPV6):
-	vip_is_ipv6 = 1;
-	result = lookup6(ctx, next_header, ft, t, settings->era);
-	break;
     case bpf_htons(ETH_P_IP):
-	vip_is_ipv6 = 0;
 	result = lookup4(ctx, next_header, ft, t, settings->era);
+	break;
+    case bpf_htons(ETH_P_IPV6):
+	result = lookup6(ctx, next_header, ft, t, settings->era);
+	ipv6 = 1;
 	break;
     default:
 	return FWD_PASS;
     }
 
     int overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
-
-    // no default here - handle all cases explicitly
-    switch (result) {
-
+    
+    switch (result) { // no default here - handle all cases explicitly
+    case NOT_A_VIP: return FWD_PASS;
     case NOT_FOUND: return FWD_DROP;
     case BOUNCE_ICMP: return FWD_ICMP;
     case PROBE_REPLY: return FWD_VETH;
-
     case LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    case LAYER2_DSR: overhead = 0; break;
+    case LAYER2_DSR: overhead = 0; break; // no overheaded needed for l2
     case LAYER3_IPIP: break;
     }
 
-    if (overhead && (data_end - next_header) + overhead > MTU) {
-	if (vip_is_ipv6) {
-	    return icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), MTU - overhead) < 0 ? FWD_FAIL : FWD_FRAG;
-	} else {
-	    return frag_needed4(ctx, ft->saddr.addr4.addr, MTU) < 0 ? FWD_FAIL : FWD_FRAG; // FIXME - source addr
-	}
-    }
+    if ((data_end - next_header) + overhead > MTU)
+	return too_big(ctx, ft, MTU - overhead, ipv6) < 0 ? FWD_FAIL : FWD_TX;
     
     if (vlan) // update VLAN ID to that of the target if packet is tagged
     	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
     
-    switch (result) {
-    case LAYER3_IPIP: return send_ipip_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER3_GRE:  return send_gre_(ctx, t, vip_is_ipv6) < 0 ? FWD_FAIL : FWD_TX;
+    switch ((int) result) { // cast to int to avoid having to deal with all cases
+    case LAYER3_IPIP: return send_ipip_(ctx, t, ipv6) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_GRE:  return send_gre_(ctx, t, ipv6) < 0 ? FWD_FAIL : FWD_TX;
     case LAYER2_DSR:  return send_l2_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER3_GUE:  gue = vip_is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP; // fallthrough ...
-    case LAYER3_FOU:  return send_gue_(ctx, t, gue); // plain FOU has gue set to 0, if not 0 then a GUE header is added
-	//default: break;
+    case LAYER3_GUE:  gue_protocol = ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP; // fallthrough ...
+    case LAYER3_FOU:  return send_fou_gue(ctx, t, gue_protocol); // defaults to plain FOU unless gue_protocol set above
     }
-
     return FWD_DROP;
 }
 
@@ -1003,7 +991,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     tunnel_t t = {};
     
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
-    enum fwd_action action = xdp_fwd(ctx, &ft, &t, s);
+    enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, s);
     // int action = xdp_fwd(ctx, &ft, &t, s);
 
     s->packets++;
