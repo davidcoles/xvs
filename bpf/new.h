@@ -739,38 +739,6 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     return orig_len;
 }
 
-
-/*
-static __always_inline
-int push_ipip(struct xdp_md *ctx, tunnel_t *t)
-{
-    struct pointers p = {};
-    return push_xin4(ctx, t, &p, IPPROTO_IPIP, 0);
-}
-
-
-static __always_inline
-int push_6in4(struct xdp_md *ctx, tunnel_t *t)    
-{
-    struct pointers p = {};
-    return push_xin4(ctx, t, &p, IPPROTO_IPV6, 0);
-}
-
-static __always_inline
-int push_6in6(struct xdp_md *ctx, tunnel_t *t)
-{
-    struct pointers p = {};
-    return push_xin6(ctx, t, &p, IPPROTO_IPV6, 0);
-}
-
-static __always_inline
-int push_4in6(struct xdp_md *ctx, tunnel_t *t)
-{
-    struct pointers p = {};
-    return push_xin6(ctx, t, &p, IPPROTO_IPIP, 0);
-}
-*/
-
 static __always_inline
 int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
@@ -964,7 +932,7 @@ int is_ipv4_addr_p(struct addr *a) {
 /**********************************************************************/
 
 static __always_inline
-int send_l2(struct xdp_md *ctx, tunnel_t *t) // FIXME - change to eth pointer
+int xsend_l2(struct xdp_md *ctx, tunnel_t *t) // FIXME - change to eth pointer
 {
     //return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -979,7 +947,7 @@ int send_l2(struct xdp_md *ctx, tunnel_t *t) // FIXME - change to eth pointer
 }
 
 static __always_inline
-int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int xsend_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
     struct pointers p = {};
 
@@ -990,7 +958,7 @@ int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int xsend_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
     if (is_addr4(&(t->daddr)))
 	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
@@ -999,7 +967,7 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_fou(struct xdp_md *ctx, tunnel_t *t)
+int xsend_fou(struct xdp_md *ctx, tunnel_t *t)
 {
     if (is_addr4(&(t->daddr)))
 	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
@@ -1008,7 +976,7 @@ int send_fou(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int xsend_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
     if (is_addr4(&(t->daddr)))
 	return push_gue4(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;

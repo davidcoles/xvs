@@ -376,9 +376,9 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
 	return NULL;
 
     __u64 time = bpf_ktime_get_ns();
-
-    if (flow->time + (90 * SECOND_NS) < time)
-    	return NULL; // flow is older than 90s - it has expired
+    
+    if (flow->time + (120 * SECOND_NS) < time)
+    	return NULL;
 
     if (flow->time + (60 * SECOND_NS) > time)
     	return flow; // flow updated less then 1m ago - leave for now
@@ -438,8 +438,8 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft)
     
     __u64 time = bpf_ktime_get_ns();
     
-    if (flow->time + (90 * SECOND_NS) < time)
-	return NULL; // flow is older than 90s - it has expired
+    if (flow->time + (120 * SECOND_NS) < time)
+	return NULL;
     
     flow->time = time;
     

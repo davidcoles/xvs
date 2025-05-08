@@ -101,35 +101,52 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	return XDP_DROP;
     }
     
+    int overhead = 0;
+    int mtu = MTU;
+
+    switch (t.method) {
+    case T_GRE:  overhead = sizeof(struct ip6_hdr) + GRE_OVERHEAD; break;
+    case T_FOU:  overhead = sizeof(struct ip6_hdr) + FOU_OVERHEAD; break;
+    case T_GUE:  overhead = sizeof(struct ip6_hdr) + GUE_OVERHEAD; break;
+    case T_IPIP: overhead = sizeof(struct ip6_hdr);  break;
+    case T_NONE: break;
+    default: return XDP_DROP;
+    }
+
+    if ((data_end - (void *) ip6) + overhead > mtu) {
+	return XDP_DROP;
+    }
+
+    
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
     struct l4v6 n = o;
     
     n.saddr = ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
     n.daddr = ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
     
-     switch(proto) {
-     case IPPROTO_TCP:
-	 tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
-	 break;
-     case IPPROTO_UDP:
-	 udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
-	 break;
-     }
-
-    int action = XDP_DROP;
+    switch(proto) {
+    case IPPROTO_TCP:
+	tcp->check = l4v6_checksum_diff(~(tcp->check), &n, &o);
+	break;
+    case IPPROTO_UDP:
+	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
+	break;
+    }
+    
+    /**********************************************************************/
+    
+    int action = 0;
     __u8 gue_protocol = 0;
 
     switch (t.method) {
-    case T_NONE: action = send_l2(ctx, &t); break; // could be that we need to cater for switching MAC??? - somthing screwy here
-    case T_IPIP: action = send_ipip(ctx, &t, 1); break;
-    case T_GRE:  action = send_gre(ctx, &t, 1); break;
-	//case T_FOU:  action = send_fou(ctx, &t); break;
-	//case T_GUE:  action = send_gue(ctx, &t, 1); break;
-    case T_GUE: gue_protocol = IPPROTO_IPV6;
-    case T_FOU: send_fou_gue(ctx, &t, gue_protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    case T_NONE: action = send_l2_(ctx, &t); break;
+    case T_IPIP: action = send_ipip_(ctx, &t, 1); break;
+    case T_GRE:  action = send_gre_(ctx, &t, 1); break;
+    case T_GUE:  gue_protocol = IPPROTO_IPV6; // fallthrough
+    case T_FOU:  action = send_fou_gue(ctx, &t, gue_protocol); break;
     }
 
-    if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
+    if (action < 0 || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
         return XDP_DROP;
 
     // to match returning packet
@@ -229,7 +246,7 @@ int xdp_request_v4(struct xdp_md *ctx)
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
-	//case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
+    case T_FOU:  overhead = sizeof(struct iphdr) + FOU_OVERHEAD; break;
     case T_GUE:  overhead = sizeof(struct iphdr) + GUE_OVERHEAD; break;
     case T_IPIP: overhead = sizeof(struct iphdr);  break;
     case T_NONE: break;
@@ -270,24 +287,20 @@ int xdp_request_v4(struct xdp_md *ctx)
 	break;
     }
 
-    
     /**********************************************************************/
 
-    int is_ipv6 = 0;
+    int action = 0;
     __u8 gue_protocol = 0;
-    int action = XDP_DROP;
     
     switch (t.method) {
-    case T_NONE: action = send_l2(ctx, &t); break;
-    case T_IPIP: action = send_ipip(ctx, &t, is_ipv6); break;
-    case T_GRE:	 action = send_gre(ctx, &t, is_ipv6); break;
-	//case T_FOU:  action = send_fou(ctx, &t); break;
-	//case T_GUE:  action = send_gue(ctx, &t, is_ipv6); break;
-    case T_GUE: gue_protocol = IPPROTO_IPIP;
-    case T_FOU: send_fou_gue(ctx, &t, gue_protocol) < 0 ? XDP_ABORTED : XDP_TX;
+    case T_NONE: action = send_l2_(ctx, &t); break;
+    case T_IPIP: action = send_ipip_(ctx, &t, 0); break;
+    case T_GRE:	 action = send_gre_(ctx, &t, 0); break;
+    case T_GUE:  gue_protocol = IPPROTO_IPIP; // fallthrough
+    case T_FOU:  action = send_fou_gue(ctx, &t, gue_protocol); break;
     }
 
-    if (action != XDP_TX || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
+    if (action < 0 || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
 	return XDP_DROP;
 
     // to match returning packet
