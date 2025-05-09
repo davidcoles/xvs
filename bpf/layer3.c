@@ -812,6 +812,8 @@ int too_big(struct xdp_md *ctx, fivetuple_t *ft, int req_mtu, int vip_is_ipv6) {
     return frag_needed4(ctx, ft->saddr.addr4.addr, req_mtu); // FIXME - source addr
 }
 
+#define FWD(r) ((r) < 0 ?  FWD_DROP : FWD_TX)
+
 static __always_inline
 enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
 {
@@ -860,13 +862,13 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     
     if (vlan) // update VLAN ID to that of the target if packet is tagged
     	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
-    
+
     switch ((int) result) { // cast to int to avoid having to deal with all cases
-    case LAYER3_IPIP: return send_ipip_(ctx, t, ipv6) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER3_GRE:  return send_gre_(ctx, t, ipv6) < 0 ? FWD_FAIL : FWD_TX;
-    case LAYER2_DSR:  return send_l2_(ctx, t) < 0 ? FWD_FAIL : FWD_TX;
+    case LAYER3_IPIP: return FWD(send_ipip_(ctx, t, ipv6));
+    case LAYER3_GRE:  return FWD(send_gre_(ctx, t, ipv6));
+    case LAYER2_DSR:  return FWD(send_l2_(ctx, t));
     case LAYER3_GUE:  gue_protocol = ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP; // fallthrough ...
-    case LAYER3_FOU:  return send_fou_gue(ctx, t, gue_protocol); // defaults to plain FOU unless gue_protocol set above
+    case LAYER3_FOU:  return FWD(send_fou_gue(ctx, t, gue_protocol)); // defaults to plain FOU unless gue_protocol set above
     }
     return FWD_DROP;
 }

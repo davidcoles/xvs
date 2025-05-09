@@ -1,7 +1,7 @@
 struct addr_port_time {
-    __u64 time;
     addr_t nat;
     addr_t src;
+    __u64 time;
     __be16 port;
     __be16 pad[3];
 };
@@ -57,7 +57,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
     	return XDP_DROP;
     
-
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
 
     addr_t src = { .addr6 = ip6->ip6_src };
@@ -79,19 +78,17 @@ int xdp_request_v6(struct xdp_md *ctx) {
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
 
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+    struct udphdr *udp = (void *) (ip6 + 1);
     
     switch(proto) {
     case IPPROTO_TCP:
-	tcp = (void *) (ip6 + 1);
 	if (tcp + 1 > data_end)
 	    return XDP_DROP;
 	eph = tcp->source;
 	svc = tcp->dest;
 	break;
     case IPPROTO_UDP:
-	udp = (void *) (ip6 + 1);
 	if (udp + 1 > data_end)
 	    return XDP_DROP;
 	eph = udp->source;
@@ -102,7 +99,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
     }
     
     int overhead = 0;
-    int mtu = MTU;
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct ip6_hdr) + GRE_OVERHEAD; break;
@@ -113,10 +109,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     default: return XDP_DROP;
     }
 
-    if ((data_end - (void *) ip6) + overhead > mtu) {
+    if ((data_end - (void *) ip6) + overhead > MTU)
 	return XDP_DROP;
-    }
 
+    if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 2)
+        ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 2;
     
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
     struct l4v6 n = o;
@@ -219,19 +216,17 @@ int xdp_request_v4(struct xdp_md *ctx)
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
 
-    struct tcphdr *tcp = NULL;
-    struct udphdr *udp = NULL;
+    struct tcphdr *tcp = (void *)(ip + 1);
+    struct udphdr *udp = (void *)(ip + 1);
 
     switch(proto) {
     case IPPROTO_TCP:
-	tcp = (void *)(ip + 1);
 	if (tcp + 1 > data_end)
 	    return XDP_DROP;
 	eph = tcp->source;
 	svc = tcp->dest;
 	break;
     case IPPROTO_UDP:
-	udp = (void *)(ip + 1);
 	if (udp + 1 > data_end)
 	    return XDP_DROP;
 	eph = udp->source;
@@ -242,7 +237,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
 
     int overhead = 0;
-    int mtu = MTU;
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
@@ -253,10 +247,12 @@ int xdp_request_v4(struct xdp_md *ctx)
     default: return XDP_DROP;
     }
 
-    if ((data_end - (void *) ip) + overhead > mtu) {
+    if ((data_end - (void *) ip) + overhead > MTU)
 	return XDP_DROP;
-    }
 
+    if (t.method == T_NONE && ip->ttl > 2)
+        ip4_set_ttl(ip, 2);
+    
     /*
     if ((data_end - (void *) ip) + overhead > mtu) {
 	bpf_printk("IPv4 FRAG_NEEDED\n");
@@ -508,4 +504,3 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     return XDP_PASS;
 }
-

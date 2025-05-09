@@ -930,7 +930,7 @@ int is_ipv4_addr_p(struct addr *a) {
 }
 
 /**********************************************************************/
-
+/*
 static __always_inline
 int xsend_l2(struct xdp_md *ctx, tunnel_t *t) // FIXME - change to eth pointer
 {
@@ -983,7 +983,7 @@ int xsend_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
     
     return push_gue6(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
 }
-
+*/
 
 /**********************************************************************/
 
