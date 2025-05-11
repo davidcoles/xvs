@@ -33,7 +33,7 @@
 #define IS_DF(f) (((f) & bpf_htons(0x02<<13)) ? 1 : 0)
 #define memcpy(d, s, n) __builtin_memcpy((d), (s), (n))
 
-const __u8 F_CALCULATEX_CHECKSUM = 1;
+//const __u8 F_CALCULATEX_CHECKSUM = 1;
 const __u8 F_NOT_LOCAL = 0x80;
 
 #include "imports.h"
@@ -240,18 +240,45 @@ struct counters {
     __u64 octets;
     __u64 flows;
     __u64 errors;
-    __u64 syn;
-};
 
-struct globals {
+    __u64 syn;
+    __u64 ack;
+    __u64 fin;
+    __u64 rst;
+    
+};
+typedef struct counter counter_t;
+
+struct global {
+    __u64 packets;
+    __u64 octets;
+    __u64 flows;
+    __u64 errors;
+    
     __u64 corrupt; // malformed packet
     __u64 failed;  // modifying packet (adust head/tail) failed
     __u64 fragmented; // fragmented l4 packets - per service?
+
     __u64 icmp_echo_request;  // per vip?
 
-    __u64 syn;    
+    __u64 syn;
+    __u64 fin;
+    __u64 rst;
+    __u64 ack;
 };
-typedef struct globals globals_t;
+typedef struct global global_t;
+
+struct metadata {
+    __u32 octets;
+    __u32 syn:1;
+    __u32 ack:1;
+    __u32 rst:1;
+    __u32 fin:1;
+    __u32 urg:1;
+    __u32 psh:1;
+    __u8 era;
+};
+typedef struct metadata metadata_t;
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
@@ -271,7 +298,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
-    __type(value, struct globals);
+    __type(value, global_t);
     __uint(max_entries, 1);
 } globals SEC(".maps");
 
@@ -338,19 +365,6 @@ struct {
     __type(value, struct vlaninfo);
     __uint(max_entries, 4096);
 } vlaninfo SEC(".maps");
-
-struct metadata {
-    __u32 octets;
-    __u32 syn:1;
-    __u32 ack:1;
-    __u32 rst:1;
-    __u32 fin:1;
-    __u32 urg:1;
-    __u32 psh:1;
-    __u8 era;
-    globals_t *globals;
-};
-typedef struct metadata metadata_t;
 
 
 
@@ -546,6 +560,8 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     }
 }
 
+#define COUNTERS(c, m) ((c)->syn += (m)->syn, (c)->ack += (m)->ack, (c)->fin += (m)->fin, (c)->rst += (m)->rst)
+
 static __always_inline
 enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
@@ -613,8 +629,10 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     counters->packets++;
     counters->octets += metadata->octets;
 
-    if (metadata->syn)
-	counters->syn++;
+    counters->syn += metadata->syn;
+    counters->ack += metadata->ack;
+    counters->fin += metadata->fin;
+    counters->rst += metadata->rst;
 
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
@@ -847,7 +865,8 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
-    
+
+    // do ETH_P_8021Q stuff in main function and move this to there?:
     metadata->octets = data_end - next_header;
 
     switch (next_proto) {
@@ -994,10 +1013,12 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_PASS;
     }
 
-    metadata_t metadata = { .era = s->era, .globals = bpf_map_lookup_elem(&globals, &ZERO) };
-    if (!metadata.globals)
-	return XDP_DROP;
+    global_t *global = bpf_map_lookup_elem(&globals, &ZERO);
     
+    if (!global)
+    	return XDP_DROP;
+    
+    metadata_t metadata = { .era = s->era };
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -1018,6 +1039,15 @@ int xdp_fwd_func(struct xdp_md *ctx)
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
     enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, &metadata);
 
+    //if (metadata.syn)
+    //global->syn++;
+    
+    //global->syn += metadata.syn;
+    //global->ack += metadata.ack;
+    //global->fin += metadata.fin;
+    //global->rst += metadata.rst;
+    COUNTERS(global, &metadata);
+    
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);
     

@@ -35,6 +35,9 @@ type bpf_counters3 struct {
 	flows   uint64
 	errors  uint64
 	syn     uint64
+	ack     uint64
+	fin     uint64
+	rst     uint64
 }
 
 func (c *bpf_counters3) add(x bpf_counters3) {
@@ -42,6 +45,10 @@ func (c *bpf_counters3) add(x bpf_counters3) {
 	c.octets += x.octets
 	c.flows += x.flows
 	c.errors += x.errors
+	c.syn += x.syn
+	c.ack += x.ack
+	c.fin += x.fin
+	c.rst += x.rst
 }
 
 func (c bpf_counters3) stats(sessions uint64) (s Stats3) {
