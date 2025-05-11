@@ -72,6 +72,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     __be16 eph = 0;
     __be16 svc = 0;
 
+    // check that external address is set - should probably set vlan to 0 in userspace if this is the case
+    // maybe audit code and do belt & braces for each place that this could happen
+    //if (nul6(&(vip.addr6)) || nul6(&(ext.addr6)))
+    //	return XDP_DROP;
+
     struct l4 ft = { .saddr = src.addr4.addr, .daddr = nat.addr4.addr, .sport = eph, .dport = svc };
     struct tunnel *destinfo = (void *) vip_rip;
 

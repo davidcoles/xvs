@@ -34,6 +34,7 @@ type bpf_counters3 struct {
 	octets  uint64
 	flows   uint64
 	errors  uint64
+	syn     uint64
 }
 
 func (c *bpf_counters3) add(x bpf_counters3) {

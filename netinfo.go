@@ -101,6 +101,9 @@ func (n *netinfo) info(a netip.Addr) (ninfo, error) {
 	return n.info2(a, n.vinfo6, n.l2info6, n.l3info6)
 }
 
+// FIXME - choosing extenal IP for tunnelled packets does not require
+// it to be on the same VLAN. Fall-back to *some* IPv6 enabled VLAN if
+// not present on this VLAN
 func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
 	if v6 {
 		return n.l2info6[id].ip

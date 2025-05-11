@@ -240,7 +240,18 @@ struct counters {
     __u64 octets;
     __u64 flows;
     __u64 errors;
+    __u64 syn;
 };
+
+struct globals {
+    __u64 corrupt; // malformed packet
+    __u64 failed;  // modifying packet (adust head/tail) failed
+    __u64 fragmented; // fragmented l4 packets - per service?
+    __u64 icmp_echo_request;  // per vip?
+
+    __u64 syn;    
+};
+typedef struct globals globals_t;
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
@@ -257,23 +268,16 @@ struct {
     __uint(max_entries, 4095);
 } stats SEC(".maps");
 
-
-
-/**********************************************************************/
-
-struct globals {
-    __u64 corrupt; // malformed packet
-    __u64 failed;  // modifying packet (adust head/tail) failed
-    __u64 fragmented; // fragmented l4 packets - per service?
-    __u64 icmp_echo_request;  // per vip?
-    
-};
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
     __type(value, struct globals);
     __uint(max_entries, 1);
 } globals SEC(".maps");
+
+
+
+/**********************************************************************/
 
 struct settings {
     __u64 watchdog;
@@ -334,6 +338,21 @@ struct {
     __type(value, struct vlaninfo);
     __uint(max_entries, 4096);
 } vlaninfo SEC(".maps");
+
+struct metadata {
+    __u32 octets;
+    __u32 syn:1;
+    __u32 ack:1;
+    __u32 rst:1;
+    __u32 fin:1;
+    __u32 urg:1;
+    __u32 psh:1;
+    __u8 era;
+    globals_t *globals;
+};
+typedef struct metadata metadata_t;
+
+
 
 /**********************************************************************/
 
@@ -460,23 +479,23 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft)
     // some of the tunnel parameters will be node-local (source
     // IP/MAC, etc.) - update to this node's details
     if (is_ipv4_addr(t->daddr)) {
-	t->saddr = vlan->ip4;              // set to this node's IP address on this vlan
-	memcpy(t->h_source, vlan->hw4, 6); // set to this node's MAC address on this vlan
+	t->saddr = vlan->ip4;              // set to this node's IP address on the vlan
+	memcpy(t->h_source, vlan->hw4, 6); // set to this node's MAC address on thw vlan
 	memcpy(h_gw, vlan->gh4, 6);        // copy this node's gateway MAC to temp addr
     } else {
-	// same as above, but for IPv6 ...
+	// same as above, but for IPv6 destinations ...
 	t->saddr = vlan->ip6;
 	memcpy(t->h_source, vlan->hw6, 6);
 	memcpy(h_gw, vlan->gh6, 6);
     }
 
-    // if the destination is not on a local VLAN then send the packet
-    // to the router using the temp addr we set earlier
+    // if the destination is not on a local VLAN then we neeto to send
+    // the packet to the router using the h_gw address we set earlier
     if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
 	memcpy(t->h_dest, h_gw, 6);
     }
 
-    // write to the cpu-local flow map
+    // write to the regular flow map
     bpf_map_update_elem(flows, ft, flow, BPF_ANY);
 
     return flow;
@@ -486,15 +505,6 @@ void *array_of_maps(void *outer) {
     __u32 cpu_id = bpf_get_smp_processor_id();
     return bpf_map_lookup_elem(outer, &cpu_id);
 }
-
-struct metadata {
-    __u32 octets;
-    __u32 syn : 1;
-    __u32 ack : 1;
-    __u32 rst : 1;
-    __u32 fin : 1;
-};
-typedef struct metadata metadata_t;
 
 static __always_inline
 void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
@@ -537,15 +547,16 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
 }
 
 static __always_inline
-enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u8 era)
+enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
+    __u8 era = metadata->era;
     
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata.syn))) {
+	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
-	    tcp_concurrent(vrpp, &metadata, flow, era);
+	    tcp_concurrent(vrpp, metadata, flow, era);
 	    break;
 	}
 	
@@ -593,7 +604,6 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
     if (nulmac(t->h_dest))
 	return NOT_FOUND;
 
-
     struct vrpp vrpp = { .vaddr = ft->daddr, .raddr = t->daddr, .vport = ntohs(ft->dport), .protocol = ft->proto };
     struct counters *counters = bpf_map_lookup_elem(&stats, &vrpp);
 
@@ -601,10 +611,17 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
 	return NOT_FOUND;
 
     counters->packets++;
-    counters->octets += metadata.octets;
+    counters->octets += metadata->octets;
 
-    // don't store a flow with a SYN - should stop SYN floods from wiping out the LRU hash
-    if (!flow && !metadata.syn) {
+    if (metadata->syn)
+	counters->syn++;
+
+    // don't store a flow with a SYN - should stop SYN floods from
+    // wiping out the LRU hash - we will store when the first ACK
+    // comes through. Of course, an attacker could send a SYN and a
+    // bogus ACK; but upstream stateful inspection DDoS could catch
+
+    if (!flow && !metadata->syn && !metadata->rst && !metadata->fin) {
 	counters->flows++;
 	switch(ft->proto) {
 	case IPPROTO_TCP:
@@ -628,7 +645,7 @@ enum lookup_result lookup(fivetuple_t *ft, tunnel_t *t, metadata_t metadata, __u
 }
 
 static __always_inline
-enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft, tunnel_t *t, __u8 era)
+enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -661,7 +678,6 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
-    metadata_t metadata = { .octets = data_end - (void *) ip6 };
     struct tcphdr *tcp = (void *) (ip6 + 1);
     struct udphdr *udp = (void *) (ip6 + 1);
     struct icmp6_hdr *icmp = (void *) (ip6 + 1);
@@ -672,10 +688,12 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	    return NOT_FOUND;
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
-	metadata.syn = tcp->syn;
-	metadata.ack = tcp->ack;
-	metadata.rst = tcp->rst;
-	metadata.fin = tcp->fin;
+	metadata->syn = tcp->syn;
+	metadata->ack = tcp->ack;
+	metadata->rst = tcp->rst;
+	metadata->fin = tcp->fin;
+	metadata->urg = tcp->urg;
+	metadata->psh = tcp->psh;
 	break;
 	
     case IPPROTO_UDP:
@@ -703,7 +721,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, t, metadata, era);
+    enum lookup_result r = lookup(ft, t, metadata);
 
     if (LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -712,7 +730,7 @@ enum lookup_result lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t 
 }
 
 static __always_inline
-enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, tunnel_t *t, __u8 era)
+enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -754,7 +772,6 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
 
-    metadata_t metadata = { .octets = data_end - (void *) ip };
     struct tcphdr *tcp = (void *) (ip + 1);
     struct udphdr *udp = (void *) (ip + 1);
     struct icmphdr *icmp = (void *) (ip + 1);
@@ -765,10 +782,10 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 	    return NOT_FOUND;
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
-	metadata.syn = tcp->syn;
-	metadata.ack = tcp->ack;
-	metadata.rst = tcp->rst;
-	metadata.fin = tcp->fin;
+	metadata->syn = tcp->syn;
+	metadata->ack = tcp->ack;
+	metadata->rst = tcp->rst;
+	metadata->fin = tcp->fin;
 	break;
 	
     case IPPROTO_UDP:
@@ -796,7 +813,7 @@ enum lookup_result lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft
 	return NOT_FOUND;
     }
 
-    enum lookup_result r = lookup(ft, t, metadata, era);
+    enum lookup_result r = lookup(ft, t, metadata);
 
     if (LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
@@ -815,7 +832,7 @@ int too_big(struct xdp_md *ctx, fivetuple_t *ft, int req_mtu, int vip_is_ipv6) {
 #define FWD(r) ((r) < 0 ?  FWD_DROP : FWD_TX)
 
 static __always_inline
-enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, const settings_t *settings)
+enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     void *data_end = (void *)(long)ctx->data_end;
     void *next_header = eth + 1;
@@ -831,12 +848,14 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	next_header = vlan + 1;
     }
     
+    metadata->octets = data_end - next_header;
+
     switch (next_proto) {
     case bpf_htons(ETH_P_IP):
-	result = lookup4(ctx, next_header, ft, t, settings->era);
+	result = lookup4(ctx, next_header, ft, t, metadata);
 	break;
     case bpf_htons(ETH_P_IPV6):
-	result = lookup6(ctx, next_header, ft, t, settings->era);
+	result = lookup6(ctx, next_header, ft, t, metadata);
 	ipv6 = 1;
 	break;
     default:
@@ -975,6 +994,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_PASS;
     }
 
+    metadata_t metadata = { .era = s->era, .globals = bpf_map_lookup_elem(&globals, &ZERO) };
+    if (!metadata.globals)
+	return XDP_DROP;
+    
     void *data_end = (void *)(long)ctx->data_end;
     void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -991,10 +1014,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
     
     fivetuple_t ft = {};    
     tunnel_t t = {};
-    
+
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
-    enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, s);
-    // int action = xdp_fwd(ctx, &ft, &t, s);
+    enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, &metadata);
 
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);

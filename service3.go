@@ -43,7 +43,7 @@ type service3 struct {
 }
 
 func (s *service3) debug(info ...any) {
-	//fmt.Println(info...)
+	fmt.Println(info...)
 }
 
 func (s *service3) set(service Service, ds ...Destination) (deleted bool, err error) {
@@ -246,10 +246,16 @@ func (s *service3) nat(reals map[netip.Addr]dest) {
 		nat := s.layer3.nat(s.service.Address, k)
 		n16 := as16(nat)
 		ext := s.layer3.netinfo.ext(v.tunnel.vlanid, s.service.Address.Is6())
+
+		if !nat.IsValid() || !ext.IsValid() {
+			v.tunnel.vlanid = 0
+		}
+
 		vip_rip := bpf_vip_rip{tunnel: v.tunnel, vip: as16(vip), ext: as16(ext)}
 		s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
 
 		s.debug("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
+		s.debug("TUN", v.tunnel, nat)
 	}
 }
 

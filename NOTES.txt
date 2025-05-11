@@ -1,5 +1,15 @@
 
 
+
+08:16:18.618006 IP 10.73.230.7 > 10.73.230.6: GREv0, length 84: IP6 ::.58506 > fd6e:eec8:76ac:1337::1.80: Flags [S], seq 3650118250, win 64800, options [mss 1440,sackOK,TS val 2977051604 ecr 0,nop,wscale 7], length 0
+
+08:17:56.479577 IP 10.73.230.7 > 10.73.230.6: GREv0, length 84: IP6 ::.43522 > fd6e:eec8:76ac:1337::1.80: Flags [S], seq 1150346349, win 64800, options [mss 1440,sackOK,TS val 2977149442 ecr 0,nop,wscale 7], length 0
+
+
+08:18:05.836414 IP 10.73.230.7 > 10.73.230.6: GREv0, length 84: IP6 fd6e:eec8:76ac:ac1d:100::1.44412 > fd6e:eec8:76ac:1337::1.80: Flags [S], seq 1967986794, win 64800, options [mss 1440,sackOK,TS val 3100324130 ecr 0,nop,wscale 7], length 0
+
+
+
 // all backends in data plane have full source IP/HW addresses in destinfo - no need to look up seperate VLAN details
 // On a single inferface then TX always
 // On a single/bond interface with VLAN header then update VLAN header (if necc) and TX always
