@@ -277,6 +277,7 @@ struct metadata {
     __u32 urg:1;
     __u32 psh:1;
     __u8 era;
+    __be16 protocol;
 };
 typedef struct metadata metadata_t;
 
@@ -853,12 +854,12 @@ static __always_inline
 enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     void *data_end = (void *)(long)ctx->data_end;
-    void *next_header = eth + 1;
-    __be16 next_proto = eth->h_proto;
     __u8 ipv6 = 0, gue_protocol = 0;
-    struct vlan_hdr *vlan = NULL;
     enum lookup_result result = NOT_A_VIP;
     
+    struct vlan_hdr *vlan = NULL;
+    void *next_header = eth + 1;
+    __be16 next_proto = eth->h_proto;
     if (next_proto == bpf_htons(ETH_P_8021Q)) {	
 	if ((vlan = next_header) + 1 > data_end)
 	    return FWD_DROP;
@@ -866,7 +867,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	next_header = vlan + 1;
     }
 
-    // do ETH_P_8021Q stuff in main function and move this to there?:
     metadata->octets = data_end - next_header;
 
     switch (next_proto) {
@@ -1027,7 +1027,23 @@ int xdp_fwd_func(struct xdp_md *ctx)
     
     if (eth + 1 > data_end)
         return XDP_DROP;
-    
+
+    /*
+    struct vlan_hdr *vlan = NULL;
+    void *next_header = eth + 1;
+    __be16 next_proto = eth->h_proto;
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {	
+	if ((vlan = next_header) + 1 > data_end)
+	    return FWD_DROP;
+	next_proto = vlan->h_vlan_encapsulated_proto;
+	next_header = vlan + 1;
+    }
+    */
+
+    // do ETH_P_8021Q stuff in main function and move this to there?:
+    //metadata.octets = data_end - next_header;
+    //metadata.protocol = next_proto;
+
     __u8 dot1q = 0;
     
     if (eth->h_proto == bpf_htons(ETH_P_8021Q))
