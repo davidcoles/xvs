@@ -139,8 +139,8 @@ type maps struct {
 func (l *layer3) nat(v, r netip.Addr) netip.Addr { return l.netns.addr(l.natmap.get(v, r), v.Is6()) }
 func (l *layer3) era() bool                      { return l.settings.era%2 > 0 }
 
-func (l *layer3) counters(vrpp bpf_vrpp3) (c bpf_counters3) {
-	all := make([]bpf_counters3, xdp.BpfNumPossibleCpus())
+func (l *layer3) counters(vrpp bpf_vrpp) (c bpf_counter) {
+	all := make([]bpf_counter, xdp.BpfNumPossibleCpus())
 
 	l.maps.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
 
@@ -151,8 +151,8 @@ func (l *layer3) counters(vrpp bpf_vrpp3) (c bpf_counters3) {
 	return c
 }
 
-func (l *layer3) createCounters(vrpp bpf_vrpp3) {
-	counters := make([]bpf_counters3, xdp.BpfNumPossibleCpus())
+func (l *layer3) createCounters(vrpp bpf_vrpp) {
+	counters := make([]bpf_counter, xdp.BpfNumPossibleCpus())
 	l.maps.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 
 	sessions := make([]int64, xdp.BpfNumPossibleCpus())
@@ -163,7 +163,7 @@ func (l *layer3) createCounters(vrpp bpf_vrpp3) {
 	l.maps.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
-func (l *layer3) removeCounters(vrpp bpf_vrpp3) {
+func (l *layer3) removeCounters(vrpp bpf_vrpp) {
 	l.maps.stats.DeleteElem(uP(&vrpp))
 	//fmt.Println("DEL", vrpp)
 	l.maps.sessions.DeleteElem(uP(&vrpp))
@@ -172,7 +172,7 @@ func (l *layer3) removeCounters(vrpp bpf_vrpp3) {
 	l.maps.sessions.DeleteElem(uP(&vrpp))
 }
 
-func (l *layer3) readAndClearSession(vrpp bpf_vrpp3) (total uint64) {
+func (l *layer3) readAndClearSession(vrpp bpf_vrpp) (total uint64) {
 	all := make([]int64, xdp.BpfNumPossibleCpus())
 
 	if !l.era() {
@@ -505,8 +505,8 @@ func (l *layer3) clean() {
 	}
 
 	// TODO - reveal any clean-up bugs
-	clean_map2 := func(m xdp.Map, a map[bpf_vrpp3]bool) {
-		var key, next, nul bpf_vrpp3
+	clean_map2 := func(m xdp.Map, a map[bpf_vrpp]bool) {
+		var key, next, nul bpf_vrpp
 		for r := 0; r == 0; key = next {
 			r = m.GetNextKey(uP(&key), uP(&next))
 			if _, exists := a[key]; !exists && key != nul {
@@ -521,7 +521,7 @@ func (l *layer3) clean() {
 	vips := map[netip.Addr]bool{}
 	nats := map[netip.Addr]bool{}
 	nmap := map[[2]netip.Addr]bool{}
-	vrpp := map[bpf_vrpp3]bool{}
+	vrpp := map[bpf_vrpp]bool{}
 
 	for k, v := range l.services {
 		vips[k.address] = true
@@ -570,7 +570,7 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service3{})))
+	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service{})))
 
 	if err != nil {
 		return err
@@ -594,13 +594,13 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	m.stats, err = x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp3{})), int(unsafe.Sizeof(bpf_counters3{})))
+	m.stats, err = x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp{})), int(unsafe.Sizeof(bpf_counter{})))
 
 	if err != nil {
 		return err
 	}
 
-	m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp3{})), 8)
+	m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp{})), 8)
 
 	if err != nil {
 		return err

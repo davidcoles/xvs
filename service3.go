@@ -43,7 +43,7 @@ type service3 struct {
 }
 
 func (s *service3) debug(info ...any) {
-	fmt.Println(info...)
+	//fmt.Println(info...)
 }
 
 func (s *service3) set(service Service, ds ...Destination) (deleted bool, err error) {
@@ -140,7 +140,7 @@ func (l *layer3) createService(s Service, ds ...Destination) error {
 }
 
 func (s *service3) extend() ServiceExtended {
-	var c bpf_counters3
+	var c bpf_counter
 	var t uint64
 	for d, _ := range s.dests {
 		c.add(s.layer3.counters(s.vrpp(d)))
@@ -207,8 +207,8 @@ func (s *service3) readSessions() {
 func (s *service3) a16() addr16   { return as16(s.service.Address) }
 func (s *service3) port() uint16  { return s.service.Port }
 func (s *service3) proto() uint16 { return uint16(s.service.Protocol) }
-func (s *service3) vrpp(d netip.Addr) bpf_vrpp3 {
-	return bpf_vrpp3{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
+func (s *service3) vrpp(d netip.Addr) bpf_vrpp {
+	return bpf_vrpp{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
 }
 
 func (s *service3) recalc() {
@@ -259,7 +259,7 @@ func (s *service3) nat(reals map[netip.Addr]dest) {
 	}
 }
 
-func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service3) {
+func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 

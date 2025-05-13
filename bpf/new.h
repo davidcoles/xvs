@@ -930,62 +930,6 @@ int is_ipv4_addr_p(struct addr *a) {
 }
 
 /**********************************************************************/
-/*
-static __always_inline
-int xsend_l2(struct xdp_md *ctx, tunnel_t *t) // FIXME - change to eth pointer
-{
-    //return redirect_eth(ctx, t->h_dest) < 0 ? XDP_ABORTED : XDP_TX;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    
-    if (eth + 1 > data_end)
-        return XDP_ABORTED;
-    
-    memcpy(eth->h_dest, t->h_dest, 6);
-    memcpy(eth->h_source, t->h_source, 6);
-    return XDP_TX;
-}
-
-static __always_inline
-int xsend_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    struct pointers p = {};
-
-    if (is_addr4(&(t->daddr)))
-	return push_xin4(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_xin6(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int xsend_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_gre6(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP) < 0 ? XDP_ABORTED : XDP_TX;
-}
-
-static __always_inline
-int xsend_fou(struct xdp_md *ctx, tunnel_t *t)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;
-
-    return push_fou6(ctx, t) < 0 ? XDP_ABORTED : XDP_TX;    
-}
-
-static __always_inline
-int xsend_gue(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_gue4(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
-    
-    return push_gue6(ctx, t, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP) < 0 ? XDP_ABORTED : XDP_TX;
-}
-*/
-
-/**********************************************************************/
 
 static __always_inline
 int send_l2_(struct xdp_md *ctx, tunnel_t *t)

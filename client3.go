@@ -99,6 +99,11 @@ type Stats struct {
 	Flows   uint64
 	Current uint64
 	Errors  uint64
+
+	SYN uint64
+	ACK uint64
+	FIN uint64
+	RST uint64
 }
 
 type ServiceExtended struct {

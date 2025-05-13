@@ -22,14 +22,14 @@ import "unsafe"
 
 type uP = unsafe.Pointer
 
-type bpf_vrpp3 struct {
+type bpf_vrpp struct {
 	vaddr    addr16 // virtual service IP
 	raddr    addr16 // real server IP
 	vport    uint16 // virtual service port
 	protocol uint16
 }
 
-type bpf_counters3 struct {
+type bpf_counter struct {
 	packets uint64
 	octets  uint64
 	flows   uint64
@@ -40,23 +40,29 @@ type bpf_counters3 struct {
 	rst     uint64
 }
 
-func (c *bpf_counters3) add(x bpf_counters3) {
+func (c *bpf_counter) add(x bpf_counter) {
 	c.packets += x.packets
 	c.octets += x.octets
 	c.flows += x.flows
 	c.errors += x.errors
+
 	c.syn += x.syn
 	c.ack += x.ack
 	c.fin += x.fin
 	c.rst += x.rst
 }
 
-func (c bpf_counters3) stats(sessions uint64) (s Stats3) {
+func (c bpf_counter) stats(sessions uint64) (s Stats3) {
 	s.Packets = c.packets
 	s.Octets = c.octets
 	s.Flows = c.flows
 	s.Errors = c.errors
 	s.Current = sessions
+
+	s.SYN = c.syn
+	s.ACK = c.ack
+	s.FIN = c.fin
+	s.RST = c.rst
 	return
 }
 
@@ -86,8 +92,6 @@ type bpf_tunnel struct {
 	pad      [12]byte // pad to 64 bytes
 }
 
-//type bpf_destinfo = bpf_tunnel
-
 type bpf_vlaninfo struct {
 	ip4 addr16
 	ip6 addr16
@@ -99,7 +103,7 @@ type bpf_vlaninfo struct {
 	gh6 mac
 }
 
-type bpf_service3 struct {
+type bpf_service struct {
 	dest [256]bpf_tunnel
 	hash [8192]uint8
 }
