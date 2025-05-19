@@ -21,10 +21,17 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct five_tuple);
+    __type(key, struct fivetuple);
     __type(value, struct addr_port_time);
     __uint(max_entries, 65556);
 } reply SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct fivetuple);
+    __type(value, struct addr_port_time);
+    __uint(max_entries, 1);
+} reply_dummy SEC(".maps");
 
 
 static __always_inline
@@ -85,6 +92,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     struct tcphdr *tcp = (void *) (ip6 + 1);
     struct udphdr *udp = (void *) (ip6 + 1);
+    struct icmp6_hdr *icmp = (void *) (ip6 + 1);
+
+    void *reply_map = &reply;
     
     switch(proto) {
     case IPPROTO_TCP:
@@ -99,6 +109,15 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	eph = udp->source;
 	svc = udp->dest;
 	break;
+    case IPPROTO_ICMPV6:
+	reply_map = &reply_dummy;
+	if (icmp + 1 > data_end)
+	    return XDP_DROP;
+	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG) {
+	    ip6->ip6_dst = vip.addr6; // switch VIP back in
+	    break;
+	}
+	return XDP_DROP;
     default:
 	return XDP_DROP;
     }
@@ -122,9 +141,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     
     struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
     struct l4v6 n = o;
-    
-    n.saddr = ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
-    n.daddr = ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
+
+    if (IPPROTO_ICMPV6 != proto) {
+	n.saddr = ip6->ip6_src = ext.addr6; // the source address of the NATed packet needs to be the LB's external IP
+	n.daddr = ip6->ip6_dst = vip.addr6; // the destination needs to the that of the VIP that we are probing
+    }
     
     switch(proto) {
     case IPPROTO_TCP:
@@ -132,6 +153,10 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	break;
     case IPPROTO_UDP:
 	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
+	break;
+    case IPPROTO_ICMPV6:
+	// FIXME needs testing
+	icmp->icmp6_cksum = l4v6_checksum_diff(~(icmp->icmp6_cksum), &n, &o);
 	break;
     }
     
@@ -152,15 +177,12 @@ int xdp_request_v6(struct xdp_md *ctx) {
         return XDP_DROP;
 
     // to match returning packet
-    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
-    rep.saddr = vip; // ???? upsets verifier if in declaration above
-    rep.daddr = ext; // ???? upsets verifier if in declaration above
+    struct fivetuple rep = { .sport = svc, .dport = eph, .proto = proto, .saddr = vip, .daddr = ext };
+    
+    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
 
-    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
-    map.nat = nat; // ??? upsets verifier if in declaration above
-    map.src = src; // ??? upsets verifier if in declaration above    
-
-    bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
+    // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
+    bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
     
     return is_ipv4_addr(t.daddr) ?
 	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
@@ -223,7 +245,10 @@ int xdp_request_v4(struct xdp_md *ctx)
 
     struct tcphdr *tcp = (void *)(ip + 1);
     struct udphdr *udp = (void *)(ip + 1);
+    struct icmphdr *icmp = (void *)(ip + 1);
 
+    void *reply_map = &reply;
+    
     switch(proto) {
     case IPPROTO_TCP:
 	if (tcp + 1 > data_end)
@@ -237,6 +262,17 @@ int xdp_request_v4(struct xdp_md *ctx)
 	eph = udp->source;
 	svc = udp->dest;
 	break;
+    case IPPROTO_ICMP:
+	reply_map = &reply_dummy;
+	if (icmp + 1 > data_end)
+	    return XDP_DROP;
+	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
+	    ip->daddr = vip.addr4.addr; // switch VIP back in
+	    __u8 *d = (void *) &(ip->daddr);
+	    bpf_printk("DST %d.%d.%d", d[1], d[2], d[3]);
+	    break;
+	}
+	return XDP_DROP;
     default:
 	return XDP_DROP;
     }
@@ -271,9 +307,11 @@ int xdp_request_v4(struct xdp_md *ctx)
     struct l4 n = o;
     struct iphdr old = *ip;
     
-    // update l3 addresses
-    n.saddr = ip->saddr = ext.addr4.addr;
-    n.daddr = ip->daddr = vip.addr4.addr;
+    // update l3 addresses if not ICMP
+    if (proto != IPPROTO_ICMP) {
+	n.saddr = ip->saddr = ext.addr4.addr;
+	n.daddr = ip->daddr = vip.addr4.addr;
+    }
 
     // calculate new l3 checksum
     ip->check = ip4_csum_diff(ip, &old);
@@ -285,6 +323,9 @@ int xdp_request_v4(struct xdp_md *ctx)
 	break;
     case IPPROTO_UDP:
 	udp->check = l4_csum_diff(&n, &o, udp->check);
+	break;
+    case IPPROTO_ICMP:
+	// IPv4 ICMP does not use a pseudo header, so no change
 	break;
     }
 
@@ -305,19 +346,20 @@ int xdp_request_v4(struct xdp_md *ctx)
 	return XDP_DROP;
 
     // to match returning packet
-    struct five_tuple rep = { .sport = svc, .dport = eph, .protocol = proto };
-    rep.saddr = vip; // ???? upsets verifier if in declaration above
-    rep.daddr = ext; // ???? upsets verifier if in declaration above
+    struct fivetuple rep = { .sport = svc, .dport = eph, .proto = proto, .saddr = vip, .daddr = ext };
+    //rep.saddr = vip; // ???? upsets verifier if in declaration above
+    //rep.daddr = ext; // ???? upsets verifier if in declaration above
     
-    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns() };
-    map.nat = nat; // ??? upsets verifier if in declaration above
-    map.src = src; // ??? upsets verifier if in declaration above    
-    
-    bpf_map_update_elem(&reply, &rep, &map, BPF_ANY);
+    struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
+    //map.nat = nat; // ??? upsets verifier if in declaration above
+    //map.src = src; // ??? upsets verifier if in declaration above    
+
+    // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
+    bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
     
     return is_ipv4_addr(t.daddr) ?
-        bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
-        bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
+	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
+	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
 static __always_inline
@@ -355,7 +397,7 @@ int xdp_reply_v6(struct xdp_md *ctx)
     addr_t saddr = { .addr6 = ip6->ip6_src };
     addr_t daddr = { .addr6 = ip6->ip6_dst };    
     
-    struct five_tuple rep = { .protocol = proto };
+    struct fivetuple rep = { .proto = proto };
     rep.saddr = saddr; // ??? upsets verifier if in declaration above
     rep.daddr = daddr; // ??? upsets verifier if in declaration above
 
@@ -448,7 +490,7 @@ int xdp_reply_v4(struct xdp_md *ctx)
     addr_t saddr = { .addr4.addr = ip->saddr };
     addr_t daddr = { .addr4.addr = ip->daddr };    
 
-    struct five_tuple rep = { .protocol = proto };
+    struct fivetuple rep = { .proto = proto };
     rep.saddr = saddr; // ??? upsets verifier if in declaration above
     rep.daddr = daddr; // ??? upsets verifier if in declaration above
     

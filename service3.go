@@ -300,3 +300,29 @@ func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	return
 }
+
+func (s *service3) repeat(packet []byte, send func([]byte)) {
+
+	vip := s.service.Address
+
+	for rip, _ := range s.dests {
+
+		nat := s.layer3.NAT(vip, rip)
+
+		if !nat.IsValid() {
+			continue
+		}
+
+		if nat.Is4() {
+			as4 := nat.As4()
+			copy(packet[16:], as4[:]) // offset 16 is the destination address in IPv4
+		} else if nat.Is6() {
+			as16 := nat.As16()
+			copy(packet[24:], as16[:]) // offset 24 is the destination address in IPv6
+		} else {
+			continue
+		}
+
+		send(packet)
+	}
+}

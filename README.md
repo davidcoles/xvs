@@ -74,7 +74,9 @@ is the VIP, and `10.1.10.100` & `10.1.10.101` are two real servers to
 send the traffic to. Only port 80/tcp is forwarded by default, but
 other ports can be added (-h for help).
 
-On a separate client machine on the same subnet you should add a static route for the VIP directed at the load balancer's own IP address, eg.:
+On a separate client machine on the same subnet you should add a
+static route for the VIP directed at the load balancer's own IP
+address, eg.:
 
 * `ip r add 192.168.101.1 via 10.1.2.3`
 
@@ -86,8 +88,9 @@ No healthchecking is done, so you'll have to make sure that a
 webserver is running on the real servers and that the VIP has been
 configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
 
-A more complete example with health check and BGP route health
-injection is currently available at
+This is not intended to be a useful utility, more an example of using
+the library.  A more complete example with health check and BGP route
+health injection is currently available at
 [vc5](https://github.com/davidcoles/vc5).
 
 

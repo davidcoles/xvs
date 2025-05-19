@@ -39,17 +39,6 @@ const xdpBPF_ANY = xdp.BPF_ANY
 
 func ktime() uint64 { return xdp.KtimeGet() * uint64(time.Second) }
 
-// TODO:
-// ingress interface/vlan -> interface IPs, for correct ICMP "too big" responses?
-// process intermediate system ICMP too big messages and pass to backends
-// health probe ICMP?
-// stats
-// latency
-// handle udp/icmp
-// Ping tracking in NAT
-// TOO BIG notifications to NAT source in NAT
-// flow tables
-
 //go:embed bpf/layer3.o.gz
 var layer3_gz []byte
 
@@ -123,10 +112,12 @@ type layer3 struct {
 }
 
 type maps struct {
+	xdp            *xdp.XDP
 	nat_to_vip_rip xdp.Map
 	redirect_map4  xdp.Map
 	redirect_map6  xdp.Map
 	flow_queue     xdp.Map
+	icmp_queue     xdp.Map
 	services       xdp.Map
 	vlaninfo       xdp.Map
 	settings       xdp.Map
@@ -409,6 +400,7 @@ func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
 func (l *layer3) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
+	icmp := time.NewTicker(time.Millisecond * 100) // 10Hz
 
 	defer reconfig.Stop()
 	defer sessions.Stop()
@@ -435,8 +427,77 @@ func (l *layer3) background() error {
 			l.mutex.Lock()
 			l.reconfig()
 			l.mutex.Unlock()
+
+		case <-icmp.C:
+			l.mutex.Lock()
+			l.icmpQueue()
+			l.mutex.Unlock()
 		}
 	}
+}
+
+// 16 bits of metadata (inc packet length)
+// 16 bits of port (host byte order)
+// ip source address (4 or 16 bytes)
+// original packet
+
+// metadata:
+// 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
+// 1 bit source; 0 - IPv4, 1 - IPv6
+// 1 bit protocol; 0 - TCP, 1 - UDP
+// 3 bits reason codes
+//   000 - fragmentation needed
+
+func (l *layer3) icmpQueue() {
+
+	const IPv4 = 0
+	const IPv6 = 1
+
+	for n := 0; n < 100; n++ {
+		var buff [2048]byte
+		if l.maps.icmp_queue.LookupAndDeleteElem(nil, uP(&buff[0])) != 0 {
+			return
+		}
+
+		meta := *(*uint16)(uP(&buff[0]))
+		port := *(*uint16)(uP(&buff[2]))
+
+		length := meta >> 5
+		family := meta >> 4 & 0x01
+		proto4 := meta >> 3 & 0x01
+		reason := meta & 0x07
+
+		var addr netip.Addr
+		var packet []byte
+		if family == IPv4 {
+			var four [4]byte
+			copy(four[:], buff[4:])
+			addr = netip.AddrFrom4(four)
+			packet = buff[4+4 : 4+4+length]
+		} else {
+			var sixteen [16]byte
+			copy(sixteen[:], buff[4:])
+			addr = netip.AddrFrom16(sixteen)
+			packet = buff[4+16 : 4+16+length]
+		}
+
+		fmt.Println(length, family, proto4, reason, addr, port)
+
+		skey := threetuple{address: addr, port: port, protocol: TCP}
+		//send := func(packet []byte) {
+		//	//fmt.Println(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
+		//	l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
+		//}
+
+		if s, ok := l.services[skey]; ok {
+			//s.repeat(packet, send)
+			s.repeat(packet, func(p []byte) { l.raw(p) })
+		}
+	}
+}
+
+func (l *layer3) raw(packet []byte) {
+	l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
 }
 
 // func (l *layer3) vlansx(vlans map[uint16][2]netip.Prefix) error {
@@ -547,6 +608,8 @@ func (l *layer3) clean() {
 
 func (m *maps) init(x *xdp.XDP) (err error) {
 
+	m.xdp = x
+
 	m.redirect_map4, err = x.FindMap("redirect_map4", 4, 4)
 
 	if err != nil {
@@ -602,6 +665,12 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 	}
 
 	m.flow_queue, err = x.FindMap("flow_queue", 0, int(ft_size+flow_size))
+
+	if err != nil {
+		return err
+	}
+
+	m.icmp_queue, err = x.FindMap("icmp_queue", 0, int(2048))
 
 	if err != nil {
 		return err

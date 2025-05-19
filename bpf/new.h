@@ -983,3 +983,110 @@ int send_fou_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
     
     return push_gue6(ctx, t, protocol);
 }
+
+static __always_inline
+void *xxx_is_ipv4(void *data, void *data_end)
+{
+    struct iphdr *iph = data;
+    __u32 nh_off = sizeof(struct iphdr);
+
+    if (data + nh_off > data_end)
+    	return NULL;
+    
+    if (iph->ihl < 5)
+	return NULL;
+    
+    if (iph->ihl == 5)
+	return data + nh_off;
+
+    return NULL; // remove to allow IPv4 options - needs testing first and probably not advisable
+    
+    nh_off = (iph->ihl) * 4;
+    
+    if (data + nh_off > data_end)
+	return NULL;
+    
+    return data + nh_off;
+}
+
+
+static __always_inline
+int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *data_end, void *buffer, int size)
+{
+    // https://blog.cloudflare.com/path-mtu-discovery-in-practice/
+
+    // find protocol + dest ip+port from the ICMP message
+    // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
+    // userspace sends to all backends for that service
+
+    const __u16 TCP = 0;
+    const __u16 UDP = 1;
+
+    __u16 protocol = TCP;
+
+    // extract information about the flow to which this ICMP refers
+    struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct icmphdr);
+    
+    void *next_header;
+    
+    if (!(next_header = xxx_is_ipv4(inner_ip, data_end)))
+	return -1;
+    
+    if ((inner_ip->frag_off & bpf_htons(0x3fff)) != 0)
+	return -1;
+    
+    if (ip->daddr != inner_ip->saddr)
+	return -1;
+    
+    switch(inner_ip->protocol) {
+    case IPPROTO_UDP:
+	protocol = UDP;
+	break;
+    case IPPROTO_TCP:
+	protocol = TCP;
+	break;
+    default:
+	return -1;
+    }
+    
+    if (next_header + sizeof(struct udphdr) > data_end)
+	return -1;
+    
+    // TCP and UDP headers the same for ports - which is all that we need
+    struct udphdr *inner_udp = next_header;
+    
+    __u16 port = bpf_ntohs(inner_udp->source);
+
+    // 16 bits of metadata (inc packet length)
+    // 16 bits of port (host byte order)
+    // ip source address (4 or 16 bytes)
+    // original packet
+
+    // metadata:
+    // 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
+    // 1 bit source; 0 - IPv4, 1 - IPv6
+    // 1 bit protocol; 0 - TCP, 1 - UDP
+    // 3 bits reason codes
+    //   000 - fragmentation needed
+    
+    __u16 reason = 0; // fragmentation needed
+    __u16 family = 0; // IPv4
+    __u16 n = 0;
+    
+    for (n = 0; n < (size-8); n++) { // 8 bytes of header
+	if (((void *) ip) + n >= data_end)
+	    break;
+	((__u8 *) buffer)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
+    }
+    
+    __u16 metadata = n << 5; // n contains packet length
+    metadata |= family << 4;
+    metadata |= protocol << 3;
+    metadata |= reason;
+    
+    ((__u16 *)  buffer)[0] = metadata;  // bytes 0-1
+    ((__u16 *)  buffer)[1] = port;      // bytes 2-3
+    ((__be32 *) buffer)[1] = ip->daddr; // bytes 4-7
+
+    return 0;
+}

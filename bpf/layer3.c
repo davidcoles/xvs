@@ -98,6 +98,15 @@ struct fivetuple {
 };
 typedef struct fivetuple fivetuple_t;
 
+struct xfive_tuple {
+    addr_t saddr;
+    addr_t daddr;
+    __be16 sport;
+    __be16 dport;
+    __u16 protocol;
+};
+
+
 struct tunnel {
     addr_t daddr;
     addr_t saddr;
@@ -120,13 +129,7 @@ int is_addr4(struct addr *a) {
 
 #include "new.h"
 
-struct five_tuple {
-    addr_t saddr;
-    addr_t daddr;
-    __be16 sport;
-    __be16 dport;
-    __u8 protocol;
-};
+
 
 struct {
     __uint(type, BPF_MAP_TYPE_DEVMAP);
@@ -210,6 +213,13 @@ struct {
     __type(value, __u8[sizeof(fourtuple_t) + sizeof(flow_t)]);
     __uint(max_entries, FLOW_QUEUE_SIZE);
 } flow_queue SEC(".maps");
+
+
+struct {
+    __uint(type, BPF_MAP_TYPE_QUEUE);
+    __type(value, __u8[2048]);
+    __uint(max_entries, 1000);
+} icmp_queue SEC(".maps");
 
 /**********************************************************************/
 
@@ -324,10 +334,12 @@ struct {
     __uint(max_entries, 1);
 } settings SEC(".maps");
 
+#define BUFFER 2048
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
-    __type(value, __u8[128]);
+    __type(value, __u8[BUFFER]);
     __uint(max_entries, 1);
 } buffers SEC(".maps");
 
@@ -720,7 +732,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
         if (icmp + 1 > data_end)
             return FWD_MALFORMED;
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
-	    bpf_printk("ICMPv6\n");
+	    bpf_printk("ICMPv6");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
 	    struct icmp6_hdr old = *icmp;
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
@@ -812,13 +824,29 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	if (icmp + 1 > data_end)
             return FWD_MALFORMED;
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
-	    bpf_printk("ICMPv4\n");
+	    bpf_printk("ICMPv4");
 	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
 	    struct icmphdr old = *icmp;
 	    icmp->type = ICMP_ECHOREPLY;
             icmp->checksum = icmp4_csum_diff(icmp, &old);
 	    reverse_ethhdr(eth);
 	    return FWD_BOUNCE_ICMP;
+	}
+	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
+	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
+
+	    
+	    bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
+	    
+	    if (!buffer)
+		return FWD_NOT_FOUND; // TODO - new enum
+	    
+	    if (icmp_dest_unreach_frag_needed(ip, icmp, data_end, buffer, BUFFER) < 0)
+	    	return FWD_NOT_FOUND; // TODO - new enum
+
+	    // send packet to userspace to be forwarded to backend(s)
+	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
+	    	return FWD_NOT_FOUND; // TODO - new enum
 	}
 	return FWD_NOT_FOUND;	
 
@@ -943,7 +971,14 @@ int xdp_vethb_func(struct xdp_md *ctx)
 	if (ip + 1 > data_end)
 	    return XDP_DROP;
 	
+	struct icmphdr *icmp4 = (void *)(ip + 1);
+	
 	switch(ip->protocol) {
+	case IPPROTO_ICMP: // fallthrough
+	    if (icmp4 + 1 > data_end)
+	    	return XDP_DROP;
+	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED))
+	    	return XDP_PASS;
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
 	    reverse_ethhdr(eth);
@@ -954,8 +989,15 @@ int xdp_vethb_func(struct xdp_md *ctx)
     case bpf_htons(ETH_P_IPV6):
 	if (ip6 + 1 > data_end)
 	    return XDP_DROP;
+
+	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
 	
 	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+	    case IPPROTO_ICMPV6:
+	    if (icmp6 + 1 > data_end)
+	    	return XDP_DROP;
+	    if (!(icmp6->icmp6_type == ICMP6_PACKET_TOO_BIG))
+	    	return XDP_PASS;
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
 	    reverse_ethhdr(eth);
