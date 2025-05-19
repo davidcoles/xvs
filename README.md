@@ -7,27 +7,29 @@ This code is originally from the
 [vc5](https://github.com/davidcoles/vc5) load balancer, and has been
 split out to be developed seperately.
 
-This code implements a layer 4 Direct Server Return (DSR) load
-balancer with an eBPF data plane that is loaded into the kernel, and a
+XVS implements a layer 4 Direct Server Return (DSR) load
+balancer with an eBPF data plane (that is loaded into the kernel), and a
 supporting Go library to configure the balancer through the XDP
 API.
 
-IPv6 and layer 3 tunnels are now supported! Supported tunnel types
-are: IP-in-IP (all flavours), GRE, FOU and GUE. The NAT system which
-can be used to perform healthchecks against the virtual IP address on
-backend servers is no longer needs the client to use the network
-namespace, which makes life significantly simpler.
+IPv6 and [layer 3 tunnels](doc/tunnels.md) are now supported. Tunnel
+types implemented are: IP-in-IP (all flavours), GRE, FOU and GUE. A
+NAT system provides a mechanism to directly query services via the
+virtual IP address on backends (using the appropriate tunnel type),
+which allows a client to perform accurate health checks and so
+enable/disable new connections to targets as necessary.
 
 There is no requirement to use the same address family for virtual and
-real server addresses.
+real server addresses; you can forward IPv6 VIPs to backends using a
+IPv4 tunnel endpoint, and vice versa.
 
-Some facilities (eg.: shared flow queues) have not been implemented in
-the new code yet, but will be added shortly.
+Some facilities may not have been implemented in the new code yet, but
+will be added shortly.
 
 A compiled BPF ELF object file is committed to this repository (tagged
 versions) and is accessed via Go's embed feature, which means that it
 can be used as a standard Go module without having to build the binary
-as a seperate step. [libbpf](https://github.com/libbpf/libbpf) is
+as a separate step. [libbpf](https://github.com/libbpf/libbpf) is
 still required for linking programs using the library (CGO_CFLAGS and
 CGO_LDFLAGS environment variables may need to be used to specify the
 location of the library - see the Makefile for an example of how to do
@@ -39,13 +41,9 @@ eBPF code is JITted to the native instruction set at runtime, so this
 should run on any Linux architecture. Currently AMD64 and ARM
 (Raspberry Pi) are confirmed to work.
 
-Devices with constrained memory might have issues loading in the
-default size flow state tables. This can now be overriden with the
-MaxFlows parameter on newer kernels.
-
-Raspberry Pi Wi-Fi load balancer:
-
-`cmd/balancer wlan0 192.168.0.16 192.168.101.1 192.168.0.10 192.168.0.11`
+Devices with constrained memory might have issues loading the default
+size flow state tables. This can now be overriden with the MaxFlows
+parameter on newer kernels.
 
 ## Documentation
 
@@ -62,17 +60,21 @@ A simple application in the `cmd/` directory will balance traffic
 to a VIP (TCP port 80 by default, can be changed with flags) to a
 number of backend servers on the same IP subnet.
 
-Compile/run with:
- 
-* `make example`
-* `cmd/balancer ens192 10.1.2.3 192.168.101.1 10.1.2.10 10.1.2.11 10.1.2.12`
+Compile/run with, eg.:
 
-Replace `ens192` with your ethernet interface name, `10.1.2.3` with
-the address of the machine you are running the program on,
-`192.168.101.1` with the VIP you want to use and `10.1.2.10-12` with
-any number of real server addresses.
+* `make`
+* `cmd/balancer -r 180 -t gre ens192 10.1.2.254/24 192.168.101.1 10.1.10.100 10.1.10.101`
 
-On a seperate client machine on the same subnet you should add a static route for the VIP, eg.:
+where `180` is the number of seconds to run for, `gre` is the tunnel
+type, `ens192` is the network card you wish to load the XDP program
+onto, `10.1.2.254/24` is the IP address of the router that will handle
+tunneled traffic (the `/24` allows the library to determine the local
+IP address to use as the source for tunnel packets), `192.168.101.1`
+is the VIP, and `10.1.10.100` & `10.1.10.101` are two real servers to
+send the traffic to. Only port 80/tcp is forwarded by default, but
+other ports can be added (-h for help).
+
+On a separate client machine on the same subnet you should add a static route for the VIP directed at the load balancer's own IP address, eg.:
 
 * `ip r add 192.168.101.1 via 10.1.2.3`
 

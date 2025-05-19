@@ -373,44 +373,39 @@ func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
 		return err
 	}
 
-	//shared, err := x.FindMap("shared", int(ft_size), int(flow_size))
+	if max == 0 {
+		// default max entries to be the same as the shared map
+		max_entries := l.maps.shared.MaxEntries()
 
-	//if err != nil {
-	//	return err
-	//}
+		if max_entries < 1 {
+			return fmt.Errorf("Error looking up size of the flow state map")
+		}
 
-	// default max entries to be the same as the shared map
-	max_entries := l.maps.shared.MaxEntries()
-
-	if max_entries < 0 {
-		return fmt.Errorf("Error looking up size of the flow state map")
-	}
-
-	if max > 0 {
-		max_entries = int(max)
+		max = uint32(max_entries)
 	}
 
 	max_cpu := flows_tcp.MaxEntries()
 
-	if max_cpu < 0 {
+	if max_cpu < 1 {
 		return fmt.Errorf("Error looking up size of the CPU flow state map")
 	}
 
-	num_cpu := uint32(xdp.BpfNumPossibleCpus())
+	num_cpu := xdp.BpfNumPossibleCpus()
 
-	if num_cpu > uint32(max_cpu) {
+	if num_cpu > max_cpu {
 		return fmt.Errorf("Number of CPUs is greater than the number compiled in to the ELF object")
 	}
 
-	for cpu := uint32(0); cpu < num_cpu; cpu++ {
+	for cpu := 0; cpu < num_cpu; cpu++ {
 		name := fmt.Sprintf("flows_tcp_inner_%d", cpu)
-		if r := flows_tcp.CreateLruHash(cpu, name, ft_size, flow_size, uint32(max_entries)); r != 0 {
+		if r := flows_tcp.CreateLruHash(uint32(cpu), name, ft_size, flow_size, max); r != 0 {
 			return fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
 		}
 	}
 
 	return nil
 }
+
 func (l *layer3) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)

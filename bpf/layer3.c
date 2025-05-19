@@ -98,7 +98,6 @@ struct fivetuple {
 };
 typedef struct fivetuple fivetuple_t;
 
-// will replace tunnel type
 struct tunnel {
     addr_t daddr;
     addr_t saddr;
@@ -246,6 +245,16 @@ struct global {
     __u64 failed;  // modifying packet (adust head/tail) failed
     __u64 fragmented; // fragmented l4 packets - per service?
 
+    /*
+    __u64 probe_reply;
+    __u64 not_a_vip;
+    __u64 too_big; //ip4+ ip6 variant?
+    __u64 icmp_request;
+    __u64 expired_ttl; // vip traffic only
+    __u64 failed_adjust;
+    __u64 service_not_found;
+    */
+
     __u64 icmp_echo_request;  // per vip?
 
     __u64 syn;
@@ -263,8 +272,8 @@ struct metadata {
     __u32 fin:1;
     __u32 urg:1;
     __u32 psh:1;
-    __u8 era;
     __be16 protocol;
+    __u8 era;
 };
 typedef struct metadata metadata_t;
 

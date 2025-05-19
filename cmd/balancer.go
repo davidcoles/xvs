@@ -35,8 +35,8 @@ func main() {
 
 	args := flag.Args()
 
-	vlan := args[0]
-	iface := args[1]
+	iface := args[0]
+	vlan := args[1]
 	vip := args[2]
 	rips := args[3:]
 
