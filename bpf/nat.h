@@ -177,8 +177,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
         return XDP_DROP;
 
     // to match returning packet
-    struct fivetuple rep = { .sport = svc, .dport = eph, .proto = proto, .saddr = vip, .daddr = ext };
-    
+    fivetuple_t rep = { .sport = svc, .dport = eph, .proto = proto, .saddr = vip, .daddr = ext };
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
 
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
@@ -346,13 +345,8 @@ int xdp_request_v4(struct xdp_md *ctx)
 	return XDP_DROP;
 
     // to match returning packet
-    struct fivetuple rep = { .sport = svc, .dport = eph, .proto = proto, .saddr = vip, .daddr = ext };
-    //rep.saddr = vip; // ???? upsets verifier if in declaration above
-    //rep.daddr = ext; // ???? upsets verifier if in declaration above
-    
+    fivetuple_t rep = { .sport = svc, .dport = eph, .proto = proto, .saddr = vip, .daddr = ext };
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
-    //map.nat = nat; // ??? upsets verifier if in declaration above
-    //map.src = src; // ??? upsets verifier if in declaration above    
 
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
     bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
@@ -397,9 +391,7 @@ int xdp_reply_v6(struct xdp_md *ctx)
     addr_t saddr = { .addr6 = ip6->ip6_src };
     addr_t daddr = { .addr6 = ip6->ip6_dst };    
     
-    struct fivetuple rep = { .proto = proto };
-    rep.saddr = saddr; // ??? upsets verifier if in declaration above
-    rep.daddr = daddr; // ??? upsets verifier if in declaration above
+    fivetuple_t rep = { .proto = proto, .saddr = saddr, .daddr = daddr };
 
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;
@@ -490,10 +482,8 @@ int xdp_reply_v4(struct xdp_md *ctx)
     addr_t saddr = { .addr4.addr = ip->saddr };
     addr_t daddr = { .addr4.addr = ip->daddr };    
 
-    struct fivetuple rep = { .proto = proto };
-    rep.saddr = saddr; // ??? upsets verifier if in declaration above
-    rep.daddr = daddr; // ??? upsets verifier if in declaration above
-    
+    fivetuple_t rep = { .proto = proto, .saddr = saddr, .daddr = daddr };
+
     struct tcphdr *tcp = NULL;
     struct udphdr *udp = NULL;    
 
