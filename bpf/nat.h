@@ -57,15 +57,35 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return XDP_DROP;
     
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
-	//return XDP_DROP;
-	return XDP_PASS;
+    //if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
+    //	//return XDP_DROP;
+    //	return XDP_PASS;
+
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+    struct udphdr *udp = (void *) (ip6 + 1);
+    struct icmp6_hdr *icmp = (void *) (ip6 + 1);
+
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
+	if (icmp + 1 > data_end)
+	    return XDP_DROP;
+	switch (icmp->icmp6_type) {
+	case ND_NEIGHBOR_SOLICIT:
+	case ND_NEIGHBOR_ADVERT:
+	    return XDP_PASS; // pass neighbour discovery traffic, otherwise the veth pair won't see each other
+	case ICMP6_PACKET_TOO_BIG:
+	    break;
+	default:
+	    bpf_printk("ICMP6 %d %d %d", icmp->icmp6_type, icmp->icmp6_code, ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim);
+	    return XDP_DROP;
+	}
+    }
 
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
     	return XDP_DROP;
     
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
 
+    
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
@@ -90,10 +110,6 @@ int xdp_request_v6(struct xdp_md *ctx) {
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
 
-    struct tcphdr *tcp = (void *) (ip6 + 1);
-    struct udphdr *udp = (void *) (ip6 + 1);
-    struct icmp6_hdr *icmp = (void *) (ip6 + 1);
-
     void *reply_map = &reply;
     
     switch(proto) {
@@ -110,14 +126,17 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	svc = udp->dest;
 	break;
     case IPPROTO_ICMPV6:
-	reply_map = &reply_dummy;
 	if (icmp + 1 > data_end)
 	    return XDP_DROP;
-	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG) {
+	switch (icmp->icmp6_type) {
+	case ICMP6_PACKET_TOO_BIG:
 	    ip6->ip6_dst = vip.addr6; // switch VIP back in
+	    reply_map = &reply_dummy; // don't store in the reply map
 	    break;
+	default:
+	    return XDP_DROP;
 	}
-	return XDP_DROP;
+	break;
     default:
 	return XDP_DROP;
     }
@@ -139,7 +158,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 2)
         ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 2;
     
-    struct l4v6 o = {.saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
+    struct l4v6 o = { .saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
     struct l4v6 n = o;
 
     if (IPPROTO_ICMPV6 != proto) {
@@ -166,11 +185,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     __u8 gue_protocol = 0;
 
     switch (t.method) {
-    case T_NONE: action = send_l2_(ctx, &t); break;
-    case T_IPIP: action = send_ipip_(ctx, &t, 1); break;
-    case T_GRE:  action = send_gre_(ctx, &t, 1); break;
+    case T_NONE: action = send_l2(ctx, &t); break;
+    case T_IPIP: action = send_ipip(ctx, &t, 1); break;
+    case T_GRE:  action = send_gre(ctx, &t, 1); break;
     case T_GUE:  gue_protocol = IPPROTO_IPV6; // fallthrough
-    case T_FOU:  action = send_fou_gue(ctx, &t, gue_protocol); break;
+    case T_FOU:  action = send_gue(ctx, &t, gue_protocol); break;
     }
 
     if (action < 0 || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
@@ -334,11 +353,11 @@ int xdp_request_v4(struct xdp_md *ctx)
     __u8 gue_protocol = 0;
     
     switch (t.method) {
-    case T_NONE: action = send_l2_(ctx, &t); break;
-    case T_IPIP: action = send_ipip_(ctx, &t, 0); break;
-    case T_GRE:	 action = send_gre_(ctx, &t, 0); break;
+    case T_NONE: action = send_l2(ctx, &t); break;
+    case T_IPIP: action = send_ipip(ctx, &t, 0); break;
+    case T_GRE:	 action = send_gre(ctx, &t, 0); break;
     case T_GUE:  gue_protocol = IPPROTO_IPIP; // fallthrough
-    case T_FOU:  action = send_fou_gue(ctx, &t, gue_protocol); break;
+    case T_FOU:  action = send_gue(ctx, &t, gue_protocol); break;
     }
 
     if (action < 0 || !t.vlanid) // verifier shenanigans if I check for !t.vlanid earlier!
@@ -507,7 +526,7 @@ int xdp_reply_v4(struct xdp_md *ctx)
     }
 
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
-    
+
     if (!match)
 	return XDP_DROP;
     

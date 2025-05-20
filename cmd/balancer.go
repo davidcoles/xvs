@@ -24,8 +24,9 @@ func main() {
 	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
 	sticky := flag.Bool("s", false, "Sticky")
 	tunnel := flag.String("t", "none", "Tunnel type none|fou|gre|gue|ipip")
-	tport4 := flag.Uint("4", 9999, "Port to use for FOU/GUE on IPv4")
-	tport6 := flag.Uint("6", 6666, "Port to use for FOU/GUE on IPv6")
+	tport4 := flag.Uint("4", 9999, "Port to use for FOU IPv4 VIPs")
+	tport6 := flag.Uint("6", 6666, "Port to use for FOU IPv6 VIPs")
+	tportg := flag.Uint("G", 8888, "Port to use for GUE")
 	extra := flag.String("V", "", "Extra VLAN")
 
 	flag.Var(&vips, "v", "extra vips")
@@ -136,6 +137,10 @@ func main() {
 
 				if service.Address.Is6() {
 					tport = uint16(*tport6)
+				}
+
+				if tun == xvs.GUE {
+					tport = uint16(*tportg)
 				}
 
 				destination := xvs.Destination3{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport, Weight: 1}

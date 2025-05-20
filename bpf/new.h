@@ -834,7 +834,7 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
-    udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
+    udp->len = bpf_htons(overhead + orig_len);
     udp->check = 0;
 
     if (protocol) {
@@ -843,7 +843,7 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 	if (gue + 1 > p.data_end)
 	    return -1;
 	
-	*((__be32 *) gue) = 0;
+	*((__be32 *) gue) = 0; // zero out the whole header
 
 	gue->protocol = protocol;
     }
@@ -860,7 +860,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     struct pointers p = {};
     int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
     int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, overhead);
-
+    
     if (orig_len < 0)
 	return -1;
     
@@ -871,7 +871,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
-    udp->len = bpf_htons(sizeof(struct udphdr) + sizeof(struct gue_hdr) + orig_len);
+    udp->len = bpf_htons(overhead + orig_len);
     udp->check = 0;
 
     if (protocol) {
@@ -880,7 +880,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 	if (gue + 1 > p.data_end)
 	    return -1;
 	
-	*((__be32 *) gue) = 0;
+	*((__be32 *) gue) = 0; // zero out the whole header
 	
 	gue->protocol = protocol;
     }
@@ -932,7 +932,7 @@ int is_ipv4_addr_p(struct addr *a) {
 /**********************************************************************/
 
 static __always_inline
-int send_l2_(struct xdp_md *ctx, tunnel_t *t)
+int send_l2(struct xdp_md *ctx, tunnel_t *t)
 {
     //return redirect_eth(ctx, t->h_dest);
     struct ethhdr *eth = (void *)(long)ctx->data;
@@ -947,7 +947,7 @@ int send_l2_(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_ipip_(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
     struct pointers p = {};
 
@@ -958,7 +958,7 @@ int send_ipip_(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_gre_(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
     if (is_addr4(&(t->daddr)))
 	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
@@ -967,46 +967,12 @@ int send_gre_(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_fou_(struct xdp_md *ctx, tunnel_t *t)
-{
-    if (is_addr4(&(t->daddr)))
-	return push_fou4(ctx, t);
-
-    return push_fou6(ctx, t);
-}
-
-static __always_inline
-int send_fou_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
+int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
 {
     if (is_addr4(&(t->daddr)))
 	return push_gue4(ctx, t, protocol);
     
     return push_gue6(ctx, t, protocol);
-}
-
-static __always_inline
-void *xxx_is_ipv4(void *data, void *data_end)
-{
-    struct iphdr *iph = data;
-    __u32 nh_off = sizeof(struct iphdr);
-
-    if (data + nh_off > data_end)
-    	return NULL;
-    
-    if (iph->ihl < 5)
-	return NULL;
-    
-    if (iph->ihl == 5)
-	return data + nh_off;
-
-    return NULL; // remove to allow IPv4 options - needs testing first and probably not advisable
-    
-    nh_off = (iph->ihl) * 4;
-    
-    if (data + nh_off > data_end)
-	return NULL;
-    
-    return data + nh_off;
 }
 
 
@@ -1026,11 +992,12 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
 
     // extract information about the flow to which this ICMP refers
     struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct icmphdr);
-    
-    void *next_header;
-    
-    if (!(next_header = xxx_is_ipv4(inner_ip, data_end)))
-	return -1;
+
+    if (inner_ip + 1 > data_end)
+        return -1;
+
+    if (inner_ip->ihl != 5)
+	  return -1;
     
     if ((inner_ip->frag_off & bpf_htons(0x3fff)) != 0)
 	return -1;
@@ -1048,12 +1015,12 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     default:
 	return -1;
     }
-    
-    if (next_header + sizeof(struct udphdr) > data_end)
-	return -1;
-    
+
     // TCP and UDP headers the same for ports - which is all that we need
-    struct udphdr *inner_udp = next_header;
+    struct udphdr *inner_udp = (void *)(inner_ip + 1);    
+
+    if (inner_udp + 1 > data_end)
+	return -1;
     
     __u16 port = bpf_ntohs(inner_udp->source);
 

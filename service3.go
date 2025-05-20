@@ -43,7 +43,7 @@ type service3 struct {
 }
 
 func (s *service3) debug(info ...any) {
-	//fmt.Println(info...)
+	fmt.Println(info...)
 }
 
 func (s *service3) set(service Service, ds ...Destination) (deleted bool, err error) {

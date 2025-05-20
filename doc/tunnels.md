@@ -51,6 +51,7 @@ ip l set dev ip6tnl0 up
 ```
 modprobe ip_gre
 ip l set dev gre0 up
+sleep 1 # maybe a slight race issue?
 sysctl -w net.ipv4.conf.gre0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ````
@@ -61,6 +62,7 @@ sysctl -w net.ipv4.conf.all.rp_filter=0
 ```
 modprobe ip6_gre
 ip l set dev ip6gre0 up
+sleep 1 # maybe	a slight race issue?
 sysctl -w net.ipv4.conf.ip6gre0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ```
@@ -78,6 +80,7 @@ modprobe fou
 modprobe ipip
 ip fou add port 9999 ipproto 4
 ip link set dev tunl0 up
+sleep 1
 sysctl -w net.ipv4.conf.tunl0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ```
@@ -107,8 +110,9 @@ developed, with options to filter by tunnel peer and VIP.
 ```
 modprobe fou
 modprobe ipip
-ip fou add port 9999 gue
+ip fou add port 8888 gue
 ip link set dev tunl0 up
+sleep 1
 sysctl -w net.ipv4.conf.tunl0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ```
@@ -119,7 +123,7 @@ sysctl -w net.ipv4.conf.all.rp_filter=0
 modprobe fou
 modprobe sit
 ip l set dev sit0 up
-ip fou add port 9999 gue
+ip fou add port 8888 gue
 ```
 
 

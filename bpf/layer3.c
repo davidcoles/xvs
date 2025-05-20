@@ -78,7 +78,6 @@ struct addr {
         struct in6_addr addr6;
     };
 };
-
 typedef struct addr addr_t;
 
 struct fourtuple {
@@ -89,23 +88,18 @@ struct fourtuple {
 };
 typedef struct fourtuple fourtuple_t;
 
+// proto is a __u32 here to align the struct to 8 bytes. if this is
+// not done then inline initialisation will have some undefined bytes
+// from the stack unless saddr and daddr are assigned separately. as
+// this is used as a key to map then lookups will fail
 struct fivetuple {
     struct addr saddr;
     struct addr daddr;
     __be16 sport;
     __be16 dport;
-    __u16 proto;
+    __u32 proto;
 };
 typedef struct fivetuple fivetuple_t;
-
-struct xfive_tuple {
-    addr_t saddr;
-    addr_t daddr;
-    __be16 sport;
-    __be16 dport;
-    __u16 protocol;
-};
-
 
 struct tunnel {
     addr_t daddr;
@@ -119,7 +113,6 @@ struct tunnel {
     __u8 h_source[6]; // local hw address
     __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
 };
-
 typedef struct tunnel tunnel_t;
 
 static __always_inline
@@ -921,11 +914,11 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
 
     switch ((int) result) { // cast to int to avoid having to deal with all cases
-    case FWD_LAYER3_IPIP: return FWD(send_ipip_(ctx, t, ipv6));
-    case FWD_LAYER3_GRE:  return FWD(send_gre_(ctx, t, ipv6));
-    case FWD_LAYER2_DSR:  return FWD(send_l2_(ctx, t));
+    case FWD_LAYER3_IPIP: return FWD(send_ipip(ctx, t, ipv6));
+    case FWD_LAYER3_GRE:  return FWD(send_gre(ctx, t, ipv6));
+    case FWD_LAYER2_DSR:  return FWD(send_l2(ctx, t));
     case FWD_LAYER3_GUE:  gue_protocol = ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP; // fallthrough ...
-    case FWD_LAYER3_FOU:  return FWD(send_fou_gue(ctx, t, gue_protocol));    // default to plain FOU unless gue_protocol set above
+    case FWD_LAYER3_FOU:  return FWD(send_gue(ctx, t, gue_protocol));    // default to plain FOU unless gue_protocol set above
     }
     return FWD_FAILED; // FIXME
 }
@@ -978,7 +971,7 @@ int xdp_vethb_func(struct xdp_md *ctx)
 	    if (icmp4 + 1 > data_end)
 	    	return XDP_DROP;
 	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED))
-	    	return XDP_PASS;
+		return XDP_PASS;
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
 	    reverse_ethhdr(eth);
@@ -993,11 +986,20 @@ int xdp_vethb_func(struct xdp_md *ctx)
 	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
 	
 	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
-	    case IPPROTO_ICMPV6:
+	case IPPROTO_ICMPV6:
 	    if (icmp6 + 1 > data_end)
 	    	return XDP_DROP;
-	    if (!(icmp6->icmp6_type == ICMP6_PACKET_TOO_BIG))
-	    	return XDP_PASS;
+	    bpf_printk("ICMP6 %d %d", icmp6->icmp6_type, icmp6->icmp6_code);
+	    switch (icmp6->icmp6_type) {
+	    case ND_NEIGHBOR_SOLICIT:
+	    case ND_NEIGHBOR_ADVERT:
+		return XDP_PASS;
+	    case ICMP6_PACKET_TOO_BIG:
+		break;
+	    default:
+		return XDP_DROP;
+	    }
+        case ICMP6_PACKET_TOO_BIG:
 	case IPPROTO_TCP:
 	case IPPROTO_UDP:
 	    reverse_ethhdr(eth);
