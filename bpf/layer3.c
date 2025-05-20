@@ -733,6 +733,21 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
             reverse_ethhdr(eth);
 	    return FWD_BOUNCE_ICMP;
 	}
+	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
+	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
+	    
+	    bpf_printk("ICMPv6 ICMP6_PACKET_TOO_BIG");
+	    
+	    if (!buffer)
+		return FWD_NOT_FOUND; // TODO - new enum
+	    
+	    if (icmp_dest_unreach_frag_needed6(ip6, icmp, data_end, buffer, BUFFER) < 0)
+	    	return FWD_NOT_FOUND; // TODO - new enum
+	    
+	    // send packet to userspace to be forwarded to backend(s)
+	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
+	    	return FWD_NOT_FOUND; // TODO - new enum
+	}
 	return FWD_NOT_FOUND;
 	
     default:
@@ -827,7 +842,6 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	}
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
-
 	    
 	    bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
 	    

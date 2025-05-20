@@ -1057,3 +1057,87 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
 
     return 0;
 }
+
+
+
+
+
+
+
+static __always_inline
+int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, void *data_end, void *buffer, int size)
+{
+
+    const __u16 TCP = 0;
+    const __u16 UDP = 1;
+
+    __u16 protocol = TCP;
+
+    // extract information about the flow to which this ICMP refers
+    struct ip6_hdr *inner_ip = ((void *) icmp) + sizeof(struct icmp6_hdr);
+
+    if (inner_ip + 1 > data_end)
+        return -1;
+
+
+    if ((inner_ip->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
+	return -1;
+
+    /*
+    if (ip->daddr != inner_ip->saddr)
+	return -1;
+    */
+    
+    switch(inner_ip->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+    case IPPROTO_UDP:
+	protocol = UDP;
+	break;
+    case IPPROTO_TCP:
+	protocol = TCP;
+	break;
+    default:
+	return -1;
+    }
+
+    // TCP and UDP headers the same for ports - which is all that we need
+    struct udphdr *inner_udp = (void *)(inner_ip + 1);    
+
+    if (inner_udp + 1 > data_end)
+	return -1;
+    
+    __u16 port = bpf_ntohs(inner_udp->source);
+
+    // 16 bits of metadata (inc packet length)
+    // 16 bits of port (host byte order)
+    // ip source address (4 or 16 bytes)
+    // original packet
+
+    // metadata:
+    // 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
+    // 1 bit source; 0 - IPv4, 1 - IPv6
+    // 1 bit protocol; 0 - TCP, 1 - UDP
+    // 3 bits reason codes
+    //   000 - fragmentation needed
+    
+    __u16 reason = 0; // fragmentation needed
+    __u16 family = 0; // IPv4
+    __u16 n = 0;
+    
+    for (n = 0; n < (size-20); n++) { // 20 bytes of header
+	if (((void *) ip) + n >= data_end)
+	    break;
+	((__u8 *) buffer)[20+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
+    }
+    
+    __u16 metadata = n << 5; // n contains packet length
+    metadata |= family << 4;
+    metadata |= protocol << 3;
+    metadata |= reason;
+    
+    ((__u16 *)  buffer)[0] = metadata;    // bytes 0-1
+    ((__u16 *)  buffer)[1] = port;        // bytes 2-3
+    memcpy(buffer+4, &(ip->ip6_dst), 16); // bytes 4-19
+
+    return 0;
+}
+
