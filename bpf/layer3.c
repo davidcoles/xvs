@@ -42,22 +42,16 @@
 
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
-const __u64 TIMEOUT = 300; // seconds
+const __u64 TIMEOUT = 60; // seconds
 const __u8 F_NOT_LOCAL = 0x80;
 
 enum fwd_action {
-    FWD_NOT_FOUND = 0,
-    FWD_NOT_A_VIP,
-    FWD_FRAGMENTED,
-    FWD_EXPIRED_TTL,
-    FWD_MALFORMED,
+    FWD_OK = 0,
+    FWD_TX,
     FWD_ADJUST_FAILED,
-    FWD_BOUNCE_ICMP,
     FWD_PROBE_REPLY,
-    FWD_TOO_BIG,
-    FWD_NOT_IP,
-    FWD_TUNNEL_ERROR,
-    FWD_OK,
+    FWD_PASS,
+    FWD_DROP,
 
     FWD_LAYER2_DSR,
     FWD_LAYER3_GRE,
@@ -241,28 +235,32 @@ typedef struct counter counter_t;
 
 struct global {
     __u64 malformed;
-    __u64 probe_reply;
-    __u64 not_a_vip;
     __u64 not_ip;
+    __u64 not_a_vip;
+    
+    __u64 probe_reply;
     
     // can be per vip
-    __u64 icmp_echo_request;  // per vip?
-    __u64 fragmented; // fragmented l4 packets - per vip?
-    __u64 service_not_found; // directed to a VIP, but L4 service did not exist
+    __u64 l4_unsupported;
+    __u64 icmp_unsupported;
+    __u64 icmp_echo_request;
+    __u64 fragmented;
+    __u64 service_not_found;
     
     // can be per service (and by extension per vip) - forwarding state
+    __u64 no_backend;
     __u64 too_big; // exceeds MTU for tunnel (ipv4 and ipv6 version?)
     __u64 expired; // TTL/hlim exceeded
     __u64 adjust_failed;
+    __u64 tunnel_unsupported;
 
     // forwarded packets only?
     __u64 packets;
     __u64 octets;
 
-    __u64 flows; // ??? sum 
-    __u64 errors; // ???
-    // no available backend
-
+    __u64 flows;
+    __u64 errors;
+    
     __u64 syn;
     __u64 fin;
     __u64 rst;
@@ -281,7 +279,7 @@ struct metadata {
     __be16 protocol;
     __u8 era;
     global_t *global;
-    // counters_t *vip;
+    global_t *vip; // FIXME - need a different type
     counter_t *service;
 };
 typedef struct metadata metadata_t;
@@ -574,16 +572,13 @@ static __always_inline
 enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
-    __u8 era = metadata->era;
     global_t *global = metadata->global;
-
-    global->packets++;
     
     switch(ft->proto) {
     case IPPROTO_TCP:
 	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
-	    tcp_concurrent(vrpp, metadata, flow, era);
+	    tcp_concurrent(vrpp, metadata, flow, metadata->era);
 	    break;
 	}
 	
@@ -594,10 +589,9 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	flow = lookup_udp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
 	break;
     }
-
     
     if (flow) {
-	flow->era = era;
+	flow->era = metadata->era;
 	*t = flow->tunnel;
     } else {
 	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };
@@ -605,7 +599,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	
 	if (!service) {
 	    metadata->global->service_not_found;
-	    return FWD_NOT_FOUND;
+	    return FWD_DROP;
 	}
     
 	__u8 sticky = service->dest[0].flags & F_STICKY;
@@ -614,50 +608,37 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	__u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 	
 	if (!index) {
-	    metadata->global->errors++;
-	    return FWD_NOT_FOUND;
+	    metadata->global->no_backend++;
+	    return FWD_DROP;
 	}
 	
 	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
     }
     
+    struct vrpp vrpp = { .vaddr = ft->daddr, .raddr = t->daddr, .vport = ntohs(ft->dport), .protocol = ft->proto };
+    counter_t *counter = bpf_map_lookup_elem(&stats, &vrpp);
+    
+    if (!counter) {
+	global->service_not_found++;
+	return FWD_DROP;
+    }
+    
     __u32 vlanid = t->vlanid;
     
-    if (!vlanid) {
+    if (!vlanid || !bpf_map_lookup_elem(&vlaninfo, &vlanid) || nulmac(t->h_dest)) {
 	global->errors++;
-	return FWD_NOT_FOUND;
+	return FWD_DROP;
     }
     
-    struct vlaninfo *vlan = bpf_map_lookup_elem(&vlaninfo, &vlanid);
- 
-    if (!vlan) {
-	global->errors++;
-	return FWD_NOT_FOUND;
-    }
-
-    if (nulmac(t->h_dest)) {
-	global->errors++;
-	//goto error;
-	return FWD_NOT_FOUND;
-    }
-
-    struct vrpp vrpp = { .vaddr = ft->daddr, .raddr = t->daddr, .vport = ntohs(ft->dport), .protocol = ft->proto };
-    counter_t *service = bpf_map_lookup_elem(&stats, &vrpp);
+    metadata->service = counter; // FIXME - is this useful?
     
-    if (!service) {
-	global->service_not_found++;
-	return FWD_NOT_FOUND;
-    }
-    
-    metadata->service = service; // FIXME - is this useful?
-    
-    service->packets++;
-    service->octets += metadata->octets;
-    service->syn += metadata->syn;
-    service->ack += metadata->ack;
-    service->fin += metadata->fin;
-    service->rst += metadata->rst;
+    counter->packets++;
+    counter->octets += metadata->octets;
+    counter->syn += metadata->syn;
+    counter->ack += metadata->ack;
+    counter->fin += metadata->fin;
+    counter->rst += metadata->rst;
 
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
@@ -665,13 +646,14 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     // bogus ACK; but upstream stateful inspection DDoS could catch
 
     if (!flow && !metadata->syn && !metadata->rst && !metadata->fin) {
-	service->flows++;
+	counter->flows++;
+	global->flows++;	
 	switch(ft->proto) {
 	case IPPROTO_TCP:
-	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, era-1);
+	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, metadata->era-1);
 	    break;
 	case IPPROTO_UDP:
-	    store_flow(&flows_udp, (fourtuple_t *) ft, t, era-1);
+	    store_flow(&flows_udp, (fourtuple_t *) ft, t, metadata->era-1);
 	    break;
 	}
     }
@@ -684,7 +666,9 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     case T_NONE: return FWD_LAYER2_DSR;
     }
 
-    return FWD_NOT_FOUND;
+    global->errors++;
+    counter->errors++;
+    return FWD_DROP;
 }
 
 static __always_inline
@@ -704,14 +688,16 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     ft->proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 
     if (!bpf_map_lookup_elem(&vips, &daddr)) {
-    	if (!bpf_map_lookup_elem(&vips, &saddr))
-	    return FWD_NOT_A_VIP;
-	return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+    	if (bpf_map_lookup_elem(&vips, &saddr))
+	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+
+	metadata->global->not_a_vip++;
+	return FWD_PASS;
     }
     
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1) {
 	metadata->global->expired++;
-	return FWD_EXPIRED_TTL;
+	return FWD_DROP;
     }
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
@@ -751,7 +737,8 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
 	    icmp->icmp6_cksum = icmp6_csum_diff(icmp, &old);
             reverse_ethhdr(eth);
-	    return FWD_BOUNCE_ICMP;
+	    metadata->global->icmp_echo_request++;
+	    return FWD_TX;
 	}
 	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
@@ -768,10 +755,12 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
 		goto internal_error;
 	}
-	return FWD_NOT_FOUND; // unsupported icmp type
+	metadata->global->icmp_unsupported++;
+	return FWD_DROP;
 	
     default:
-	return FWD_NOT_FOUND; // unsupported l4 protocol
+	metadata->global->l4_unsupported++;
+	return FWD_DROP; // unsupported l4 protocol
     }
 
     enum fwd_action r = lookup(ft, t, metadata);
@@ -783,11 +772,11 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 
  malformed:
     metadata->global->malformed++;
-    return FWD_MALFORMED;
+    return FWD_DROP;
 
  internal_error:
     metadata->global->errors++;
-    return FWD_NOT_FOUND; // TODO - new enum
+    return FWD_DROP;
 }
 
 static __always_inline
@@ -809,9 +798,11 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     // get vips pointer here (to counters)
     
     if (!bpf_map_lookup_elem(&vips, &daddr)) {
-	if (!bpf_map_lookup_elem(&vips, &saddr))
-	    return FWD_NOT_A_VIP;
-	return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+	if (bpf_map_lookup_elem(&vips, &saddr))
+	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+
+	metadata->global->not_a_vip++;
+	return FWD_PASS;
     }    
 
     // matadata->vips = vips_pointer
@@ -822,12 +813,12 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0) {
 	metadata->global->fragmented++;
-        return FWD_FRAGMENTED;
+        return FWD_DROP;
     }
     
     if (ip->ttl <= 1) {
 	metadata->global->expired++;
-	return FWD_EXPIRED_TTL;
+	return FWD_DROP;
     }
     	
     /* We're going to forward the packet, so we should decrement the time to live */
@@ -868,7 +859,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    icmp->type = ICMP_ECHOREPLY;
             icmp->checksum = icmp4_csum_diff(icmp, &old);
 	    reverse_ethhdr(eth);
-	    return FWD_BOUNCE_ICMP;
+	    metadata->global->icmp_echo_request++;
+	    return FWD_TX;
 	}
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
@@ -885,10 +877,12 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
 		goto internal_error;
 	}
-	return FWD_NOT_FOUND;
+	metadata->global->icmp_unsupported++;
+	return FWD_DROP;
 
     default:
-	return FWD_NOT_FOUND;
+	metadata->global->l4_unsupported;
+	return FWD_DROP;
     }
 
     enum fwd_action r = lookup(ft, t, metadata);
@@ -900,11 +894,11 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 
  malformed:
     metadata->global->malformed++;
-    return FWD_MALFORMED;
+    return FWD_DROP;
 
  internal_error: // could make these more specific
     metadata->global->errors++;
-    return FWD_NOT_FOUND;
+    return FWD_DROP;
 }
 
 static __always_inline
@@ -921,14 +915,16 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 {
     void *data_end = (void *)(long)ctx->data_end;
     __u8 ipv6 = 0, gue_protocol = 0;
-    enum fwd_action result = FWD_NOT_A_VIP;
+    enum fwd_action result = FWD_DROP;
     
     struct vlan_hdr *vlan = NULL;
     void *next_header = eth + 1;
     __be16 next_proto = eth->h_proto;
     if (next_proto == bpf_htons(ETH_P_8021Q)) {	
-	if ((vlan = next_header) + 1 > data_end)
-	    return FWD_MALFORMED;
+	if ((vlan = next_header) + 1 > data_end) {
+	    metadata->global->malformed++;
+	    return FWD_DROP;
+	}
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
@@ -944,7 +940,8 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	ipv6 = 1;
 	break;
     default:
-	return FWD_NOT_IP;
+	metadata->global->not_ip++;
+	return FWD_PASS;
     }
 
     int overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
@@ -959,8 +956,14 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
 
-    if ((data_end - next_header) + overhead > MTU)
-	return too_big(ctx, ft, MTU - overhead, ipv6) < 0 ? FWD_ADJUST_FAILED : FWD_TOO_BIG;
+    if ((data_end - next_header) + overhead > MTU) {
+	metadata->global->too_big++;
+	if (too_big(ctx, ft, MTU - overhead, ipv6) < 0) {
+	    metadata->global->adjust_failed++;
+	    return FWD_DROP;
+	}
+	return FWD_TX;
+    }
     
     if (vlan) // update VLAN ID to that of the target if packet is tagged
     	vlan->h_vlan_TCI = (vlan->h_vlan_TCI & bpf_htons(0xf000)) | (bpf_htons(t->vlanid) & bpf_htons(0x0fff));
@@ -971,12 +974,15 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     case FWD_LAYER2_DSR:  return FWD(send_l2(ctx, t));
     case FWD_LAYER3_GUE:  gue_protocol = ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP; // fallthrough ...
     case FWD_LAYER3_FOU:  return FWD(send_gue(ctx, t, gue_protocol));    // default to plain FOU unless gue_protocol set above
+    default:
+	metadata->global->tunnel_unsupported++;
+	return FWD_DROP;
     }
 
     metadata->global->errors++;
     //metadata->vips->error++;
     metadata->service->errors++;
-    return FWD_TUNNEL_ERROR; // FIXME
+    return FWD_DROP; // FIXME
 }
 
 
@@ -1167,42 +1173,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	return bpf_redirect(s->veth, 0);
 
-    case FWD_NOT_A_VIP:
-	global->not_a_vip++;
-	return XDP_PASS;
-
-    case FWD_NOT_IP:
-	global->not_ip++;
-	return XDP_PASS;
-
-    case FWD_TOO_BIG:
-	global->too_big++;
+    case FWD_TX:
 	return XDP_TX;
 
-    case FWD_BOUNCE_ICMP:
-	//global->icmp_echo_request++; // FIXME - new enum needed
-	return XDP_TX;
-
-    case FWD_FRAGMENTED:
-	global->fragmented++;
-	return XDP_DROP;
-
-    case FWD_EXPIRED_TTL:
-	global->expired++;
-	return XDP_DROP;
-	
 	/**********************************************************************/
 	
-    case FWD_MALFORMED:
-	global->malformed++;
-	return XDP_DROP; 
-	
     case FWD_ADJUST_FAILED:
-	global->adjust_failed;
-	return XDP_DROP;
-
-    case FWD_NOT_FOUND:
-	global->service_not_found++;
+	global->adjust_failed++;
+	if(metadata.vip)
+	    metadata.vip->errors++;
+	if(metadata.service)
+	    metadata.service->errors++;
 	return XDP_DROP;
 
     case FWD_LAYER2_DSR: // should not be returned
@@ -1211,12 +1192,19 @@ int xdp_fwd_func(struct xdp_md *ctx)
     case FWD_LAYER3_IPIP:
     case FWD_LAYER3_GUE:
 	global->errors++;
+	if(metadata.vip)
+	    metadata.vip->errors++;
+	if(metadata.service)
+	    metadata.service->errors++;
 	return XDP_DROP;
 
-    case FWD_TUNNEL_ERROR:
-	global->errors++;
+    case FWD_DROP:
 	return XDP_DROP;
+
+    case FWD_PASS:
+        return XDP_PASS;
     }
+    
     return XDP_PASS;
 }
 
