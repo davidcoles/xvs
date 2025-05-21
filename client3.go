@@ -64,9 +64,9 @@ type Client interface {
 	UpdateDestination(Service, Destination) error
 	RemoveDestination(Service, Destination) error
 
-	SetService(Service3, ...Destination3) error
+	SetService(Service, ...Destination) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
-	Addresses() (netip.Addr, netip.Addr) // temporary
+	Addresses() (netip.Addr, netip.Addr) // temporary?
 
 	ReadFlow() []byte
 	WriteFlow([]byte)
@@ -76,15 +76,9 @@ func (l *layer3) Addresses() (netip.Addr, netip.Addr) {
 	return l.netns.address4(), l.netns.address6()
 }
 
-func (s *Service3) key() threetuple {
+func (s *Service) key() threetuple {
 	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 }
-
-type Service3 = Service
-type Stats3 = Stats
-type Service3Extended = ServiceExtended
-type Destination3 = Destination
-type Destination3Extended = DestinationExtended
 
 type Service struct {
 	Address  netip.Addr
@@ -155,8 +149,8 @@ func NewWithOptions(options Options, interfaces ...string) (Client, error) {
 }
 
 func (l *layer3) Info() (Info, error) {
-	for t, service3 := range l.services {
-		for _, d := range service3.dests {
+	for t, s := range l.services {
+		for _, d := range s.dests {
 			vip := t.address
 			rip := d.Address
 			nat := l.netns.addr(l.natmap.get(vip, rip), vip.Is6())

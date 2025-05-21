@@ -52,7 +52,7 @@ func (c *bpf_counter) add(x bpf_counter) {
 	c.rst += x.rst
 }
 
-func (c bpf_counter) stats(sessions uint64) (s Stats3) {
+func (c bpf_counter) stats(sessions uint64) (s Stats) {
 	s.Packets = c.packets
 	s.Octets = c.octets
 	s.Flows = c.flows

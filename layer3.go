@@ -122,6 +122,7 @@ type maps struct {
 	vlaninfo       xdp.Map
 	settings       xdp.Map
 	sessions       xdp.Map
+	global         xdp.Map
 	shared         xdp.Map
 	stats          xdp.Map
 	vips           xdp.Map
@@ -185,7 +186,7 @@ func (l *layer3) readAndClearSession(vrpp bpf_vrpp) (total uint64) {
 }
 
 // empty vlanid in tunnel/ni indicates error
-func (l *layer3) tunnel(d Destination3) (bpf_tunnel, ninfo) {
+func (l *layer3) tunnel(d Destination) (bpf_tunnel, ninfo) {
 	ni, err := l.netinfo.info(d.Address)
 
 	if err != nil || ni.vlanid == 0 {
@@ -677,6 +678,12 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 	}
 
 	m.shared, err = x.FindMap("shared", int(ft_size), int(flow_size))
+
+	if err != nil {
+		return err
+	}
+
+	//m.global, err = x.FindMap("globals", 4, int(1000))
 
 	if err != nil {
 		return err
