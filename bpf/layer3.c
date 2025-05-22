@@ -232,7 +232,7 @@ struct counter {
 };
 typedef struct counter counter_t;
 
-// __u64 options // ip packets with ihl != 5
+// if updating this, regenerate Go def with: perl -ne 'next if /^\s+$/; s/__u64//; s/;.*//; s/$/ uint64/; print' > /tmp/foo
 struct global {
     __u64 malformed;
     __u64 not_ip;
@@ -261,9 +261,9 @@ struct global {
     __u64 errors;
     
     __u64 syn;
+    __u64 ack;
     __u64 fin;
     __u64 rst;
-    __u64 ack;
 
     // can be per vip
     __u64 ip_options;
@@ -1195,16 +1195,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	/**********************************************************************/
 
-	/*
-    case FWD_ADJUST_FAILED:
-	global->adjust_failed++;
-	if(metadata.vip)
-	    metadata.vip->errors++;
-	if(metadata.service)
-	    metadata.service->errors++;
-	return XDP_DROP;
-	*/
-	
     case FWD_LAYER2_DSR: // should not be returned
     case FWD_LAYER3_GRE:
     case FWD_LAYER3_FOU:

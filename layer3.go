@@ -145,15 +145,17 @@ func (l *layer3) counters(vrpp bpf_vrpp) (c bpf_counter) {
 
 func (l *layer3) globals() (c bpf_global) {
 	var ZERO uint32 = 0
-	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
+	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
 	l.maps.globals.LookupElem(uP(&ZERO), uP(&(all[0])))
 
+	var b bpf_global_
+
 	for _, v := range all {
-		for i, x := range v.counters {
-			c.counters[i] += x
-		}
+		b.add(v)
 	}
+
+	c = *((*bpf_global)(uP(&b)))
 
 	return c
 }
@@ -171,15 +173,17 @@ func (l *layer3) vipsc() (c []bpf_global) {
 }
 
 func (l *layer3) vipsc2(a16 addr16) (c bpf_global) {
-	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
+	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
 	l.maps.vips.LookupElem(uP(&a16), uP(&(all[0])))
 
+	var b bpf_global_
+
 	for _, v := range all {
-		for i, x := range v.counters {
-			c.counters[i] += x
-		}
+		b.add(v)
 	}
+
+	c = *((*bpf_global)(uP(&b)))
 
 	return
 }
@@ -458,7 +462,7 @@ func (l *layer3) background() error {
 			v := l.vipsc()
 			fmt.Println("GLOBALS", g.foo())
 			for _, c := range v {
-				fmt.Println("VIPS", c.foo())
+				fmt.Println("VIPS", c)
 			}
 
 			l.settings.era++

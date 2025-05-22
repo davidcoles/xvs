@@ -21,6 +21,12 @@ package xvs
 import "unsafe"
 import "fmt"
 
+func init() {
+	if (unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{})) {
+		panic("Inconsistent bpf_global definition")
+	}
+}
+
 type uP = unsafe.Pointer
 
 type bpf_vrpp struct {
@@ -121,66 +127,88 @@ type bpf_vip_rip struct {
 	ext    addr16
 }
 
-type bpf_global struct {
+type bpf_global_ struct {
 	counters [30]uint64
 }
 
-func (g *bpf_global) foo() (f foo) {
-	f.malformed = g.counters[0]
-	f.not_ip = g.counters[1]
-	f.not_a_vip = g.counters[2]
-	f.too_big = g.counters[10]
-	f.packets = g.counters[14]
-	f.flows = g.counters[16]
-	return
+func (g *bpf_global_) add(c bpf_global_) {
+	for i, n := range c.counters {
+		g.counters[i] += n
+	}
 }
 
-type foo struct {
-	malformed uint64
-	not_ip    uint64
-	not_a_vip uint64
-	too_big   uint64
-	packets   uint64
-	flows     uint64
+type bpf_global struct {
+	malformed          uint64
+	not_ip             uint64
+	not_a_vip          uint64
+	probe_reply        uint64
+	l4_unsupported     uint64
+	icmp_unsupported   uint64
+	icmp_echo_request  uint64
+	fragmented         uint64
+	service_not_found  uint64
+	no_backend         uint64
+	too_big            uint64
+	expired            uint64
+	adjust_failed      uint64
+	tunnel_unsupported uint64
+	packets            uint64
+	octets             uint64
+	flows              uint64
+	errors             uint64
+	syn                uint64
+	ack                uint64
+	fin                uint64
+	rst                uint64
+	ip_options         uint64
+	tcp_header         uint64
+	udp_header         uint64
+	icmp_header        uint64
+	fwd_packets        uint64
+	fwd_octets         uint64
+	icmp_too_big       uint64
+	icmp_frag_needed   uint64
 }
 
-func (f foo) String() string {
-	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d",
-		f.malformed, f.not_ip, f.not_a_vip, f.too_big, f.packets, f.flows)
+func (p bpf_global) String() string {
+	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d syn:%d ack:%d",
+		p.malformed, p.not_ip, p.not_a_vip, p.too_big, p.packets, p.flows, p.syn, p.ack)
 }
 
-/*
-struct global {
-    __u64 malformed;
-    __u64 not_ip;
-    __u64 not_a_vip;
+func (f bpf_global) foo() map[string]uint64 {
+	// cat /tmp/foo | grep -v '//' | awk '{print "m.[\"" $1 "\"] = f." $1}'
+	m := make(map[string]uint64, 30)
 
-    __u64 probe_reply;
+	m["malformed"] = f.malformed
+	m["not_ip"] = f.not_ip
+	m["not_a_vip"] = f.not_a_vip
+	m["probe_reply"] = f.probe_reply
+	m["l4_unsupported"] = f.l4_unsupported
+	m["icmp_unsupported"] = f.icmp_unsupported
+	m["icmp_echo_request"] = f.icmp_echo_request
+	m["fragmented"] = f.fragmented
+	m["service_not_found"] = f.service_not_found
+	m["no_backend"] = f.no_backend
+	m["too_big"] = f.too_big
+	m["expired"] = f.expired
+	m["adjust_failed"] = f.adjust_failed
+	m["tunnel_unsupported"] = f.tunnel_unsupported
+	m["packets"] = f.packets
+	m["octets"] = f.octets
+	m["flows"] = f.flows
+	m["errors"] = f.errors
+	m["syn"] = f.syn
+	m["ack"] = f.ack
+	m["fin"] = f.fin
+	m["rst"] = f.rst
+	m["ip_options"] = f.ip_options
+	m["tcp_header"] = f.tcp_header
+	m["udp_header"] = f.udp_header
+	m["icmp_header"] = f.icmp_header
+	m["fwd_packets"] = f.fwd_packets
+	m["fwd_octets"] = f.fwd_octets
+	m["icmp_too_big"] = f.icmp_too_big
+	m["icmp_frag_needed"] = f.icmp_frag_needed
 
-    // can be per vip
-    __u64 l4_unsupported;
-    __u64 icmp_unsupported;
-    __u64 icmp_echo_request;
-    __u64 fragmented;
-    __u64 service_not_found;
-
-    // can be per service (and by extension per vip) - forwarding state
-    __u64 no_backend;
-    __u64 too_big; // exceeds MTU for tunnel (ipv4 and ipv6 version?)
-    __u64 expired; // TTL/hlim exceeded
-    __u64 adjust_failed;
-    __u64 tunnel_unsupported;
-
-    // forwarded packets only?
-    __u64 packets;
-    __u64 octets;
-
-    __u64 flows;
-    __u64 errors;
-
-    __u64 syn;
-    __u64 fin;
-    __u64 rst;
-    __u64 ack;
-    };
-*/
+	return m
+}
