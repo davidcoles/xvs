@@ -175,7 +175,7 @@ func (p bpf_global) String() string {
 		p.malformed, p.not_ip, p.not_a_vip, p.too_big, p.packets, p.flows, p.syn, p.ack)
 }
 
-func (f bpf_global) foo() map[string]uint64 {
+func (f bpf_global) metrics() map[string]uint64 {
 	// cat /tmp/foo | grep -v '//' | awk '{print "m.[\"" $1 "\"] = f." $1}'
 	m := make(map[string]uint64, 30)
 
@@ -210,5 +210,14 @@ func (f bpf_global) foo() map[string]uint64 {
 	m["icmp_too_big"] = f.icmp_too_big
 	m["icmp_frag_needed"] = f.icmp_frag_needed
 
+	trim0(m)
 	return m
+}
+
+func trim0(m map[string]uint64) {
+	for k, v := range m {
+		if v == 0 {
+			delete(m, k)
+		}
+	}
 }

@@ -743,7 +743,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
         if (icmp + 1 > data_end)
 	    return FWD_ERROR2(icmp_header);
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
-	    bpf_printk("ICMPv6");
+	    //bpf_printk("ICMPv6");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
 	    struct icmp6_hdr old = *icmp;
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
@@ -756,7 +756,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 	    
-	    bpf_printk("ICMPv6 ICMP6_PACKET_TOO_BIG");
+	    //bpf_printk("ICMPv6 ICMP6_PACKET_TOO_BIG");
 	    
 	    if (!buffer)
 		return FWD_ERROR2(errors);
@@ -851,7 +851,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	if (icmp + 1 > data_end)
     	    return FWD_ERROR2(icmp_header);
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
-	    bpf_printk("ICMPv4");
+	    //bpf_printk("ICMPv4");
 	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
 	    struct icmphdr old = *icmp;
 	    icmp->type = ICMP_ECHOREPLY;
@@ -864,7 +864,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 	    
-	    bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
+	    //bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
 	    
 	    if (!buffer)
 		return FWD_ERROR2(errors);
@@ -907,7 +907,7 @@ enum fwd_action FWD(metadata_t *m, int r)
     // can do more detailed error reporting here if r is set to something other than -1
     
     //m->service->adjust_failed++; // FIXME
-    //m->vip->adjust_failed++;
+    m->vip->adjust_failed++;
     m->global->adjust_failed++;
     return FWD_DROP;
 }
@@ -1047,7 +1047,7 @@ int xdp_vethb_func(struct xdp_md *ctx)
 	case IPPROTO_ICMPV6:
 	    if (icmp6 + 1 > data_end)
 	    	return XDP_DROP;
-	    bpf_printk("ICMP6 %d %d", icmp6->icmp6_type, icmp6->icmp6_code);
+	    //bpf_printk("ICMP6 %d %d", icmp6->icmp6_type, icmp6->icmp6_code);
 	    switch (icmp6->icmp6_type) {
 	    case ND_NEIGHBOR_SOLICIT:
 	    case ND_NEIGHBOR_ADVERT:

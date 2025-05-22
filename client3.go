@@ -70,14 +70,15 @@ type Client interface {
 
 	ReadFlow() []byte
 	WriteFlow([]byte)
+
+	Metrics() map[string]uint64
+	// VirtualAddressMetrics(netip.Addr) map[string]uint64
+	// ServiceMetrics(Service) map[string]uint64
+	// DestinationMetrics(Service, Destination) map[string]uint64
 }
 
-func (l *layer3) Addresses() (netip.Addr, netip.Addr) {
-	return l.netns.address4(), l.netns.address6()
-}
-
-func (s *Service) key() threetuple {
-	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
+func (l *layer3) Metrics() map[string]uint64 {
+	return l.globals().metrics()
 }
 
 type Service struct {
@@ -149,16 +150,37 @@ func NewWithOptions(options Options, interfaces ...string) (Client, error) {
 }
 
 func (l *layer3) Info() (Info, error) {
-	for t, s := range l.services {
-		for _, d := range s.dests {
-			vip := t.address
-			rip := d.Address
-			nat := l.netns.addr(l.natmap.get(vip, rip), vip.Is6())
-			fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
+	/*
+		for t, s := range l.services {
+			for _, d := range s.dests {
+				vip := t.address
+				rip := d.Address
+				nat := l.netns.addr(l.natmap.get(vip, rip), vip.Is6())
+				fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
+			}
 		}
-	}
+	*/
 
-	return Info{}, nil
+	latency := l.readSettings()
+	g := l.globals()
+
+	return Info{
+		Packets: g.packets,
+		Octets:  g.octets,
+		Flows:   g.flows,
+		Latency: latency,
+	}, nil
+}
+
+type Info struct {
+	Packets uint64 // Total number of packets received by XDP hooks
+	Octets  uint64 // Total number of bytes received by XDP hooks
+	Flows   uint64 // Total number of new flow entries created in hash tables
+	Latency uint64 // Average measurable latency for XDP hook
+	//Dropped   uint64 // Number of non-conforming packets dropped
+	//Blocked   uint64 // Number of packets dropped by prefix
+	//NotQueued uint64 // Failed attempts to queue flow state updates to userspace
+	//TooBig    uint64 // ICMP destination unreachable/fragmentation needed
 }
 
 func (l *layer3) Config() (Config, error) {
@@ -313,6 +335,10 @@ func (l *layer3) SetService(s Service, ds ...Destination) error {
 
 func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return l.nat(vip, rip)
+}
+
+func (l *layer3) Addresses() (netip.Addr, netip.Addr) {
+	return l.netns.address4(), l.netns.address6()
 }
 
 func (d *Destination) is4() bool {

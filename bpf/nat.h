@@ -75,7 +75,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	case ICMP6_PACKET_TOO_BIG:
 	    break;
 	default:
-	    bpf_printk("ICMP6 %d %d %d", icmp->icmp6_type, icmp->icmp6_code, ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim);
+	    //bpf_printk("ICMP6 %d %d %d", icmp->icmp6_type, icmp->icmp6_code, ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim);
 	    return XDP_DROP;
 	}
     }
@@ -286,8 +286,8 @@ int xdp_request_v4(struct xdp_md *ctx)
 	    return XDP_DROP;
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    ip->daddr = vip.addr4.addr; // switch VIP back in
-	    __u8 *d = (void *) &(ip->daddr);
-	    bpf_printk("DST %d.%d.%d", d[1], d[2], d[3]);
+	    //__u8 *d = (void *) &(ip->daddr);
+	    //bpf_printk("DST %d.%d.%d", d[1], d[2], d[3]);
 	    break;
 	}
 	return XDP_DROP;

@@ -53,17 +53,6 @@ const (
 
 type MAC = mac
 
-type Info struct {
-	Packets   uint64 // Total number of packets received by XDP hooks
-	Octets    uint64 // Total number of bytes received by XDP hooks
-	Flows     uint64 // Total number of new flow entries created in hash tables
-	Latency   uint64 // Average measurable latency for XDP hook
-	Dropped   uint64 // Number of non-conforming packets dropped
-	Blocked   uint64 // Number of packets dropped by prefix
-	NotQueued uint64 // Failed attempts to queue flow state updates to userspace
-	TooBig    uint64 // ICMP destination unreachable/fragmentation needed
-}
-
 type netinfo struct {
 	vinfo4  vinfo
 	vinfo6  vinfo

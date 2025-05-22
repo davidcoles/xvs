@@ -456,14 +456,7 @@ func (l *layer3) background() error {
 		case <-sessions.C:
 			l.mutex.Lock()
 
-			fmt.Println("LATENCY", l.readSettings())
-
-			g := l.globals()
-			v := l.vipsc()
-			fmt.Println("GLOBALS", g.foo())
-			for _, c := range v {
-				fmt.Println("VIPS", c)
-			}
+			//fmt.Println("LATENCY", l.readSettings())
 
 			l.settings.era++
 			if !l.killswitch {

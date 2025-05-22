@@ -165,6 +165,11 @@ func main() {
 
 		for n := uint(0); n < *remove; n++ {
 
+			info, _ := client.Info()
+			fmt.Println("Info", info)
+
+			fmt.Println("Metrics", client.Metrics())
+
 			services, _ := client.Services()
 
 			for _, service := range services {
