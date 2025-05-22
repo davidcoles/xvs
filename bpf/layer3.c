@@ -260,10 +260,10 @@ struct global {
     __u64 flows;
     __u64 errors;
     
-    __u64 xsyn;
-    __u64 xfin;
-    __u64 xrst;
-    __u64 xack;
+    __u64 syn;
+    __u64 fin;
+    __u64 rst;
+    __u64 ack;
 
     // can be per vip
     __u64 ip_options;
@@ -316,6 +316,21 @@ struct {
     __uint(max_entries, 1);
 } globals SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, addr_t);
+    //__type(value, __u32); // value no longer used - should be counters
+    __type(value, global_t);
+    __uint(max_entries, 4096); 
+} vips SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, struct servicekey);
+    __type(value, global_t);
+    __uint(max_entries, 4096);
+} service_c SEC(".maps");
+
 
 
 /**********************************************************************/
@@ -349,13 +364,6 @@ struct {
     __type(value, __u8[BUFFER]);
     __uint(max_entries, 1);
 } buffers SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, addr_t);
-    __type(value, __u32); // value no longer used - should be counters
-    __uint(max_entries, 4096); 
-} vips SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -576,7 +584,7 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     }
 }
 
-#define COUNTERS(c, m) ((c)->syn += (m)->syn, (c)->ack += (m)->ack, (c)->fin += (m)->fin, (c)->rst += (m)->rst)
+// #define COUNTERS(c, m) ((c)->syn += (m)->syn, (c)->ack += (m)->ack, (c)->fin += (m)->fin, (c)->rst += (m)->rst)
 
 //#define FWD_ERROR(M, F) ( M->global->F++,  M->vip && M->vip->F++, M->service && M->service->F++, FWD_DROP )
 //#define FWD_ERROR(M, F) ( M->global->F++,  M->vip && M->vip->F++, FWD_DROP )
@@ -587,7 +595,7 @@ static __always_inline
 enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
-
+    
     switch(ft->proto) {
     case IPPROTO_TCP:
 	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn))) {
@@ -611,24 +619,16 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };
 	service_t *service = bpf_map_lookup_elem(&services, &key);
 	
-	if (!service) {
-	    //metadata->vip->service_not_found++;
-	    //metadata->global->service_not_found++;
-	    //return FWD_DROP;
+	if (!service)
 	    return FWD_ERROR2(service_not_found);
-	}
     
 	__u8 sticky = service->dest[0].flags & F_STICKY;
 	__u16 hash3 = l3_hash((fourtuple_t *) ft);
 	__u16 hash4 = l4_hash((fourtuple_t *) ft);
 	__u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 	
-	if (!index) {
-	    //metadata->vip->no_backend++;
-	    //metadata->global->no_backend++;
-	    //return FWD_DROP;
+	if (!index)
 	    return FWD_ERROR2(no_backend);
-	}
 	
 	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
@@ -637,21 +637,13 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     struct vrpp vrpp = { .vaddr = ft->daddr, .raddr = t->daddr, .vport = ntohs(ft->dport), .protocol = ft->proto };
     counter_t *counter = bpf_map_lookup_elem(&stats, &vrpp);
     
-    if (!counter) {
-	//metadata->vip->service_not_found++;
-	//metadata->global->service_not_found++;
-	//return FWD_DROP;
-	return FWD_ERROR2(service_not_found);
-    }
+    if (!counter)
+	return FWD_ERROR2(service_not_found); // FIXME - new counter
     
     __u32 vlanid = t->vlanid;
     
-    if (!vlanid || !bpf_map_lookup_elem(&vlaninfo, &vlanid) || nulmac(t->h_dest)) {
-	//metadata->vip->errors++;
-	//metadata->global->errors++;
-	//return FWD_DROP;
-	return FWD_ERROR2(errors);
-    }
+    if (!vlanid || !bpf_map_lookup_elem(&vlaninfo, &vlanid) || nulmac(t->h_dest))
+	return FWD_ERROR2(errors); // FWD_ERROR3?
     
     metadata->service = counter; // FIXME - is this useful?
     
@@ -688,10 +680,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     }
 
     counter->errors++;
-    //metadata->vip->errors++;
-    //metadata->global->errors++;
-    //return FWD_DROP;
-    FWD_ERROR2(errors);
+    FWD_ERROR2(errors); // FWD_ERROR3?
 }
 
 static __always_inline
@@ -702,7 +691,6 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR1(malformed);
-	//goto malformed;
     
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
@@ -711,20 +699,18 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     ft->daddr = daddr;
     ft->proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 
-    if (!bpf_map_lookup_elem(&vips, &daddr)) {
+    metadata->vip = bpf_map_lookup_elem(&vips, &daddr);
+    
+    if (!metadata->vip) {
     	if (bpf_map_lookup_elem(&vips, &saddr))
 	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
 	
 	metadata->global->not_a_vip++;
-	return FWD_PASS;
+	return FWD_PASS; // <- NOT AN ERROR
     }
     
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1) {
-	//metadata->vip->expired++;
-	//metadata->global->expired++;
-	//return FWD_DROP;
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return FWD_ERROR2(expired);
-    }
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
@@ -734,12 +720,8 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 
     switch (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
     case IPPROTO_TCP:
-	if (tcp + 1 > data_end) {
-	    //metadata->vip->tcp_header++;
-	    //metadata->global->tcp_header++;
-	    //return FWD_DROP;
+	if (tcp + 1 > data_end)
 	    return FWD_ERROR2(tcp_header);
-	}
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	metadata->syn = tcp->syn;
@@ -751,23 +733,15 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	break;
 	
     case IPPROTO_UDP:
-	if (udp + 1 > data_end) {
-	    //metadata->vip->udp_header++;
-	    //metadata->global->udp_header++;
-	    //return FWD_DROP;
+	if (udp + 1 > data_end)
 	    return FWD_ERROR2(udp_header);
-	}
 	ft->sport = udp->source;
 	ft->dport = udp->dest;
 	break;
 	
     case IPPROTO_ICMPV6:
-        if (icmp + 1 > data_end) {
-	    //metadata->vip->icmp_header++;
-	    //metadata->global->icmp_header++;
-	    //return FWD_DROP;
+        if (icmp + 1 > data_end)
 	    return FWD_ERROR2(icmp_header);
-	}
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
 	    bpf_printk("ICMPv6");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
@@ -775,9 +749,9 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
 	    icmp->icmp6_cksum = icmp6_csum_diff(icmp, &old);
             reverse_ethhdr(eth);
-	    metadata->vip->icmp_echo_request++;
+	    metadata->vip && metadata->vip->icmp_echo_request++;
 	    metadata->global->icmp_echo_request++;
-	    return FWD_TX;
+	    return FWD_TX; // <- NOT AN ERROR
 	}
 	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
@@ -786,26 +760,18 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	    
 	    if (!buffer)
 		return FWD_ERROR2(errors);
-		//goto internal_error;
 	    
 	    if (icmp_dest_unreach_frag_needed6(ip6, icmp, data_end, buffer, BUFFER) < 0)
 		return FWD_ERROR2(errors);
-		//goto internal_error;
 	    
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
 		return FWD_ERROR2(errors);
-   	        //goto internal_error;
 	}
-	//metadata->vip->icmp_echo_request++;
-	//metadata->global->icmp_unsupported++;
-	//return FWD_DROP;
+
 	return FWD_ERROR2(icmp_echo_request);
 	
     default:
-	//metadata->vip->l4_unsupported++;
-	//metadata->global->l4_unsupported++;
-	//return FWD_DROP; // unsupported l4 protocol
 	return FWD_ERROR2(l4_unsupported);
     }
 
@@ -815,16 +781,6 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
 
     return r;
-
-    // malformed:
-    //    metadata->vip->malformed++;
-    //    metadata->global->malformed++;
-    //    return FWD_DROP;
-
-    //internal_error:
-    // metadata->vip->errors++;
-    //metadata->global->errors++;
-    //return FWD_DROP;
 }
 
 static __always_inline
@@ -833,13 +789,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
     
-    if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4)
+    if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
 	return FWD_ERROR1(malformed);
-	//goto malformed;
-    
-    if (ip->ihl < 5)
-	return FWD_ERROR1(malformed);
-	//goto malformed;
 
     struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
@@ -848,40 +799,25 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     ft->daddr = daddr;
     ft->proto = ip->protocol;
 
-    // get vips pointer here (to counters)
+    metadata->vip = bpf_map_lookup_elem(&vips, &daddr);
     
-    if (!bpf_map_lookup_elem(&vips, &daddr)) {
+    if (!metadata->vip) {
 	if (bpf_map_lookup_elem(&vips, &saddr))
 	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
-
+	
 	metadata->global->not_a_vip++;
-	return FWD_PASS;
+	return FWD_PASS; // <- NOT AN ERROR
     }    
 
-    // matadata->vips = vips_pointer
-    
-    
-    if (ip->ihl != 5) {
-	//metadata->vip->ip_options++;
-	//metadata->global->ip_options++;
-	//return FWD_DROP;
+    if (ip->ihl != 5)
 	return FWD_ERROR2(ip_options);
-    }
 
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
-    if ((ip->frag_off & bpf_htons(0x3fff)) != 0) {
-	//metadata->vip->fragmented++;
-	//metadata->global->fragmented++;
-        //return FWD_DROP;
+    if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
 	return FWD_ERROR2(fragmented);	
-    }
     
-    if (ip->ttl <= 1) {
-	//metadata->vip->expired++;
-	//metadata->global->expired++;
-	//return FWD_DROP;
+    if (ip->ttl <= 1)
 	return FWD_ERROR2(expired);
-    }
     	
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
@@ -892,12 +828,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     
     switch (ip->protocol) {
     case IPPROTO_TCP:
-	if (tcp + 1 > data_end) {
-	    //metadata->vip->tcp_header++;
-	    //metadata->global->tcp_header++;
-	    //return FWD_DROP;
+	if (tcp + 1 > data_end)
 	    return FWD_ERROR2(tcp_header);
-	}
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	metadata->syn = tcp->syn;
@@ -909,23 +841,15 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	break;
 	
     case IPPROTO_UDP:
-	if (udp + 1 > data_end) {
-	    //metadata->vip->udp_header++;
-            //metadata->global->udp_header++;
-	    //return FWD_DROP;
+	if (udp + 1 > data_end)
 	    return FWD_ERROR2(udp_header);
-	}
 	ft->sport = udp->source;
 	ft->dport = udp->dest;
 	break;
 	
     case IPPROTO_ICMP:
-	if (icmp + 1 > data_end) {
-	    //metadata->vip->icmp_header++;
-	    //metadata->global->icmp_header++;
-	    //return FWD_DROP;
+	if (icmp + 1 > data_end)
     	    return FWD_ERROR2(icmp_header);
-	}
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
 	    bpf_printk("ICMPv4");
 	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
@@ -933,7 +857,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    icmp->type = ICMP_ECHOREPLY;
             icmp->checksum = icmp4_csum_diff(icmp, &old);
 	    reverse_ethhdr(eth);
-	    metadata->vip->icmp_echo_request++;
+	    metadata->vip && metadata->vip->icmp_echo_request++;
 	    metadata->global->icmp_echo_request++;
 	    return FWD_TX; // <- NOT AN ERROR
 	}
@@ -944,26 +868,18 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    
 	    if (!buffer)
 		return FWD_ERROR2(errors);
-		//goto internal_error;
 	    
 	    if (icmp_dest_unreach_frag_needed(ip, icmp, data_end, buffer, BUFFER) < 0)
 		return FWD_ERROR2(errors);
-		//goto internal_error;
 
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
 		return FWD_ERROR2(errors);
-		//goto internal_error;
 	}
-	//metadata->vip->icmp_unsupported++;
-	//metadata->global->icmp_unsupported++;
-	//return FWD_DROP;
+
 	return FWD_ERROR2(icmp_unsupported);
 
     default:
-	//metadata->vip->l4_unsupported++;
-	//metadata->global->l4_unsupported++;
-	//return FWD_DROP;
 	return FWD_ERROR2(l4_unsupported);
     }
 
@@ -973,16 +889,6 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	ip4_set_ttl(ip, 1);
     
     return r;
-
-    //malformed:
-    //if (metadata->vip) metadata->vip->malformed++;
-    //metadata->global->malformed++;
-    //return FWD_DROP;
-
-    //internal_error: // could make these more specific
-    //if (metadata->vip) metadata->vip->errors++;
-    // metadata->global->errors++;
-    //return FWD_DROP;
 }
 
 static __always_inline
@@ -1001,7 +907,7 @@ enum fwd_action FWD(metadata_t *m, int r)
     // can do more detailed error reporting here if r is set to something other than -1
     
     //m->service->adjust_failed++; // FIXME
-    m->vip->adjust_failed++;
+    //m->vip->adjust_failed++;
     m->global->adjust_failed++;
     return FWD_DROP;
 }
@@ -1038,7 +944,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	break;
     default:
 	metadata->global->not_ip++;
-	return FWD_PASS;
+	return FWD_PASS; // <- NOT AN ERROR
     }
 
     int overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
@@ -1055,12 +961,8 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     
     if ((data_end - next_header) + overhead > MTU) {
 	metadata->global->too_big++;
-	if (too_big(ctx, ft, MTU - overhead, ipv6) < 0) {
-	    //metadata->vip->adjust_failed++;
-	    //metadata->global->adjust_failed++;
-	    //return FWD_DROP;
+	if (too_big(ctx, ft, MTU - overhead, ipv6) < 0)
 	    return FWD_ERROR2(adjust_failed);
-	}
 	return FWD_TX;
     }
     
@@ -1076,8 +978,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     default: break;
     }
 
-    //metadata->global->tunnel_unsupported++;
-    //return FWD_DROP;
     return FWD_ERROR2(tunnel_unsupported);
 }
 
@@ -1211,9 +1111,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     if (!global)
     	return XDP_DROP;
 
-    global_t fixme = {};
-    
-    metadata_t metadata = { .era = s->era, .global = global, .vip = &fixme };
+    metadata_t metadata = { .era = s->era, .global = global };
     void *data_end = (void *)(long)ctx->data_end;
     //void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -1234,14 +1132,21 @@ int xdp_fwd_func(struct xdp_md *ctx)
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
     enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, &metadata);
 
-    //COUNTERS(global, &metadata);
+    //#define COUNTERS(c, m) ((c)->syn += (m)->syn, (c)->ack += (m)->ack, (c)->fin += (m)->fin, (c)->rst += (m)->rst, (c)->flows += (m)->new_flow)
+    //#define COUNTERS(c, m) ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, (c)->flows += (m).new_flow )
+#define COUNTERS(c, m) ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, (c)->flows += (m).new_flow, (c)->packets++ )
     
+    COUNTERS(global, metadata);
+    
+    if (metadata.vip)
+	COUNTERS(metadata.vip, metadata);
+    
+    if (metadata.service)
+	COUNTERS(metadata.service, metadata);
+
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);
     
-    global->packets++;
-    global->octets += metadata.octets;
-    // syn, etc.
     
     // handle stats here
     switch (action) {

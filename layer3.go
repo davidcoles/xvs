@@ -145,7 +145,7 @@ func (l *layer3) counters(vrpp bpf_vrpp) (c bpf_counter) {
 
 func (l *layer3) globals() (c bpf_global) {
 	var ZERO uint32 = 0
-	all := make([]bpf_global, xdp.BpfNumPossibleCpus())
+	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
 
 	l.maps.globals.LookupElem(uP(&ZERO), uP(&(all[0])))
 
@@ -156,6 +156,32 @@ func (l *layer3) globals() (c bpf_global) {
 	}
 
 	return c
+}
+
+func (l *layer3) vipsc() (c []bpf_global) {
+	var key, next, nul addr16
+	for r := 0; r == 0; key = next {
+		r = l.maps.vips.GetNextKey(uP(&key), uP(&next))
+		if key != nul {
+			c = append(c, l.vipsc2(key))
+		}
+	}
+
+	return
+}
+
+func (l *layer3) vipsc2(a16 addr16) (c bpf_global) {
+	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
+
+	l.maps.vips.LookupElem(uP(&a16), uP(&(all[0])))
+
+	for _, v := range all {
+		for i, x := range v.counters {
+			c.counters[i] += x
+		}
+	}
+
+	return
 }
 
 func (l *layer3) createCounters(vrpp bpf_vrpp) {
@@ -429,7 +455,11 @@ func (l *layer3) background() error {
 			fmt.Println("LATENCY", l.readSettings())
 
 			g := l.globals()
+			v := l.vipsc()
 			fmt.Println("GLOBALS", g.foo())
+			for _, c := range v {
+				fmt.Println("VIPS", c.foo())
+			}
 
 			l.settings.era++
 			if !l.killswitch {
@@ -641,12 +671,6 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	m.vips, err = x.FindMap("vips", 16, 4)
-
-	if err != nil {
-		return err
-	}
-
 	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service{})))
 
 	if err != nil {
@@ -702,6 +726,13 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 	}
 
 	m.globals, err = x.FindMap("globals", 4, int(unsafe.Sizeof(bpf_global{})))
+
+	if err != nil {
+		return err
+	}
+
+	//m.vips, err = x.FindMap("vips", 16, 4)
+	m.vips, err = x.FindMap("vips", 16, int(unsafe.Sizeof(bpf_global{})))
 
 	if err != nil {
 		return err

@@ -234,9 +234,11 @@ func (s *service3) recalc() {
 
 	s.nat(reals)
 
-	var ZERO uint32 = 0
+	//var ZERO uint32 = 0
 	v16 := as16(s.service.Address)
-	s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
+	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
+	//s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
+	s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
 }
 
 func (s *service3) nat(reals map[netip.Addr]dest) {
