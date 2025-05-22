@@ -122,7 +122,7 @@ type maps struct {
 	vlaninfo       xdp.Map
 	settings       xdp.Map
 	sessions       xdp.Map
-	global         xdp.Map
+	globals        xdp.Map
 	shared         xdp.Map
 	stats          xdp.Map
 	vips           xdp.Map
@@ -138,6 +138,21 @@ func (l *layer3) counters(vrpp bpf_vrpp) (c bpf_counter) {
 
 	for _, v := range all {
 		c.add(v)
+	}
+
+	return c
+}
+
+func (l *layer3) globals() (c bpf_global) {
+	var ZERO uint32 = 0
+	all := make([]bpf_global, xdp.BpfNumPossibleCpus())
+
+	l.maps.globals.LookupElem(uP(&ZERO), uP(&(all[0])))
+
+	for _, v := range all {
+		for i, x := range v.counters {
+			c.counters[i] += x
+		}
 	}
 
 	return c
@@ -413,6 +428,9 @@ func (l *layer3) background() error {
 
 			fmt.Println("LATENCY", l.readSettings())
 
+			g := l.globals()
+			fmt.Println("GLOBALS", g.foo())
+
 			l.settings.era++
 			if !l.killswitch {
 				l.updateSettings() // reset the watchdog, but not if the killswitch is set
@@ -683,7 +701,7 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	//m.global, err = x.FindMap("globals", 4, int(1000))
+	m.globals, err = x.FindMap("globals", 4, int(unsafe.Sizeof(bpf_global{})))
 
 	if err != nil {
 		return err

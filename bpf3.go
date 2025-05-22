@@ -19,6 +19,7 @@
 package xvs
 
 import "unsafe"
+import "fmt"
 
 type uP = unsafe.Pointer
 
@@ -119,3 +120,67 @@ type bpf_vip_rip struct {
 	vip    addr16
 	ext    addr16
 }
+
+type bpf_global struct {
+	counters [30]uint64
+}
+
+func (g *bpf_global) foo() (f foo) {
+	f.malformed = g.counters[0]
+	f.not_ip = g.counters[1]
+	f.not_a_vip = g.counters[2]
+	f.too_big = g.counters[10]
+	f.packets = g.counters[14]
+	f.flows = g.counters[16]
+	return
+}
+
+type foo struct {
+	malformed uint64
+	not_ip    uint64
+	not_a_vip uint64
+	too_big   uint64
+	packets   uint64
+	flows     uint64
+}
+
+func (f foo) String() string {
+	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d",
+		f.malformed, f.not_ip, f.not_a_vip, f.too_big, f.packets, f.flows)
+}
+
+/*
+struct global {
+    __u64 malformed;
+    __u64 not_ip;
+    __u64 not_a_vip;
+
+    __u64 probe_reply;
+
+    // can be per vip
+    __u64 l4_unsupported;
+    __u64 icmp_unsupported;
+    __u64 icmp_echo_request;
+    __u64 fragmented;
+    __u64 service_not_found;
+
+    // can be per service (and by extension per vip) - forwarding state
+    __u64 no_backend;
+    __u64 too_big; // exceeds MTU for tunnel (ipv4 and ipv6 version?)
+    __u64 expired; // TTL/hlim exceeded
+    __u64 adjust_failed;
+    __u64 tunnel_unsupported;
+
+    // forwarded packets only?
+    __u64 packets;
+    __u64 octets;
+
+    __u64 flows;
+    __u64 errors;
+
+    __u64 syn;
+    __u64 fin;
+    __u64 rst;
+    __u64 ack;
+    };
+*/
