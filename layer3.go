@@ -113,21 +113,21 @@ type layer3 struct {
 }
 
 type maps struct {
-	xdp            *xdp.XDP
-	nat_to_vip_rip xdp.Map
-	redirect_map4  xdp.Map
-	redirect_map6  xdp.Map
-	flow_queue     xdp.Map
-	icmp_queue     xdp.Map
-	services       xdp.Map
-	vlaninfo       xdp.Map
-	settings       xdp.Map
-	sessions       xdp.Map
-	globals        xdp.Map
-	service_c      xdp.Map
-	shared         xdp.Map
-	stats          xdp.Map
-	vips           xdp.Map
+	xdp             *xdp.XDP
+	nat_to_vip_rip  xdp.Map
+	redirect_map4   xdp.Map
+	redirect_map6   xdp.Map
+	flow_queue      xdp.Map
+	icmp_queue      xdp.Map
+	services        xdp.Map
+	vlaninfo        xdp.Map
+	settings        xdp.Map
+	sessions        xdp.Map
+	global_metrics  xdp.Map
+	service_metrics xdp.Map
+	vip_metrics     xdp.Map
+	shared          xdp.Map
+	stats           xdp.Map
 }
 
 func (l *layer3) nat(v, r netip.Addr) netip.Addr { return l.netns.addr(l.natmap.get(v, r), v.Is6()) }
@@ -149,7 +149,7 @@ func (l *layer3) globals() (c bpf_global) {
 	var ZERO uint32 = 0
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
-	l.maps.globals.LookupElem(uP(&ZERO), uP(&(all[0])))
+	l.maps.global_metrics.LookupElem(uP(&ZERO), uP(&(all[0])))
 
 	var b bpf_global_
 
@@ -165,7 +165,7 @@ func (l *layer3) globals() (c bpf_global) {
 func (l *layer3) virtualMetrics(a16 addr16) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
-	l.maps.vips.LookupElem(uP(&a16), uP(&(all[0])))
+	l.maps.vip_metrics.LookupElem(uP(&a16), uP(&(all[0])))
 
 	var b bpf_global_
 
@@ -181,7 +181,7 @@ func (l *layer3) virtualMetrics(a16 addr16) (c bpf_global) {
 func (l *layer3) serviceMetrics(key bpf_servicekey) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
-	l.maps.service_c.LookupElem(uP(&key), uP(&(all[0])))
+	l.maps.service_metrics.LookupElem(uP(&key), uP(&(all[0])))
 
 	var b bpf_global_
 
@@ -199,19 +199,15 @@ func (l *layer3) createCounters(vrpp bpf_vrpp) {
 	l.maps.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
 
 	sessions := make([]int64, xdp.BpfNumPossibleCpus())
-	//fmt.Println("ADD", vrpp)
 	l.maps.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 	vrpp.protocol |= 0xff00
-	//fmt.Println("ADD", vrpp)
 	l.maps.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
 func (l *layer3) removeCounters(vrpp bpf_vrpp) {
 	l.maps.stats.DeleteElem(uP(&vrpp))
-	//fmt.Println("DEL", vrpp)
 	l.maps.sessions.DeleteElem(uP(&vrpp))
 	vrpp.protocol |= 0xff00
-	//fmt.Println("DEL", vrpp)
 	l.maps.sessions.DeleteElem(uP(&vrpp))
 }
 
@@ -246,7 +242,7 @@ func (l *layer3) tunnel(d Destination) (bpf_tunnel, ninfo) {
 	}
 
 	if d.TunnelType == NONE && ni.l3 {
-		log.Fatal("LOOP ERROR", ni)
+		log.Fatal("LOOP ERROR (FIXME)", ni)
 		return bpf_tunnel{}, ninfo{}
 	}
 
@@ -666,7 +662,7 @@ func (l *layer3) clean() {
 		nats[nat] = true
 	}
 
-	clean_map(l.maps.vips, vips)
+	clean_map(l.maps.vip_metrics, vips)
 	clean_map(l.maps.nat_to_vip_rip, nats)
 	clean_map2(l.maps.stats, vrpp)
 	clean_map2(l.maps.sessions, vrpp)
@@ -696,7 +692,7 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	m.service_c, err = x.FindMap("service_c", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_global{})))
+	m.service_metrics, err = x.FindMap("service_metrics", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_global{})))
 
 	if err != nil {
 		return err
@@ -750,14 +746,13 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return err
 	}
 
-	m.globals, err = x.FindMap("globals", 4, int(unsafe.Sizeof(bpf_global{})))
+	m.global_metrics, err = x.FindMap("global_metrics", 4, int(unsafe.Sizeof(bpf_global{})))
 
 	if err != nil {
 		return err
 	}
 
-	//m.vips, err = x.FindMap("vips", 16, 4)
-	m.vips, err = x.FindMap("vips", 16, int(unsafe.Sizeof(bpf_global{})))
+	m.vip_metrics, err = x.FindMap("vip_metrics", 16, int(unsafe.Sizeof(bpf_global{})))
 
 	if err != nil {
 		return err

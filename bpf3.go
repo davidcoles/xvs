@@ -47,6 +47,7 @@ type bpf_counter struct {
 	rst                uint64
 	tunnel_unsupported uint64 // fixme
 	too_big            uint64 // fixme
+	adjust_failed      uint64 // fixme
 }
 
 func (c *bpf_counter) add(x bpf_counter) {
@@ -87,6 +88,7 @@ func (c bpf_counter) metrics() map[string]uint64 {
 	m["rst"] = c.rst
 	m["tunnel_unsupported"] = c.tunnel_unsupported
 	m["too_big"] = c.too_big
+	m["adjust_failed"] = c.adjust_failed
 	trim0(m)
 	return m
 }

@@ -131,8 +131,7 @@ type Destination struct {
 	TunnelType  TunnelType
 	TunnelPort  uint16
 	TunnelFlags TunnelFlags
-	//Weight      uint8
-	Disabled bool
+	Disabled    bool
 }
 
 type DestinationExtended struct {

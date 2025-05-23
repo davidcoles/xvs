@@ -172,7 +172,7 @@ func (s *service3) remove() error {
 	}
 
 	s.layer3.maps.services.DeleteElem(uP(&key))
-	s.layer3.maps.service_c.DeleteElem(uP(&key))
+	s.layer3.maps.service_metrics.DeleteElem(uP(&key))
 	delete(s.layer3.services, s.service.key())
 	s.layer3.clean()
 	return nil
@@ -241,12 +241,10 @@ func (s *service3) recalc() {
 
 	s.nat(reals)
 
-	//var ZERO uint32 = 0
 	v16 := as16(s.service.Address)
 	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
-	//s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&ZERO), xdp.BPF_ANY) // value is not used
-	s.layer3.maps.vips.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
-	s.layer3.maps.service_c.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
+	s.layer3.maps.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
+	s.layer3.maps.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
 }
 
 func (s *service3) nat(reals map[netip.Addr]dest) {

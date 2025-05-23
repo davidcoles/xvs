@@ -230,7 +230,9 @@ struct counter {
     __u64 rst;
 
     __u64 tunnel_unsupported;
-    __u64 too_big; 
+    __u64 too_big;
+    __u64 adjust_failed;
+    
 };
 typedef struct counter counter_t;
 
@@ -319,22 +321,21 @@ struct {
     __type(key, __u32);
     __type(value, metrics_t);
     __uint(max_entries, 1);
-} globals SEC(".maps");
+} global_metrics SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, addr_t);
-    //__type(value, __u32); // value no longer used - should be counters
     __type(value, metrics_t);
     __uint(max_entries, 4096); 
-} vips SEC(".maps");
+} vip_metrics SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, struct servicekey);
     __type(value, metrics_t);
     __uint(max_entries, 4096);
-} service_c SEC(".maps");
+} service_metrics SEC(".maps");
 
 
 
@@ -395,26 +396,6 @@ struct {
     __uint(max_entries, 4096);
 } vlaninfo SEC(".maps");
 
-
-
-/**********************************************************************/
-
-/*
-
-  assumes some method of screening out bogus SYN/ACK - anti DDoS box which sees both legs of the conversation
-
-  
-  if existing flow and SYN received:
-
-  if flow older than 60s - drop old flow. Don't store SYN
-
-  if live flow then store sequence number in flow but return NULL - new b/e lookup don't store SYN flows, so won't get overwritten
-
-  when next packet comes in flow is found: compare seqn - if correct then delete flow, same backend will the chosen
-
-  if incorrect then continue regular flow
-  
- */
 
 static __always_inline
 flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
@@ -635,7 +616,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };	
 
-    if(!(metadata->service = bpf_map_lookup_elem(&service_c, &key)))
+    if(!(metadata->service = bpf_map_lookup_elem(&service_metrics, &key)))
 	return FWD_ERROR2(service_not_found);
     
     if (flow) {
@@ -708,10 +689,10 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     ft->daddr = daddr;
     ft->proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 
-    metadata->vip = bpf_map_lookup_elem(&vips, &daddr);
+    metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
     
     if (!metadata->vip) {
-    	if (bpf_map_lookup_elem(&vips, &saddr))
+    	if (bpf_map_lookup_elem(&vip_metrics, &saddr))
 	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
 	
 	metadata->global->not_a_vip++;
@@ -808,10 +789,10 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     ft->daddr = daddr;
     ft->proto = ip->protocol;
 
-    metadata->vip = bpf_map_lookup_elem(&vips, &daddr);
+    metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
     
     if (!metadata->vip) {
-	if (bpf_map_lookup_elem(&vips, &saddr))
+	if (bpf_map_lookup_elem(&vip_metrics, &saddr))
 	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
 	
 	metadata->global->not_a_vip++;
@@ -915,7 +896,7 @@ enum fwd_action FWD(metadata_t *m, int r)
 
     // can do more detailed error reporting here if r is set to something other than -1
     
-    //m->backend->adjust_failed++; // FIXME
+    m->backend->adjust_failed++; // FIXME
     m->service->adjust_failed++;
     m->vip->adjust_failed++;
     m->global->adjust_failed++;
@@ -1122,7 +1103,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
     //void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
 
-    if (!(metadata.global = bpf_map_lookup_elem(&globals, &ZERO)))
+    if (!(metadata.global = bpf_map_lookup_elem(&global_metrics, &ZERO)))
 	return XDP_DROP;
 
     metadata.mtu = 1500;
@@ -1144,7 +1125,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
     enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, &metadata);
 
 #define COUNTERS(c, m) \
-    ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, (c)->flows += (m).new_flow, (c)->packets++ )
+    ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, \
+     (c)->flows += (m).new_flow, (c)->packets++, (c)->octets += (m).octets)
     
     COUNTERS(metadata.global, metadata);
     
