@@ -228,12 +228,14 @@ struct counter {
     __u64 ack;
     __u64 fin;
     __u64 rst;
-    
+
+    __u64 tunnel_unsupported;
+    __u64 too_big; 
 };
 typedef struct counter counter_t;
 
 // if updating this, regenerate Go def with: perl -ne 'next if /^\s+$/; s/__u64//; s/;.*//; s/$/ uint64/; print' > /tmp/foo
-struct global {
+struct metrics {
     __u64 malformed;
     __u64 not_ip;
     __u64 not_a_vip;
@@ -248,7 +250,7 @@ struct global {
     
     // can be per service (and by extension per vip) - forwarding state
     __u64 no_backend;
-    __u64 too_big; // exceeds MTU for tunnel (ipv4 and ipv6 version?)
+    __u64 too_big; // exceeds MTU for tunnel (separate ipv4 and ipv6 version?)
     __u64 expired; // TTL/hlim exceeded
     __u64 adjust_failed;
     __u64 tunnel_unsupported;
@@ -270,20 +272,22 @@ struct global {
     __u64 tcp_header;
     __u64 udp_header;
     __u64 icmp_header;
-    __u64 fwd_packets;
-    __u64 fwd_octets;
-    __u64 icmp_too_big; // IPv6
+    __u64 fwd_packets; // can go - forwarded packets only in backeds
+    __u64 fwd_octets;  // can go - forwarded packets only in backeds
+    __u64 icmp_too_big;     // IPv6
     __u64 icmp_frag_needed; // IPv4
 };
-typedef struct global global_t;
+typedef struct metrics global_t;
+typedef struct metrics metrics_t;
 
 struct metadata {
-    global_t *global;
-    global_t *vip; // FIXME - need a different type
-    global_t *service;
+    metrics_t *global;
+    metrics_t *vip;
+    metrics_t *service;
     counter_t *backend;
     __u32 octets;
-    __be16 protocol;
+    //__be16 xprotocol;
+    __u16 mtu;
     __u8 syn:1;
     __u8 ack:1;
     __u8 rst:1;
@@ -313,7 +317,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
-    __type(value, global_t);
+    __type(value, metrics_t);
     __uint(max_entries, 1);
 } globals SEC(".maps");
 
@@ -321,14 +325,14 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, addr_t);
     //__type(value, __u32); // value no longer used - should be counters
-    __type(value, global_t);
+    __type(value, metrics_t);
     __uint(max_entries, 4096); 
 } vips SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, struct servicekey);
-    __type(value, global_t);
+    __type(value, metrics_t);
     __uint(max_entries, 4096);
 } service_c SEC(".maps");
 
@@ -540,6 +544,7 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft)
     return flow;
 }
 
+static __always_inline
 void *array_of_maps(void *outer) {
     __u32 cpu_id = bpf_get_smp_processor_id();
     return bpf_map_lookup_elem(outer, &cpu_id);
@@ -656,11 +661,8 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
     }
     
-    //if(!(metadata->service = bpf_map_lookup_elem(&service_c, &key)))
-    //	return FWD_ERROR2(service_not_found);
-    
     if (!(metadata->backend = is_backend_valid(ft, t, metadata)))
-	return FWD_ERROR3(no_backend); // FIXME 
+	return FWD_ERROR3(no_backend); // FIXME - new error type?
     
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
@@ -687,7 +689,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     case T_NONE: return FWD_LAYER2_DSR;
     }
 
-    FWD_ERROR4(errors);
+    FWD_ERROR4(tunnel_unsupported);
 }
 
 static __always_inline
@@ -913,7 +915,8 @@ enum fwd_action FWD(metadata_t *m, int r)
 
     // can do more detailed error reporting here if r is set to something other than -1
     
-    //m->service->adjust_failed++; // FIXME
+    //m->backend->adjust_failed++; // FIXME
+    m->service->adjust_failed++;
     m->vip->adjust_failed++;
     m->global->adjust_failed++;
     return FWD_DROP;
@@ -965,11 +968,11 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     default:
 	return result;
     }
-    
-    if ((data_end - next_header) + overhead > MTU) {
-	metadata->global->too_big++;
-	if (too_big(ctx, ft, MTU - overhead, ipv6) < 0)
-	    return FWD_ERROR2(adjust_failed);
+
+    if ((data_end - next_header) + overhead > metadata->mtu) {
+	FWD_ERROR4(too_big); // FIXME FWD_ERROR4
+	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
+	    return FWD_ERROR3(adjust_failed);
 	return FWD_TX;
     }
     
@@ -985,7 +988,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     default: break;
     }
 
-    return FWD_ERROR2(tunnel_unsupported);
+    return FWD_ERROR4(tunnel_unsupported); // FIXME FWD_ERROR4
 }
 
 
@@ -1113,16 +1116,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_PASS;
     }
 
-    global_t *global = bpf_map_lookup_elem(&globals, &ZERO);
-    
-    if (!global)
-    	return XDP_DROP;
-
-    metadata_t metadata = { .era = s->era, .global = global };
+    //metadata_t metadata = { .era = s->era, .global = global };
+    metadata_t metadata = { .era = s->era  };
     void *data_end = (void *)(long)ctx->data_end;
     //void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
 
+    if (!(metadata.global = bpf_map_lookup_elem(&globals, &ZERO)))
+	return XDP_DROP;
+
+    metadata.mtu = 1500;
+    
     struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end)
@@ -1139,11 +1143,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
     enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, &metadata);
 
-    //#define COUNTERS(c, m) ((c)->syn += (m)->syn, (c)->ack += (m)->ack, (c)->fin += (m)->fin, (c)->rst += (m)->rst, (c)->flows += (m)->new_flow)
-    //#define COUNTERS(c, m) ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, (c)->flows += (m).new_flow )
-#define COUNTERS(c, m) ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, (c)->flows += (m).new_flow, (c)->packets++ )
+#define COUNTERS(c, m) \
+    ((c)->syn += (m).syn, (c)->ack += (m).ack, (c)->fin += (m).fin, (c)->rst += (m).rst, (c)->flows += (m).new_flow, (c)->packets++ )
     
-    COUNTERS(global, metadata);
+    COUNTERS(metadata.global, metadata);
     
     if (metadata.vip)
 	COUNTERS(metadata.vip, metadata);
@@ -1170,9 +1173,17 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	if (metadata.backend)
 	    COUNTERS(metadata.backend, metadata);
-	
-	global->fwd_packets++;
-	global->fwd_octets += metadata.octets;
+
+	// not needed
+	if (1) {
+	    //error: layer3.c:0:0: in function xdp_fwd_func i32 (ptr):
+	    //Looks like the BPF stack limit is exceeded. Please move
+	    //large on stack variables into BPF per-cpu array map. For
+	    //non-kernel uses, the stack can be increased using -mllvm
+	    //-bpf-stack-size.
+	    metadata.global->packets++; // get above error if these lines commented out - wtf?!
+	    metadata.global->octets += metadata.octets;
+	}
 	// syn, etc.
 		
 	switch (s->multi) {
@@ -1206,15 +1217,10 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	/**********************************************************************/
 
     case FWD_LAYER2_DSR: // should not be returned
-    case FWD_LAYER3_GRE:
-    case FWD_LAYER3_FOU:
+    case FWD_LAYER3_GRE: // maybe a new error type
+    case FWD_LAYER3_FOU: // for real foul-ups
     case FWD_LAYER3_IPIP:
     case FWD_LAYER3_GUE:
-	global->errors++;
-	if(metadata.vip)
-	    metadata.vip->errors++;
-	if(metadata.backend)
-	    metadata.backend->errors++;
 	return XDP_DROP;
 
     }

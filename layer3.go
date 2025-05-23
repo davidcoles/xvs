@@ -107,6 +107,7 @@ type layer3 struct {
 	netinfo  *netinfo
 	netns    *newns
 	maps     maps
+	latency  uint64
 
 	killswitch bool
 }
@@ -161,19 +162,7 @@ func (l *layer3) globals() (c bpf_global) {
 	return c
 }
 
-func (l *layer3) vipsc() (c []bpf_global) {
-	var key, next, nul addr16
-	for r := 0; r == 0; key = next {
-		r = l.maps.vips.GetNextKey(uP(&key), uP(&next))
-		if key != nul {
-			c = append(c, l.vipsc2(key))
-		}
-	}
-
-	return
-}
-
-func (l *layer3) vipsc2(a16 addr16) (c bpf_global) {
+func (l *layer3) virtualMetrics(a16 addr16) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
 	l.maps.vips.LookupElem(uP(&a16), uP(&(all[0])))
@@ -407,6 +396,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 
 	for _, nic := range nics {
 		if err = x.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
+			//if err = x.LoadBpfSection("xdp_fwd_func", true, nic); err != nil {
 			return nil, err
 		}
 	}
@@ -467,13 +457,28 @@ func (l *layer3) background() error {
 
 	defer reconfig.Stop()
 	defer sessions.Stop()
+	defer icmp.Stop()
+
+	var latencies []uint64
 
 	for {
 		select {
 		case <-sessions.C:
 			l.mutex.Lock()
 
-			//fmt.Println("LATENCY", l.readSettings())
+			latencies = append(latencies, l.readSettings())
+
+			for len(latencies) > 5 {
+				latencies = latencies[1:]
+			}
+
+			if len(latencies) > 0 {
+				var total uint64
+				for _, l := range latencies {
+					total += l
+				}
+				l.latency = total / uint64(len(latencies))
+			}
 
 			l.settings.era++
 			if !l.killswitch {

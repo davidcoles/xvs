@@ -29,9 +29,10 @@ import (
 )
 
 type dest struct {
-	weight  uint8
-	tunnel  bpf_tunnel
-	netinfo ninfo // only used for debug purposes atm
+	//weight   uint8
+	disabled bool
+	tunnel   bpf_tunnel
+	netinfo  ninfo // only used for debug purposes atm
 }
 
 type service3 struct {
@@ -223,7 +224,8 @@ func (s *service3) recalc() {
 
 	for k, d := range s.dests {
 		di, ni := s.layer3.tunnel(d)
-		reals[k] = dest{tunnel: di, netinfo: ni, weight: d.Weight}
+		//reals[k] = dest{tunnel: di, netinfo: ni, weight: d.Weight}
+		reals[k] = dest{tunnel: di, netinfo: ni, disabled: d.Disabled}
 		if di.flags&F_NOT_LOCAL == 0 {
 			macs[k] = di.h_dest
 		}
@@ -272,7 +274,8 @@ func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 	addrs := make([]netip.Addr, 0, len(reals))
 
 	for k, v := range reals {
-		if v.weight != 0 && v.tunnel.vlanid != 0 {
+		//if v.weight != 0 && v.tunnel.vlanid != 0 {
+		if !v.disabled && v.tunnel.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
 	}

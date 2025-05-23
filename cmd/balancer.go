@@ -143,7 +143,8 @@ func main() {
 					tport = uint16(*tportg)
 				}
 
-				destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport, Weight: 1}
+				//destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport, Weight: 1}
+				destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport}
 
 				if err := client.CreateDestination(service, destination); err != nil {
 					log.Fatal(service, destination, err)
@@ -167,7 +168,6 @@ func main() {
 
 			info, _ := client.Info()
 			fmt.Println("Info", info)
-
 			fmt.Println("Metrics", client.Metrics())
 
 			services, _ := client.Services()
@@ -178,11 +178,13 @@ func main() {
 
 				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats)
 
-				fmt.Println("\tService", client.ServiceMetrics(s.Service))
+				fmt.Println("\t VIP", client.VirtualMetrics(s.Service.Address))
+				fmt.Println("\t Service", client.ServiceMetrics(s.Service))
 
 				destinations, _ := client.Destinations(s.Service)
 
 				for _, d := range destinations {
+					fmt.Println("\t Destination", client.DestinationMetrics(s.Service, d.Destination))
 					fmt.Println("\t", d.Destination.Address, d.Stats)
 				}
 

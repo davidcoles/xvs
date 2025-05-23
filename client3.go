@@ -72,21 +72,33 @@ type Client interface {
 	WriteFlow([]byte)
 
 	Metrics() map[string]uint64
-	// VirtualAddressMetrics(netip.Addr) map[string]uint64
+	VirtualMetrics(netip.Addr) map[string]uint64
 	ServiceMetrics(Service) map[string]uint64
-	// DestinationMetrics(Service, Destination) map[string]uint64
+	DestinationMetrics(Service, Destination) map[string]uint64
 }
 
-func (l *layer3) Metrics() map[string]uint64 {
-	return l.globals().metrics()
-}
-
-func (s *Service) xkey() bpf_servicekey {
+func (s *Service) bpf_servicekey() bpf_servicekey {
 	return bpf_servicekey{addr: as16(s.Address), port: s.Port, proto: uint16(s.Protocol)}
 }
 
+func (s *Service) bpf_vrpp(d Destination) bpf_vrpp {
+	return bpf_vrpp{vaddr: as16(s.Address), raddr: as16(d.Address), vport: s.Port, protocol: uint16(s.Protocol)}
+}
+
+func (l *layer3) Metrics() map[string]uint64 {
+	return l.globals().metrics() // lock not required
+}
+
+func (l *layer3) VirtualMetrics(a netip.Addr) map[string]uint64 {
+	return l.virtualMetrics(as16(a)).metrics() // lock not required
+}
+
 func (l *layer3) ServiceMetrics(s Service) map[string]uint64 {
-	return l.serviceMetrics(s.xkey()).metrics()
+	return l.serviceMetrics(s.bpf_servicekey()).metrics() // lock not required
+}
+
+func (l *layer3) DestinationMetrics(s Service, d Destination) map[string]uint64 {
+	return l.counters(s.bpf_vrpp(d)).metrics() // lock not required
 }
 
 type Service struct {
@@ -119,7 +131,8 @@ type Destination struct {
 	TunnelType  TunnelType
 	TunnelPort  uint16
 	TunnelFlags TunnelFlags
-	Weight      uint8
+	//Weight      uint8
+	Disabled bool
 }
 
 type DestinationExtended struct {
@@ -158,19 +171,14 @@ func NewWithOptions(options Options, interfaces ...string) (Client, error) {
 }
 
 func (l *layer3) Info() (Info, error) {
-	/*
-		for t, s := range l.services {
-			for _, d := range s.dests {
-				vip := t.address
-				rip := d.Address
-				nat := l.netns.addr(l.natmap.get(vip, rip), vip.Is6())
-				fmt.Println(vip, t.port, t.protocol, rip, nat, nat.IsValid())
-			}
-		}
-	*/
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
 
-	latency := l.readSettings()
 	g := l.globals()
+	latency := l.latency
+	if latency == 0 {
+		latency = 1000 // 0 would clearly be nonsense (happens at statup), so set to something realistic
+	}
 
 	return Info{
 		Packets: g.packets,

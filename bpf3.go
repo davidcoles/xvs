@@ -37,14 +37,16 @@ type bpf_vrpp struct {
 }
 
 type bpf_counter struct {
-	packets uint64
-	octets  uint64
-	flows   uint64
-	errors  uint64
-	syn     uint64
-	ack     uint64
-	fin     uint64
-	rst     uint64
+	packets            uint64
+	octets             uint64
+	flows              uint64
+	errors             uint64
+	syn                uint64
+	ack                uint64
+	fin                uint64
+	rst                uint64
+	tunnel_unsupported uint64 // fixme
+	too_big            uint64 // fixme
 }
 
 func (c *bpf_counter) add(x bpf_counter) {
@@ -71,6 +73,22 @@ func (c bpf_counter) stats(sessions uint64) (s Stats) {
 	s.FIN = c.fin
 	s.RST = c.rst
 	return
+}
+
+func (c bpf_counter) metrics() map[string]uint64 {
+	m := make(map[string]uint64, 10)
+	m["packets"] = c.packets
+	m["octets"] = c.octets
+	m["flows"] = c.flows
+	m["errors"] = c.errors
+	m["syn"] = c.syn
+	m["ack"] = c.ack
+	m["fin"] = c.fin
+	m["rst"] = c.rst
+	m["tunnel_unsupported"] = c.tunnel_unsupported
+	m["too_big"] = c.too_big
+	trim0(m)
+	return m
 }
 
 type bpf_settings struct {
@@ -205,8 +223,8 @@ func (f bpf_global) metrics() map[string]uint64 {
 	m["tcp_header"] = f.tcp_header
 	m["udp_header"] = f.udp_header
 	m["icmp_header"] = f.icmp_header
-	m["fwd_packets"] = f.fwd_packets
-	m["fwd_octets"] = f.fwd_octets
+	//m["fwd_packets"] = f.fwd_packets
+	//m["fwd_octets"] = f.fwd_octets
 	m["icmp_too_big"] = f.icmp_too_big
 	m["icmp_frag_needed"] = f.icmp_frag_needed
 
