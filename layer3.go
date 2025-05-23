@@ -242,7 +242,7 @@ func (l *layer3) tunnel(d Destination) (bpf_tunnel, ninfo) {
 	}
 
 	if d.TunnelType == NONE && ni.l3 {
-		log.Fatal("LOOP ERROR (FIXME)", ni)
+		//log.Fatal("LOOP ERROR (FIXME)", ni)
 		return bpf_tunnel{}, ninfo{}
 	}
 
