@@ -73,12 +73,20 @@ type Client interface {
 
 	Metrics() map[string]uint64
 	// VirtualAddressMetrics(netip.Addr) map[string]uint64
-	// ServiceMetrics(Service) map[string]uint64
+	ServiceMetrics(Service) map[string]uint64
 	// DestinationMetrics(Service, Destination) map[string]uint64
 }
 
 func (l *layer3) Metrics() map[string]uint64 {
 	return l.globals().metrics()
+}
+
+func (s *Service) xkey() bpf_servicekey {
+	return bpf_servicekey{addr: as16(s.Address), port: s.Port, proto: uint16(s.Protocol)}
+}
+
+func (l *layer3) ServiceMetrics(s Service) map[string]uint64 {
+	return l.serviceMetrics(s.xkey()).metrics()
 }
 
 type Service struct {

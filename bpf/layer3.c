@@ -278,19 +278,20 @@ struct global {
 typedef struct global global_t;
 
 struct metadata {
-    __u32 octets;
-    __u32 syn:1;
-    __u32 ack:1;
-    __u32 rst:1;
-    __u32 fin:1;
-    __u32 urg:1;
-    __u32 psh:1;
-    __u32 new_flow:1;
-    __be16 protocol;
-    __u8 era;
     global_t *global;
     global_t *vip; // FIXME - need a different type
-    counter_t *service;
+    global_t *service;
+    counter_t *backend;
+    __u32 octets;
+    __be16 protocol;
+    __u8 syn:1;
+    __u8 ack:1;
+    __u8 rst:1;
+    __u8 fin:1;
+    __u8 urg:1;
+    __u8 psh:1;
+    __u8 new_flow:1;
+    __u8 era;
 };
 typedef struct metadata metadata_t;
 
@@ -584,13 +585,28 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     }
 }
 
-// #define COUNTERS(c, m) ((c)->syn += (m)->syn, (c)->ack += (m)->ack, (c)->fin += (m)->fin, (c)->rst += (m)->rst)
-
-//#define FWD_ERROR(M, F) ( M->global->F++,  M->vip && M->vip->F++, M->service && M->service->F++, FWD_DROP )
-//#define FWD_ERROR(M, F) ( M->global->F++,  M->vip && M->vip->F++, FWD_DROP )
 #define FWD_ERROR1(F) ( metadata->global->F++, FWD_DROP )
 #define FWD_ERROR2(F) ( metadata->global->F++,  metadata->vip && metadata->vip->F++, FWD_DROP )
+#define FWD_ERROR3(F) ( metadata->global->F++, metadata->vip->F++, metadata->service->F++,FWD_DROP )
+#define FWD_ERROR4(F) ( metadata->global->F++, metadata->vip->F++, metadata->service->F++, metadata->backend->F++, FWD_DROP )
 
+static __always_inline
+counter_t *is_backend_valid(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
+{
+    struct vrpp vrpp = { .vaddr = ft->daddr, .raddr = t->daddr, .vport = ntohs(ft->dport), .protocol = ft->proto };
+    counter_t *backend = NULL;
+    
+    if(!(backend = bpf_map_lookup_elem(&stats, &vrpp)))
+	return NULL;
+
+    __u32 vlanid = t->vlanid; // needs to be __u32 for bpf_map_lookup_elem()
+    
+    if (!vlanid || !bpf_map_lookup_elem(&vlaninfo, &vlanid) || nulmac(t->h_dest))
+	return NULL;
+    
+    return backend;
+}
+    
 static __always_inline
 enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
@@ -611,16 +627,22 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	flow = lookup_udp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
 	break;
     }
+
+    struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };	
+
+    if(!(metadata->service = bpf_map_lookup_elem(&service_c, &key)))
+	return FWD_ERROR2(service_not_found);
     
     if (flow) {
 	flow->era = metadata->era;
 	*t = flow->tunnel;
     } else {
-	struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };
 	service_t *service = bpf_map_lookup_elem(&services, &key);
 	
-	if (!service)
+	if (!service) {
+	    metadata->service = NULL;
 	    return FWD_ERROR2(service_not_found);
+	}
     
 	__u8 sticky = service->dest[0].flags & F_STICKY;
 	__u16 hash3 = l3_hash((fourtuple_t *) ft);
@@ -628,32 +650,18 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	__u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 	
 	if (!index)
-	    return FWD_ERROR2(no_backend);
+	    return FWD_ERROR3(no_backend);
 	
 	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
     }
     
-    struct vrpp vrpp = { .vaddr = ft->daddr, .raddr = t->daddr, .vport = ntohs(ft->dport), .protocol = ft->proto };
-    counter_t *counter = bpf_map_lookup_elem(&stats, &vrpp);
+    //if(!(metadata->service = bpf_map_lookup_elem(&service_c, &key)))
+    //	return FWD_ERROR2(service_not_found);
     
-    if (!counter)
-	return FWD_ERROR2(service_not_found); // FIXME - new counter
+    if (!(metadata->backend = is_backend_valid(ft, t, metadata)))
+	return FWD_ERROR3(no_backend); // FIXME 
     
-    __u32 vlanid = t->vlanid;
-    
-    if (!vlanid || !bpf_map_lookup_elem(&vlaninfo, &vlanid) || nulmac(t->h_dest))
-	return FWD_ERROR2(errors); // FWD_ERROR3?
-    
-    metadata->service = counter; // FIXME - is this useful?
-    
-    // counter->packets++;
-    //counter->octets += metadata->octets;
-    //counter->syn += metadata->syn;
-    //counter->ack += metadata->ack;
-    //counter->fin += metadata->fin;
-    //counter->rst += metadata->rst;
-
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
     // comes through. Of course, an attacker could send a SYN and a
@@ -679,8 +687,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     case T_NONE: return FWD_LAYER2_DSR;
     }
 
-    counter->errors++;
-    FWD_ERROR2(errors); // FWD_ERROR3?
+    FWD_ERROR4(errors);
 }
 
 static __always_inline
@@ -1142,7 +1149,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	COUNTERS(metadata.vip, metadata);
     
     if (metadata.service)
-	COUNTERS(metadata.service, metadata);
+    	COUNTERS(metadata.service, metadata);
 
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);
@@ -1161,6 +1168,9 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	
     case FWD_OK:
 
+	if (metadata.backend)
+	    COUNTERS(metadata.backend, metadata);
+	
 	global->fwd_packets++;
 	global->fwd_octets += metadata.octets;
 	// syn, etc.
@@ -1203,8 +1213,8 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	global->errors++;
 	if(metadata.vip)
 	    metadata.vip->errors++;
-	if(metadata.service)
-	    metadata.service->errors++;
+	if(metadata.backend)
+	    metadata.backend->errors++;
 	return XDP_DROP;
 
     }

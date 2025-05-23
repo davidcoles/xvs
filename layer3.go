@@ -123,6 +123,7 @@ type maps struct {
 	settings       xdp.Map
 	sessions       xdp.Map
 	globals        xdp.Map
+	service_c      xdp.Map
 	shared         xdp.Map
 	stats          xdp.Map
 	vips           xdp.Map
@@ -176,6 +177,22 @@ func (l *layer3) vipsc2(a16 addr16) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
 	l.maps.vips.LookupElem(uP(&a16), uP(&(all[0])))
+
+	var b bpf_global_
+
+	for _, v := range all {
+		b.add(v)
+	}
+
+	c = *((*bpf_global)(uP(&b)))
+
+	return
+}
+
+func (l *layer3) serviceMetrics(key bpf_servicekey) (c bpf_global) {
+	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
+
+	l.maps.service_c.LookupElem(uP(&key), uP(&(all[0])))
 
 	var b bpf_global_
 
@@ -669,6 +686,12 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 	}
 
 	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service{})))
+
+	if err != nil {
+		return err
+	}
+
+	m.service_c, err = x.FindMap("service_c", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_global{})))
 
 	if err != nil {
 		return err

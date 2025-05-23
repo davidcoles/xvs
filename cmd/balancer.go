@@ -178,6 +178,8 @@ func main() {
 
 				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats)
 
+				fmt.Println("\tService", client.ServiceMetrics(s.Service))
+
 				destinations, _ := client.Destinations(s.Service)
 
 				for _, d := range destinations {
