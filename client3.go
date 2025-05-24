@@ -19,7 +19,6 @@
 package xvs
 
 import (
-	//"encoding/binary"
 	"fmt"
 	"net/netip"
 	"time"
@@ -28,14 +27,6 @@ import (
 type TunnelType uint8
 type TunnelFlags uint8
 type Flags uint8
-
-const (
-	Sticky Flags = 0x01
-)
-
-const (
-	TunnelEncapNoChecksums TunnelFlags = 0x01 // FIXME - add check?
-)
 
 type Options struct {
 	Native bool
@@ -85,6 +76,9 @@ func (s *Service) bpf_vrpp(d Destination) bpf_vrpp {
 	return bpf_vrpp{vaddr: as16(s.Address), raddr: as16(d.Address), vport: s.Port, protocol: uint16(s.Protocol)}
 }
 
+// Metrics functions are likely to chage as the error/metrics code is
+// iterated. For now, we just return a dictionary of metric names and
+// values.
 func (l *layer3) Metrics() map[string]uint64 {
 	return l.globals().metrics() // lock not required
 }
@@ -111,14 +105,14 @@ type Service struct {
 type Stats struct {
 	Packets uint64
 	Octets  uint64
-	Flows   uint64
-	Current uint64
-	Errors  uint64
+	Flows   uint64 // rename? "Connections" (total connections, a counter, like Packets and Octets, more in tune with ipvs)
+	Current uint64 // rename? or move to DestinationExtended - ActiveConnections, like ipvs
+	Errors  uint64 // maybe remove?
 
-	SYN uint64
-	ACK uint64
-	FIN uint64
-	RST uint64
+	//SYN uint64
+	//ACK uint64
+	//FIN uint64
+	//RST uint64
 }
 
 type ServiceExtended struct {
@@ -131,7 +125,7 @@ type Destination struct {
 	TunnelType  TunnelType
 	TunnelPort  uint16
 	TunnelFlags TunnelFlags
-	Disabled    bool
+	Disable     bool
 }
 
 type DestinationExtended struct {
@@ -329,6 +323,9 @@ func (l *layer3) RemoveDestination(s Service, d Destination) error {
 	return service.removeDestination(d)
 }
 
+// Creates a service if it does not exist, and populate the list of
+// destinations. Any extant destinations which are not specified are
+// removed.
 func (l *layer3) SetService(s Service, ds ...Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
@@ -348,11 +345,17 @@ func (l *layer3) SetService(s Service, ds ...Destination) error {
 	return err
 }
 
+// Given the virtual IP address of a service and the address of a real
+// server this will return the NAT address that can be used to query
+// the VIP address on the backend.
 func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return l.nat(vip, rip)
 }
 
-func (l *layer3) Addresses() (netip.Addr, netip.Addr) {
+// Returns the IPv4 and IPv6 address of the veth interface - if a
+// socket needs to be explicitly bound to to query the NAT addresses
+// of backend servers then these can be used.
+func (l *layer3) Addresses() (ipv4 netip.Addr, ipv6 netip.Addr) {
 	return l.netns.address4(), l.netns.address6()
 }
 
@@ -379,6 +382,11 @@ func (d Destination) check() error {
 	return nil
 }
 
+// Retrieves an opaque flow record from a ueue written to by the
+// kernel. If no flow records are available then a zero length slice
+// is returned. This can be used to share flow state with peers, with
+// the flow record stored using the WriteFlow() function. Stale
+// records are skipped.
 func (l *layer3) ReadFlow() []byte {
 	var entry [ft_size + flow_size]byte
 
@@ -406,10 +414,11 @@ try:
 	return entry[:]
 }
 
+// Stores a flow retrieved with ReadFlow()
 func (l *layer3) WriteFlow(f []byte) {
 
 	if len(f) != int(ft_size+flow_size) {
-		return
+		return // FIXME - check version byte?
 	}
 
 	key := uP(&f[0])

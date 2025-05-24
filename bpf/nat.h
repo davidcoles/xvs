@@ -21,14 +21,14 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct fivetuple);
+    __type(key, fivetuple_t);
     __type(value, struct addr_port_time);
     __uint(max_entries, 65556);
 } reply SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct fivetuple);
+    __type(key, fivetuple_t);
     __type(value, struct addr_port_time);
     __uint(max_entries, 1);
 } reply_dummy SEC(".maps");

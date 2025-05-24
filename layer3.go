@@ -64,9 +64,12 @@ const (
 	GRE  TunnelType = bpf.T_GRE
 	FOU  TunnelType = bpf.T_FOU
 	GUE  TunnelType = bpf.T_GUE
-)
 
-const F_NOT_LOCAL = 0x80
+	Sticky Flags = bpf.F_STICKY
+
+	TunnelEncapNoChecksums TunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
+	notLocal               TunnelFlags = bpf.F_NOT_LOCAL
+)
 
 type addr16 [16]byte
 type addr4 [4]byte
@@ -246,10 +249,10 @@ func (l *layer3) tunnel(d Destination) (bpf_tunnel, ninfo) {
 		return bpf_tunnel{}, ninfo{}
 	}
 
-	flags := uint8(d.TunnelFlags & 0x7f)
+	flags := d.TunnelFlags & 0x7f
 
 	if ni.l3 {
-		flags |= F_NOT_LOCAL
+		flags |= notLocal
 	}
 
 	return bpf_tunnel{
@@ -259,7 +262,7 @@ func (l *layer3) tunnel(d Destination) (bpf_tunnel, ninfo) {
 		sport:    0,
 		vlanid:   ni.vlanid,
 		method:   d.TunnelType,
-		flags:    flags,
+		flags:    uint8(flags),
 		h_dest:   ni.h_dest,
 		h_source: ni.h_source,
 	}, ni
@@ -276,7 +279,7 @@ func (l *layer3) updateSettings() {
 	l.maps.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
-func (l *layer3) readSettings() uint64 {
+func (l *layer3) readLatency() uint64 {
 	var ZERO uint32 = 0
 	var packets uint64
 	var latency uint64
@@ -462,7 +465,7 @@ func (l *layer3) background() error {
 		case <-sessions.C:
 			l.mutex.Lock()
 
-			latencies = append(latencies, l.readSettings())
+			latencies = append(latencies, l.readLatency())
 
 			for len(latencies) > 5 {
 				latencies = latencies[1:]

@@ -43,7 +43,6 @@
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 60; // seconds
-const __u8 F_NOT_LOCAL = 0x80;
 
 enum fwd_action {
     FWD_OK = 0,
@@ -82,10 +81,10 @@ struct fourtuple {
 };
 typedef struct fourtuple fourtuple_t;
 
-// proto is a __u32 here to align the struct to 8 bytes. if this is
+// proto is a __u32 here to align the struct to 4 bytes. if this is
 // not done then inline initialisation will have some undefined bytes
-// from the stack unless saddr and daddr are assigned separately. as
-// this is used as a key to map then lookups will fail
+// from the stack unless saddr and daddr are assigned separately,
+// weirdly. as this is used as a key to map then lookups will fail
 struct fivetuple {
     struct addr saddr;
     struct addr daddr;
@@ -278,6 +277,7 @@ struct metrics {
     __u64 fwd_octets;  // can go - forwarded packets only in backeds
     __u64 icmp_too_big;     // IPv6
     __u64 icmp_frag_needed; // IPv4
+    __u64 userspace;
 };
 typedef struct metrics global_t;
 typedef struct metrics metrics_t;
@@ -288,7 +288,6 @@ struct metadata {
     metrics_t *service;
     counter_t *backend;
     __u32 octets;
-    //__be16 xprotocol;
     __u16 mtu;
     __u8 syn:1;
     __u8 ack:1;
@@ -376,8 +375,9 @@ struct {
     __type(key, struct servicekey);
     __type(value, service_t);
     __uint(max_entries, 4096);
-} services SEC(".maps"); // rename to "services"?
+} services SEC(".maps");
 
+// give these sensible names!
 struct vlaninfo {
     addr_t ip4;
     addr_t ip6;
@@ -572,7 +572,7 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
 }
 
 #define FWD_ERROR1(F) ( metadata->global->F++, FWD_DROP )
-#define FWD_ERROR2(F) ( metadata->global->F++,  metadata->vip && metadata->vip->F++, FWD_DROP )
+#define FWD_ERROR2(F) ( metadata->global->F++, metadata->vip->F++, FWD_DROP )
 #define FWD_ERROR3(F) ( metadata->global->F++, metadata->vip->F++, metadata->service->F++,FWD_DROP )
 #define FWD_ERROR4(F) ( metadata->global->F++, metadata->vip->F++, metadata->service->F++, metadata->backend->F++, FWD_DROP )
 
@@ -739,14 +739,13 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
 	    icmp->icmp6_cksum = icmp6_csum_diff(icmp, &old);
             reverse_ethhdr(eth);
-	    metadata->vip && metadata->vip->icmp_echo_request++;
+	    metadata->vip->icmp_echo_request++;
 	    metadata->global->icmp_echo_request++;
 	    return FWD_TX; // <- NOT AN ERROR
 	}
 	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
-	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
-	    
 	    //bpf_printk("ICMPv6 ICMP6_PACKET_TOO_BIG");
+	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 	    
 	    if (!buffer)
 		return FWD_ERROR2(errors);
@@ -756,7 +755,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	    
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
-		return FWD_ERROR2(errors);
+		return FWD_ERROR2(userspace);
 	}
 
 	return FWD_ERROR2(icmp_echo_request);
@@ -847,14 +846,13 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    icmp->type = ICMP_ECHOREPLY;
             icmp->checksum = icmp4_csum_diff(icmp, &old);
 	    reverse_ethhdr(eth);
-	    metadata->vip && metadata->vip->icmp_echo_request++;
+	    metadata->vip->icmp_echo_request++;
 	    metadata->global->icmp_echo_request++;
 	    return FWD_TX; // <- NOT AN ERROR
 	}
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
-	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
-	    
 	    //bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
+	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 	    
 	    if (!buffer)
 		return FWD_ERROR2(errors);
@@ -864,7 +862,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
-		return FWD_ERROR2(errors);
+		return FWD_ERROR2(userspace);
 	}
 
 	return FWD_ERROR2(icmp_unsupported);
@@ -1139,8 +1137,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);
     
-    
-    // handle stats here
     switch (action) {
     case FWD_TX:
 	return XDP_TX;
@@ -1155,18 +1151,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	if (metadata.backend)
 	    COUNTERS(metadata.backend, metadata);
-
-	// not needed
-	if (1) {
-	    //error: layer3.c:0:0: in function xdp_fwd_func i32 (ptr):
-	    //Looks like the BPF stack limit is exceeded. Please move
-	    //large on stack variables into BPF per-cpu array map. For
-	    //non-kernel uses, the stack can be increased using -mllvm
-	    //-bpf-stack-size.
-	    metadata.global->packets++; // get above error if these lines commented out - wtf?!
-	    metadata.global->octets += metadata.octets;
-	}
-	// syn, etc.
 		
 	switch (s->multi) {
 	case 0: // untagged bond - multi NIC, but only single VLAN in config

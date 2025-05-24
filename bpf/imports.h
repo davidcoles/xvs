@@ -17,29 +17,30 @@
  */
 
 enum {
-      F_STICKY     = 0x01,
+    F_STICKY    = 0x01,
+    F_NOT_LOCAL = 0x80,
 };
 
 enum {
-    F_CHECKSUM_DISABLE = 0x01,
+    F_TUNNEL_ENCAP_NO_CHECKSUMS =  0x01,
 };
 
-enum {
-      VETH_ID = 4095,
-};
+//enum {
+//    VETH_ID = 4095,
+//};
 
-enum { SNOOP_BUFFER_SIZE = 8+2048 }; // 8 byte header (includes length of IP packet) and original IP packet
+//enum { SNOOP_BUFFER_SIZE = 8+2048 }; // 8 byte header (includes length of IP packet) and original IP packet
 
-enum {
-      F_NO_SHARE_FLOWS     = 0x01,
-      F_NO_TRACK_FLOWS     = 0x02,	    
-      F_NO_ESTIMATE_CONNS  = 0x04,
-      F_NO_STORE_STATS     = 0x08,
-      F_NO_PREFIXES        = 0x10,
-      //F_BLOCKLIST   = 0x10,
-      //F_MULTINIC    = 0x20,
-      //F_DISABLED    = 0x40,
-};
+//enum {
+    //F_NO_SHARE_FLOWS     = 0x01,
+    //F_NO_TRACK_FLOWS     = 0x02,	    
+    //F_NO_ESTIMATE_CONNS  = 0x04,
+    //F_NO_STORE_STATS     = 0x08,
+    //F_NO_PREFIXES        = 0x10,
+    //F_BLOCKLIST   = 0x10,
+    //F_MULTINIC    = 0x20,
+    //F_DISABLED    = 0x40,
+//};
 
 enum tunnel_type {
 		  T_NONE  = 0,

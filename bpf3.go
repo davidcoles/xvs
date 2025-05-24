@@ -69,10 +69,10 @@ func (c bpf_counter) stats(sessions uint64) (s Stats) {
 	s.Errors = c.errors
 	s.Current = sessions
 
-	s.SYN = c.syn
-	s.ACK = c.ack
-	s.FIN = c.fin
-	s.RST = c.rst
+	//s.SYN = c.syn
+	//s.ACK = c.ack
+	//s.FIN = c.fin
+	//s.RST = c.rst
 	return
 }
 
@@ -148,7 +148,7 @@ type bpf_vip_rip struct {
 }
 
 type bpf_global_ struct {
-	counters [30]uint64
+	counters [31]uint64
 }
 
 func (g *bpf_global_) add(c bpf_global_) {
@@ -188,6 +188,7 @@ type bpf_global struct {
 	fwd_octets         uint64
 	icmp_too_big       uint64
 	icmp_frag_needed   uint64
+	userspace          uint64
 }
 
 func (p bpf_global) String() string {
@@ -229,6 +230,7 @@ func (f bpf_global) metrics() map[string]uint64 {
 	//m["fwd_octets"] = f.fwd_octets
 	m["icmp_too_big"] = f.icmp_too_big
 	m["icmp_frag_needed"] = f.icmp_frag_needed
+	m["userspace"] = f.userspace
 
 	trim0(m)
 	return m

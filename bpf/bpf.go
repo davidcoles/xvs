@@ -7,8 +7,9 @@ package bpf
 import "C"
 
 const (
-	F_CHECKSUM_DISABLE = C.F_CHECKSUM_DISABLE
-	F_STICKY           = C.F_STICKY
+	F_TUNNEL_ENCAP_NO_CHECKSUMS = C.F_TUNNEL_ENCAP_NO_CHECKSUMS
+	F_STICKY                    = C.F_STICKY
+	F_NOT_LOCAL                 = C.F_NOT_LOCAL
 
 	T_NONE = C.T_NONE
 	T_FOU  = C.T_FOU
