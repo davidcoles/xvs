@@ -1,7 +1,12 @@
-# XDP Virtual Server
+q# XDP Virtual Server
 
 An [XDP](https://en.wikipedia.org/wiki/Express_Data_Path)/[eBPF](https://en.wikipedia.org/wiki/EBPF)
 load balancer and Go API for Linux.
+
+I'm now moving the new IPv6/layer 3 tunneling branch to main. It's not
+quite production ready yet, so continue to use the v0.1 branch/tags
+for that. When it seems ready I'll tag with v0.2 and start migrating
+vc5 for proper testing.
 
 This code is originally from the
 [vc5](https://github.com/davidcoles/vc5) load balancer, and has been
@@ -116,6 +121,9 @@ resources available to create more clients/servers. I realised that I
 carried this out when the server's profile was set to performance
 per-watt. Using the performance mode the CPU usage is barely 2% and
 latency is less than 250 nanoseconds.
+
+Above tests were done on the old layer 2 code, but will be broadly the
+same. I'll do some updated tests soon.
 
 On a Raspberry Pi (B+) ... don't get your hopes up!
 
