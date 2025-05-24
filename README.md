@@ -1,24 +1,40 @@
-# XDP Virtual Server
+q# XDP Virtual Server
 
 An [XDP](https://en.wikipedia.org/wiki/Express_Data_Path)/[eBPF](https://en.wikipedia.org/wiki/EBPF)
 load balancer and Go API for Linux.
+
+I'm now moving the new IPv6/layer 3 tunneling branch to main. It's not
+quite production ready yet, so continue to use the v0.1 branch/tags
+for that. When it seems ready I'll tag with v0.2 and start migrating
+vc5 for proper testing.
 
 This code is originally from the
 [vc5](https://github.com/davidcoles/vc5) load balancer, and has been
 split out to be developed seperately.
 
-This code implements a layer 4 Direct Server Return (DSR) load
-balancer with an eBPF data plane that is loaded into the kernel, and a
+XVS implements a layer 4 Direct Server Return (DSR) load
+balancer with an eBPF data plane (that is loaded into the kernel), and a
 supporting Go library to configure the balancer through the XDP
-API. Currently connections are steered at layer 2, so backend servers
-need to share a VLAN with the load balancer. Multiple VLANs/interfaces
-are supported. Only IPv4 is supported for now, but support for layer 3
-DSR and IPv6 is planned.
+API.
 
-A compiled BPF ELF object file is committed to this repository (main
-branch) and is accessed via Go's embed feature, which means that it
+IPv6 and [layer 3 tunnels](doc/tunnels.md) are now supported. Tunnel
+types implemented are: IP-in-IP (all flavours), GRE, FOU and GUE. A
+NAT system provides a mechanism to directly query services via the
+virtual IP address on backends (using the appropriate tunnel type),
+which allows a client to perform accurate health checks and so
+enable/disable new connections to targets as necessary.
+
+There is no requirement to use the same address family for virtual and
+real server addresses; you can forward IPv6 VIPs to backends using a
+IPv4 tunnel endpoint, and vice versa.
+
+Some facilities may not have been implemented in the new code yet, but
+will be added shortly.
+
+A compiled BPF ELF object file is committed to this repository (tagged
+versions) and is accessed via Go's embed feature, which means that it
 can be used as a standard Go module without having to build the binary
-as a seperate step. [libbpf](https://github.com/libbpf/libbpf) is
+as a separate step. [libbpf](https://github.com/libbpf/libbpf) is
 still required for linking programs using the library (CGO_CFLAGS and
 CGO_LDFLAGS environment variables may need to be used to specify the
 location of the library - see the Makefile for an example of how to do
@@ -30,13 +46,9 @@ eBPF code is JITted to the native instruction set at runtime, so this
 should run on any Linux architecture. Currently AMD64 and ARM
 (Raspberry Pi) are confirmed to work.
 
-Devices with constrained memory might have issues loading in the
-default size flow state tables. This can now be overriden with the
-MaxFlows parameter on newer kernels.
-
-Raspberry Pi Wi-Fi load balancer:
-
-`cmd/balancer wlan0 192.168.0.16 192.168.101.1 192.168.0.10 192.168.0.11`
+Devices with constrained memory might have issues loading the default
+size flow state tables. This can now be overriden with the MaxFlows
+parameter on newer kernels.
 
 ## Documentation
 
@@ -53,17 +65,23 @@ A simple application in the `cmd/` directory will balance traffic
 to a VIP (TCP port 80 by default, can be changed with flags) to a
 number of backend servers on the same IP subnet.
 
-Compile/run with:
- 
-* `make example`
-* `cmd/balancer ens192 10.1.2.3 192.168.101.1 10.1.2.10 10.1.2.11 10.1.2.12`
+Compile/run with, eg.:
 
-Replace `ens192` with your ethernet interface name, `10.1.2.3` with
-the address of the machine you are running the program on,
-`192.168.101.1` with the VIP you want to use and `10.1.2.10-12` with
-any number of real server addresses.
+* `make`
+* `cmd/balancer -r 180 -t gre ens192 10.1.2.254/24 192.168.101.1 10.1.10.100 10.1.10.101`
 
-On a seperate client machine on the same subnet you should add a static route for the VIP, eg.:
+where `180` is the number of seconds to run for, `gre` is the tunnel
+type, `ens192` is the network card you wish to load the XDP program
+onto, `10.1.2.254/24` is the IP address of the router that will handle
+tunneled traffic (the `/24` allows the library to determine the local
+IP address to use as the source for tunnel packets), `192.168.101.1`
+is the VIP, and `10.1.10.100` & `10.1.10.101` are two real servers to
+send the traffic to. Only port 80/tcp is forwarded by default, but
+other ports can be added (-h for help).
+
+On a separate client machine on the same subnet you should add a
+static route for the VIP directed at the load balancer's own IP
+address, eg.:
 
 * `ip r add 192.168.101.1 via 10.1.2.3`
 
@@ -75,8 +93,9 @@ No healthchecking is done, so you'll have to make sure that a
 webserver is running on the real servers and that the VIP has been
 configured on the loopback address (`ip a add 192.168.101.1 dev lo`).
 
-A more complete example with health check and BGP route health
-injection is currently available at
+This is not intended to be a useful utility, more an example of using
+the library.  A more complete example with health check and BGP route
+health injection is currently available at
 [vc5](https://github.com/davidcoles/vc5).
 
 
@@ -101,20 +120,18 @@ server was more than 90% idle. Unfortunately I did not have the
 resources available to create more clients/servers. I realised that I
 carried this out when the server's profile was set to performance
 per-watt. Using the performance mode the CPU usage is barely 2% and
-latencey is less than 250 nanoseconds.
+latency is less than 250 nanoseconds.
+
+Above tests were done on the old layer 2 code, but will be broadly the
+same. I'll do some updated tests soon.
 
 On a Raspberry Pi (B+) ... don't get your hopes up!
 
 ## Recalcitrant cards
 
-I'm currently investigating issues with the Intel X710 card. We have
-had issues getting the NIC to bring up links (particularly after
-switch reboot), though this may be due to SFP+ module/optics. I've
-been able to force a renegotiation with ethtool -r, but this then has
-the effect of breaking XDP. This seems to be fixable by reattaching
-the BPF section, so I have added a function to carry this out. The
-generic driver did not show this problem.
+I initially had problems with the Intel X710 card, but some
+combination of SFP+ module/optics replacement and moving to Ubuntu
+24.04 seems to have fixed the issue.
 
-This has been extremely disappointing as the Intel X520 card worked
-perfectly, and pulling/reinserting cables on a bond behaved exactly as
-I would have hoped.
+The Intel X520 cards that I had previously used work flawlessly.
+

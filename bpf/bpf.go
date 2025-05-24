@@ -7,22 +7,17 @@ package bpf
 import "C"
 
 const (
-	SNOOP_BUFFER_SIZE = C.SNOOP_BUFFER_SIZE
-	VETH_ID           = C.VETH_ID
-	FLOW_S            = 12
-	STATE_S           = 20
+	F_TUNNEL_ENCAP_NO_CHECKSUMS = C.F_TUNNEL_ENCAP_NO_CHECKSUMS
+	F_STICKY                    = C.F_STICKY
+	F_NOT_LOCAL                 = C.F_NOT_LOCAL
 
-	F_STICKY            = C.F_STICKY
-	F_NO_SHARE_FLOWS    = C.F_NO_SHARE_FLOWS
-	F_NO_TRACK_FLOWS    = C.F_NO_TRACK_FLOWS
-	F_NO_ESTIMATE_CONNS = C.F_NO_ESTIMATE_CONNS
-	F_NO_STORE_STATS    = C.F_NO_STORE_STATS
+	T_NONE = C.T_NONE
+	T_FOU  = C.T_FOU
+	T_GRE  = C.T_GRE
+	T_GUE  = C.T_GUE
+	T_IPIP = C.T_IPIP
 )
 
 func Pow64(x uint8) uint64 {
 	return uint64(C.pow64(C.uchar(x)))
-	//if x < 0 || x > 63 {
-	//	return 0
-	//}
-	//return 1 << x
 }

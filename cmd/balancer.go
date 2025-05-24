@@ -4,9 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/netip"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -19,232 +17,197 @@ type list []string
 func (i *list) String() string         { return strings.Join(*i, ",") }
 func (i *list) Set(value string) error { *i = append(*i, value); return nil }
 
-var extra list
-var vlans list
-
-// balancer <interface> <lb-ip-address> <virtual-ip-address> <real-ip-address>...
-
-func mac(m [6]byte) string {
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
-}
-
 func main() {
-	main_()
-	fmt.Println("exited")
-	time.Sleep(10 * time.Second)
-}
+	var vips list
+	var serv list
 
-func main_() {
+	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
+	sticky := flag.Bool("s", false, "Sticky")
+	tunnel := flag.String("t", "none", "Tunnel type none|fou|gre|gue|ipip")
+	tport4 := flag.Uint("4", 9999, "Port to use for FOU IPv4 VIPs")
+	tport6 := flag.Uint("6", 6666, "Port to use for FOU IPv6 VIPs")
+	tportg := flag.Uint("G", 8888, "Port to use for GUE")
+	extra := flag.String("V", "", "Extra VLAN")
 
-	flows := flag.Uint("f", 0, "Set size of flow state table")
-	port := flag.Int("p", 80, "Port to run service on")
-	dbg := flag.Bool("d", false, "Use debug interface")
-	udp := flag.Bool("u", false, "Use UDP instead of TCP")
-	nat := flag.Bool("n", false, "NAT (creates a network namespace and interfaces)")
-	flag.Var(&extra, "i", "extra interfaces")
-	flag.Var(&vlans, "v", "extra interfaces")
+	flag.Var(&vips, "v", "extra vips")
+	flag.Var(&serv, "p", "ports to add to vips")
+
 	flag.Parse()
 
 	args := flag.Args()
 
-	protocol := xvs.TCP
+	iface := args[0]
+	vlan := args[1]
+	vip := args[2]
+	rips := args[3:]
 
-	if *udp {
-		protocol = xvs.UDP
-	}
+	tun := xvs.NONE
 
-	if *port < 1 || *port > 65535 {
-		log.Fatal("Port not in range 1-65535")
-	}
-
-	var debug *Debug
-
-	if *dbg {
-		debug = &Debug{}
-	}
-
-	link := args[0]
-	addr := netip.MustParseAddr(args[1])
-	vip := netip.MustParseAddr(args[2])
-	rip := args[3:]
-
-	links := append([]string{link}, extra...)
-
-	for _, i := range links {
-		ethtool(i)
-	}
-
-	var err error
-
-	client := &xvs.Client{
-		Interfaces: links,
-		Address:    addr,
-		Debug:      debug,
-		VLANs:      parsevlans(vlans),
-		NAT:        *nat,
-		MaxFlows:   uint32(*flows),
-		Frags:      true,
-	}
-
-	err = client.Start()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defcon := 5
-	switch defcon {
-	case 1:
-		client.Flags(xvs.F_NO_SHARE_FLOWS | xvs.F_NO_ESTIMATE_CONNS | xvs.F_NO_TRACK_FLOWS | xvs.F_NO_STORE_STATS)
-	case 2:
-		client.Flags(xvs.F_NO_SHARE_FLOWS | xvs.F_NO_ESTIMATE_CONNS | xvs.F_NO_TRACK_FLOWS)
-	case 3:
-		client.Flags(xvs.F_NO_SHARE_FLOWS | xvs.F_NO_ESTIMATE_CONNS)
-	case 4:
-		client.Flags(xvs.F_NO_SHARE_FLOWS)
+	switch *tunnel {
+	case "none":
+		tun = xvs.NONE
+	case "fou":
+		tun = xvs.FOU
+	case "gre":
+		tun = xvs.GRE
+	case "gue":
+		tun = xvs.GUE
+	case "ipip":
+		tun = xvs.IPIP
 	default:
-		client.Flags(0)
+		log.Fatal("Unknown tunnel type")
 	}
 
-	svc := xvs.Service{Address: vip, Port: uint16(*port), Protocol: protocol}
-	err = client.CreateService(svc)
+	/**********************************************************************/
+
+	vlan4 := map[uint16]netip.Prefix{}
+	vlan6 := map[uint16]netip.Prefix{}
+
+	prefix := netip.MustParsePrefix(vlan)
+
+	if prefix.Addr().Is4() {
+		vlan4[1] = prefix
+	} else {
+		vlan6[1] = prefix
+	}
+
+	if *extra != "" {
+		prefix = netip.MustParsePrefix(*extra)
+
+		if prefix.Addr().Is4() {
+			vlan4[1] = prefix
+		} else {
+			vlan6[1] = prefix
+		}
+	}
+
+	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6}
+
+	fmt.Println("Starting ...")
+
+	client, err := xvs.NewWithOptions(options, iface)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	defer client.RemoveService(svc)
+	err = client.SetConfig(xvs.Config{VLANs4: vlan4, VLANs6: vlan6})
 
-	for _, r := range rip {
-		time.Sleep(5 * time.Second)
-		dst := xvs.Destination{Address: netip.MustParseAddr(r), Weight: 1}
-
-		fmt.Println("ADDING", r)
-		client.CreateDestination(svc, dst)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	go func() {
-		for {
-			ticker := time.NewTicker(time.Millisecond * 10)
+	/**********************************************************************/
 
-			for {
-				select {
-				case <-ticker.C:
-				read_flow:
-					f := client.ReadFlow()
-					if len(f) > 0 {
-						fmt.Printf("+")
-						goto read_flow
-					}
+	vips = append(vips, vip)
+
+	var ports []uint16
+
+	if len(serv) < 1 {
+		ports = []uint16{80}
+	} else {
+		for _, port := range serv {
+			p, err := strconv.Atoi(port)
+			if err != nil {
+				log.Fatal(err)
+			}
+			ports = append(ports, uint16(p))
+		}
+	}
+
+	var sflags xvs.Flags
+
+	if *sticky {
+		sflags |= xvs.Sticky
+	}
+
+	for _, vip := range vips {
+
+		for _, port := range ports {
+
+			service := xvs.Service{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
+
+			if err := client.CreateService(service); err != nil {
+				log.Fatal(service, err)
+			}
+
+			for _, rip := range rips {
+
+				tport := uint16(*tport4)
+
+				if service.Address.Is6() {
+					tport = uint16(*tport6)
+				}
+
+				if tun == xvs.GUE {
+					tport = uint16(*tportg)
+				}
+
+				//destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport, Weight: 1}
+				destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport}
+
+				if err := client.CreateDestination(service, destination); err != nil {
+					log.Fatal(service, destination, err)
 				}
 			}
 		}
-	}()
-
-	time.Sleep(120 * time.Second)
+	}
 
 	services, _ := client.Services()
 
-	for _, s := range services {
+	for _, service := range services {
+		destinations, _ := client.Destinations(service.Service)
+		for _, destination := range destinations {
+			fmt.Println("DEST", service.Service, destination.Destination)
+		}
+	}
 
-		log.Println(s)
+	if *remove != 0 {
 
-		destinations, _ := client.Destinations(s.Service)
+		for n := uint(0); n < *remove; n++ {
 
-		for _, d := range destinations {
+			info, _ := client.Info()
+			fmt.Println("Info", info)
+			fmt.Println("Metrics", client.Metrics())
 
-			log.Printf("%s: Packets %d, Octets %d, Flows %d\n", d.Destination.Address, d.Stats.Packets, d.Stats.Octets, d.Stats.Flows)
+			services, _ := client.Services()
 
-			if err = client.RemoveDestination(s.Service, d.Destination); err != nil {
-				log.Println(d.Destination.Address, err)
+			for _, service := range services {
+
+				s, _ := client.Service(service.Service)
+
+				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats)
+
+				fmt.Println("\t VIP", client.VirtualMetrics(s.Service.Address))
+				fmt.Println("\t Service", client.ServiceMetrics(s.Service))
+
+				destinations, _ := client.Destinations(s.Service)
+
+				for _, d := range destinations {
+					fmt.Println("\t Destination", client.DestinationMetrics(s.Service, d.Destination))
+					fmt.Println("\t", d.Destination.Address, d.Stats)
+				}
+
 			}
-		}
-	}
-}
 
-func parsevlans(vlans []string) map[uint16]net.IPNet {
-
-	ret := map[uint16]net.IPNet{}
-
-	for _, v := range vlans {
-		s := strings.Split(v, ":")
-
-		if len(s) != 2 {
-			goto fail
+			time.Sleep(time.Second)
 		}
 
-		i, err := strconv.Atoi(s[0])
+		fmt.Println("REMOVING")
 
-		if err != nil {
-			goto fail
+		services, _ := client.Services()
+
+		for _, service := range services {
+			client.RemoveService(service.Service)
 		}
 
-		if i < 1 || i > 4094 {
-			goto fail
-		}
-
-		_, ipnet, err := net.ParseCIDR(s[1])
-
-		if err != nil {
-			goto fail
-		}
-
-		ret[uint16(i)] = *ipnet
+		//for _, vip := range vips {
+		//	for _, port := range ports {
+		//		service := xvs.Service{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
+		//		client.RemoveService(service)
+		//	}
+		//}
 	}
 
-	return ret
-
-fail:
-	log.Fatal("VLAN argument must be <1-4094>:<cidr-prefix>, eg., 100:10.1.2.0/24")
-	return nil
-}
-
-func ethtool(i string) {
-	exec.Command("ethtool", "-K", i, "rx", "off").Output()
-	exec.Command("ethtool", "-K", i, "tx", "off").Output()
-	exec.Command("ethtool", "-K", i, "rxvlan", "off").Output()
-	exec.Command("ethtool", "-K", i, "txvlan", "off").Output()
-}
-
-type Debug struct{}
-
-func (d *Debug) NAT(tag map[netip.Addr]int16, arp map[netip.Addr][6]byte, vrn map[[2]netip.Addr]netip.Addr, nat map[netip.Addr]string, out []netip.Addr, in []string) {
-
-	for k, v := range tag {
-		fmt.Printf("TAG %s -> %d\n", k, v)
-	}
-
-	for k, v := range arp {
-		fmt.Printf("ARP %s -> %v\n", k, mac(v))
-	}
-
-	for k, v := range vrn {
-		fmt.Printf("MAP %s|%s -> %s\n", k[0], k[1], v)
-	}
-
-	for k, v := range nat {
-		fmt.Printf("NAT %s -> %s\n", k, v)
-	}
-
-	for _, v := range out {
-		fmt.Println("DEL nat_out", v)
-	}
-
-	for _, v := range in {
-		fmt.Println("DEL nat_in", v)
-	}
-}
-
-func (d *Debug) Redirects(vlans map[uint16]string) {
-	for k, v := range vlans {
-		fmt.Println("NIC", k, v)
-	}
-}
-
-func (d *Debug) Backend(vip netip.Addr, port uint16, protocol uint8, backends []byte, took time.Duration) {
-	const max = 32
-	if len(backends) > max {
-		backends = backends[:max]
-	}
-	fmt.Println(vip, port, protocol, backends, took)
+	fmt.Println("OK")
 }

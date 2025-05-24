@@ -1,0 +1,143 @@
+// all backends in data plane have full source IP/HW addresses in destinfo - no need to look up seperate VLAN details
+// On a single inferface then TX always
+// On a single/bond interface with VLAN header then update VLAN header (if necc) and TX always
+// On multiple interfaces with a single VLAN then TX always (bond)
+// On multiple interfaces then REDIRECT always
+
+// https://developers.redhat.com/blog/2019/05/17/an-introduction-to-linux-virtual-interfaces-tunnels
+
+https://www.etb-tech.com/netronome-agilio-cx-40gb-qsfp-dual-port-low-profile-network-card-pcbd0097-005-nic00476.html
+
+https://datatracker.ietf.org/doc/html/draft-herbert-gue-01
+
+bpf_printk: cat /sys/kernel/debug/tracing/trace_pipe
+
+# remember to set up IPv6 and VIPs
+ip a add 192.168.101.201/32 dev lo
+ip -6 a add fd6e:eec8:76ac:1337::1/128 dev lo
+
+* check VIP against known list
+* lookup flow in state table first
+* if not there then try shared flow table
+* if not found then lookup backend server/tunnel info
+* modify packet
+* if required then store new/updated flow record in state table
+* push to userland queue if necessary
+* update stats
+* TX/redirect_map packet as indicated in dest record
+
+
+
+ip link add name geneve0 type geneve id VNI remote REMOTE_IPv4_ADDR
+
+ip link add name geneve0 type geneve id 666 remote 0.0.0.0
+ip l set dev geneve0 up
+sysctl -w net.ipv4.conf.geneve0.rp_filter=0
+sysctl -w net.ipv4.conf.all.rp_filter=0
+
+
+// magic code from https://mejedi.dev/posts/ebpf-dereference-of-modified-ctx-ptr-disallowed/
+static __always_inline void *xdp_data_end(const struct xdp_md *ctx) {
+    //return (void *)(long)ctx->data_end;
+    void *data_end;
+    
+    asm("%[res] = *(u32 *)(%[base] + %[offset])"
+	: [res]"=r"(data_end)
+	: [base]"r"(ctx), [offset]"i"(offsetof(struct xdp_md, data_end)), "m"(*ctx));
+    
+    return data_end;
+}
+
+
+
+
+
+
+
+
+
+static __always_inline
+__u16 new_internet_checksum(void *data, void *data_end, __u32 csum)
+{
+    __u16 *p = data;
+
+    for (int n = 0; n < 128; n += 2) {
+        if (p + 1 > data_end)
+            break;
+        csum += *p;
+        p++;
+    }
+
+    if (((void *) p) + 1 <= data_end) {
+        csum += *((__u8 *) p);
+    }
+
+    return csum_fold_helper(csum);
+}
+
+
+#define CHUNK 128
+#define MULTI 12
+// 128 * 12 = 1536 (greater than MTU)
+
+__u8 BLANK[CHUNK] = {};
+
+
+__u16 internet_checksum(void *data, void *data_end, __u32 csum)
+{
+    struct chunk {
+        __u8 foo[CHUNK];
+    };
+
+    if (data_end - data > (CHUNK*MULTI))
+        return 0;
+
+    for (int n = 0; n < MULTI; n++, data += CHUNK) {
+        unsigned int left = data_end - data;
+
+        if (left >= CHUNK) {
+            struct chunk *chunk = data;
+
+            if (chunk + 1 > data_end)
+                return 0;
+
+            csum = bpf_csum_diff((__be32 *)BLANK, sizeof(*chunk), (__be32 *)chunk, sizeof(*chunk), csum);
+        } else {
+            return new_internet_checksum(data, data_end, left);
+        }
+    }
+
+    return csum_fold_helper(csum);
+}
+
+
+
+    /*
+    if (0) {
+	addr_t saddr = {};
+	__u8 h_source[6];
+	__u8 h_gw[6];
+	
+	// migrate to using per-VLAN details for the tunnel source params - why?
+	// oh, yeah, to allow failover from one LB to another rather than store LB local params
+	// don't need to do this - just need this unless copying session from shared table
+	// useful to test here though
+	if (is_ipv4_addr_p(&(t->daddr))) {
+	    saddr.addr4.addr = vlan->ip4;
+	    memcpy(h_source, vlan->hw4, 6);
+	    memcpy(h_gw, vlan->gh4, 6);
+	} else {
+	    saddr = vlan->ip6;
+	    memcpy(h_source, vlan->hw6, 6);
+	    memcpy(h_gw, vlan->gh6, 6);
+	}
+	
+	t->saddr = saddr;
+	memcpy(t->h_source, h_source, 6);
+	
+	if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
+	    bpf_printk("F_NOT_LOCAL\n");
+	    memcpy(t->h_dest, h_gw, 6); // send packet to router
+	}
+    }
+    */

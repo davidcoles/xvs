@@ -134,3 +134,56 @@ static __always_inline int vlan_tag_pop(struct xdp_md *ctx, struct ethhdr *eth)
 
 	return vlid;
 }
+
+
+
+
+/* Pushes a new VLAN tag after the Ethernet header. Returns 0 on success,
+ * -1 on failure.
+ */
+static __always_inline int vlan_tag_push2(struct xdp_md *ctx, int vlanid)
+{
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    
+    struct ethhdr *eth = data;
+    
+    if (eth + 1 > data_end)
+	return -1;
+    
+    struct ethhdr eth_cpy;
+    struct vlan_hdr *vlan;
+    
+    /* First copy the original Ethernet header */
+    __builtin_memcpy(&eth_cpy, eth, sizeof(eth_cpy));
+    
+    /* Then add space in front of the packet */
+    if (bpf_xdp_adjust_head(ctx, 0 - (int)sizeof(*vlan)))
+	return -1;
+    
+    /* Need to re-evaluate data_end and data after head adjustment, and
+     * bounds check, even though we know there is enough space (as we
+     * increased it).
+     */
+    data_end = (void *)(long)ctx->data_end;
+    eth      = (void *)(long)ctx->data;
+    
+    if (eth + 1 > data_end)
+	return -1;
+    
+    /* Copy back Ethernet header in the right place, populate VLAN tag with
+     * ID and proto, and set outer Ethernet header to VLAN type.
+     */
+    __builtin_memcpy(eth, &eth_cpy, sizeof(*eth));
+    
+    vlan = (void *)(eth + 1);
+    
+    if (vlan + 1 > data_end)
+	return -1;
+    
+    vlan->h_vlan_TCI = bpf_htons(vlanid);
+    vlan->h_vlan_encapsulated_proto = eth->h_proto;
+    
+    eth->h_proto = bpf_htons(ETH_P_8021Q);
+    return 0;
+}
