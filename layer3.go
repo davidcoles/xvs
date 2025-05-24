@@ -104,7 +104,7 @@ func as4(a netip.Addr) (r addr4) {
 type layer3 struct {
 	config   Config
 	mutex    sync.Mutex
-	services map[threetuple]*service3
+	services map[threetuple]*service
 	settings bpf_settings
 	natmap   natmap6
 	netinfo  *netinfo
@@ -354,7 +354,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 
 	l3 := &layer3{
 		config:     config.copy(),
-		services:   map[threetuple]*service3{},
+		services:   map[threetuple]*service{},
 		settings:   settings,
 		natmap:     natmap6{},
 		netinfo:    &netinfo{},
@@ -548,16 +548,10 @@ func (l *layer3) icmpQueue() {
 			packet = buff[4+16 : 4+16+length]
 		}
 
-		fmt.Println(length, family, proto4, reason, addr, port)
+		//fmt.Println(length, family, proto4, reason, addr, port)
 
 		skey := threetuple{address: addr, port: port, protocol: TCP}
-		//send := func(packet []byte) {
-		//	//fmt.Println(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
-		//	l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
-		//}
-
 		if s, ok := l.services[skey]; ok {
-			//s.repeat(packet, send)
 			s.repeat(packet, func(p []byte) { l.raw(p) })
 		}
 	}
@@ -567,7 +561,6 @@ func (l *layer3) raw(packet []byte) {
 	l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
 }
 
-// func (l *layer3) vlansx(vlans map[uint16][2]netip.Prefix) error {
 func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 
 	for _, v := range vlan4 {

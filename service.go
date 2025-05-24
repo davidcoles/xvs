@@ -35,7 +35,7 @@ type dest struct {
 	netinfo ninfo // only used for debug purposes atm
 }
 
-type service3 struct {
+type service struct {
 	dests    map[netip.Addr]Destination
 	mac      map[netip.Addr]mac
 	service  Service
@@ -43,7 +43,9 @@ type service3 struct {
 	sessions map[netip.Addr]uint64
 }
 
-func (s *service3) debug(info ...any) {
+//type service3 = service
+
+func (s *service) debug(info ...any) {
 	fmt.Println(info...)
 }
 
@@ -51,7 +53,7 @@ func (s *Service) key() threetuple {
 	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 }
 
-func (s *service3) set(service Service, ds ...Destination) (deleted bool, err error) {
+func (s *service) set(service Service, ds ...Destination) (deleted bool, err error) {
 
 	destinations := make(map[netip.Addr]Destination, len(ds))
 
@@ -85,7 +87,7 @@ func (s *service3) set(service Service, ds ...Destination) (deleted bool, err er
 	return // do NOT run a clean here, let caller do it - service may not yet be in the client's service map
 }
 
-func (s *service3) createDestination(d Destination) error {
+func (s *service) createDestination(d Destination) error {
 
 	if _, exists := s.dests[d.Address]; exists {
 		return fmt.Errorf("Destination exists")
@@ -103,7 +105,7 @@ func (s *service3) createDestination(d Destination) error {
 	return nil
 }
 
-func (s *service3) removeDestination(d Destination) error {
+func (s *service) removeDestination(d Destination) error {
 
 	if _, exists := s.dests[d.Address]; !exists {
 		return fmt.Errorf("Destination does not exist")
@@ -131,7 +133,7 @@ func (l *layer3) createService(s Service, ds ...Destination) error {
 		return fmt.Errorf("Unsupported protocol")
 	}
 
-	service := &service3{dests: map[netip.Addr]Destination{}, service: s, layer3: l}
+	service := &service{dests: map[netip.Addr]Destination{}, service: s, layer3: l}
 
 	_, err := service.set(s, ds...)
 
@@ -144,7 +146,7 @@ func (l *layer3) createService(s Service, ds ...Destination) error {
 	return nil
 }
 
-func (s *service3) extend() ServiceExtended {
+func (s *service) extend() ServiceExtended {
 	var c bpf_counter
 	var t uint64
 	for d, _ := range s.dests {
@@ -154,17 +156,17 @@ func (s *service3) extend() ServiceExtended {
 	return ServiceExtended{Service: s.service, Stats: c.stats(t)}
 }
 
-func (s *service3) update(service Service) error {
+func (s *service) update(service Service) error {
 	s.service = service
 	s.recalc()
 	return nil
 }
 
-func (s *service3) key() bpf_servicekey {
+func (s *service) key() bpf_servicekey {
 	return bpf_servicekey{addr: as16(s.service.Address), port: s.service.Port, proto: uint16(s.service.Protocol)}
 }
 
-func (s *service3) remove() error {
+func (s *service) remove() error {
 	key := s.key()
 
 	for d, _ := range s.dests {
@@ -178,7 +180,7 @@ func (s *service3) remove() error {
 	return nil
 }
 
-func (s *service3) updateDestination(d Destination) error {
+func (s *service) updateDestination(d Destination) error {
 
 	if _, exists := s.dests[d.Address]; !exists {
 		return fmt.Errorf("Destination does not exist")
@@ -191,18 +193,18 @@ func (s *service3) updateDestination(d Destination) error {
 	return nil
 }
 
-func (s *service3) stats(d netip.Addr) Stats {
+func (s *service) stats(d netip.Addr) Stats {
 	return s.layer3.counters(s.vrpp(d)).stats(s.sessions[d])
 }
 
-func (s *service3) destinations() (r []DestinationExtended, e error) {
+func (s *service) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
 		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), MAC: s.mac[a]})
 	}
 	return
 }
 
-func (s *service3) readSessions() {
+func (s *service) readSessions() {
 	sessions := make(map[netip.Addr]uint64, len(s.dests))
 	for d, _ := range s.dests {
 		sessions[d] = s.layer3.readAndClearSession(s.vrpp(d))
@@ -210,14 +212,14 @@ func (s *service3) readSessions() {
 	s.sessions = sessions
 }
 
-func (s *service3) a16() addr16   { return as16(s.service.Address) }
-func (s *service3) port() uint16  { return s.service.Port }
-func (s *service3) proto() uint16 { return uint16(s.service.Protocol) }
-func (s *service3) vrpp(d netip.Addr) bpf_vrpp {
+func (s *service) a16() addr16   { return as16(s.service.Address) }
+func (s *service) port() uint16  { return s.service.Port }
+func (s *service) proto() uint16 { return uint16(s.service.Protocol) }
+func (s *service) vrpp(d netip.Addr) bpf_vrpp {
 	return bpf_vrpp{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
 }
 
-func (s *service3) recalc() {
+func (s *service) recalc() {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
 	macs := make(map[netip.Addr]mac, len(s.dests))
@@ -247,7 +249,7 @@ func (s *service3) recalc() {
 	s.layer3.maps.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
 }
 
-func (s *service3) nat(reals map[netip.Addr]dest) {
+func (s *service) nat(reals map[netip.Addr]dest) {
 	vip := s.service.Address
 
 	for k, v := range reals {
@@ -267,7 +269,7 @@ func (s *service3) nat(reals map[netip.Addr]dest) {
 	}
 }
 
-func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
+func (s *service) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
@@ -309,7 +311,7 @@ func (s *service3) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 	return
 }
 
-func (s *service3) repeat(packet []byte, send func([]byte)) {
+func (s *service) repeat(packet []byte, send func([]byte)) {
 
 	vip := s.service.Address
 

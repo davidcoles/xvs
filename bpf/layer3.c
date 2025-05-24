@@ -150,7 +150,7 @@ typedef struct service service_t;
 struct flow {
     __u64 time; // 8 
     tunnel_t tunnel; // contains real IP of server, etc (+64 = 72)  
-    __u32 syn_seqn_reserved; 
+    __u32 syn_seqn_reserved; // FIXME - came to nothing so far
     __u8 finrst;
     __u8 era;
     __u8 pad;
@@ -967,7 +967,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     default: break;
     }
 
-    return FWD_ERROR4(tunnel_unsupported); // FIXME FWD_ERROR4
+    return FWD_ERROR4(tunnel_unsupported);
 }
 
 
