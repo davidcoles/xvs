@@ -683,26 +683,6 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     return orig_len;
 }
 
-
-static __always_inline
-int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
-{
-    struct pointers p = {};
-    
-    if (push_xin4(ctx,t,  &p, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)	
-	return -1;
-
-    struct gre_hdr *gre = (void *) (p.ip + 1);
-    
-    if (gre + 1 > p.data_end)
-        return -1;
-    
-    gre->crv = 0;
-    gre->protocol = bpf_htons(protocol);
-        
-    return 0;
-}
-
 static __always_inline
 int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, unsigned int overhead)
 {
@@ -760,6 +740,7 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
     return 0;
 }
 
+/*
 static __always_inline
 int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
 {
@@ -785,8 +766,9 @@ int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
     
     return 0;
 }
+*/
 
-
+/*
 static __always_inline
 int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
 {
@@ -816,6 +798,7 @@ int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
 
     return 0;
 }
+*/
 
 static __always_inline
 int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
@@ -851,6 +834,25 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     if (! (t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
 	udp->check = udp6_checksum((void *) p.ip, udp, p.data_end);
     
+    return 0;
+}
+
+static __always_inline
+int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
+{
+    struct pointers p = {};
+    
+    if (push_xin4(ctx,t,  &p, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)	
+	return -1;
+
+    struct gre_hdr *gre = (void *) (p.ip + 1);
+    
+    if (gre + 1 > p.data_end)
+        return -1;
+    
+    gre->crv = 0;
+    gre->protocol = bpf_htons(protocol);
+        
     return 0;
 }
 

@@ -531,8 +531,8 @@ func (l *layer3) icmpQueue() {
 
 		length := meta >> 5
 		family := meta >> 4 & 0x01
-		proto4 := meta >> 3 & 0x01
-		reason := meta & 0x07
+		//proto4 := meta >> 3 & 0x01
+		//reason := meta & 0x07
 
 		var addr netip.Addr
 		var packet []byte
