@@ -21,12 +21,6 @@ package xvs
 import "unsafe"
 import "fmt"
 
-func init() {
-	if (unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{})) {
-		panic("Inconsistent bpf_global definition")
-	}
-}
-
 type uP = unsafe.Pointer
 
 type bpf_vrpp struct {

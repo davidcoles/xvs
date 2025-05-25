@@ -58,6 +58,8 @@ func layer3_o() ([]byte, error) {
 	return ioutil.ReadAll(z)
 }
 
+const flow_version = bpf.FLOW_VERSION
+
 const (
 	NONE TunnelType = bpf.T_NONE
 	IPIP TunnelType = bpf.T_IPIP
@@ -667,6 +669,10 @@ func (l *layer3) clean() {
 }
 
 func (m *maps) init(x *xdp.XDP) (err error) {
+
+	if (unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{})) {
+		return fmt.Errorf("Inconsistent bpf_global definition")
+	}
 
 	m.xdp = x
 

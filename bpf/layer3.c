@@ -37,7 +37,6 @@
 #include "vlan.h"
 
 
-#define VERSION 1
 #define SECOND_NS 1000000000l
 
 const __u32 ZERO = 0;
@@ -427,10 +426,11 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
     	return flow; // flow updated less then 1m ago - leave for now
 
     flow->time = time;
+    flow->version = FLOW_VERSION;
 
     __builtin_memcpy(fqe, ft, sizeof(fourtuple_t));
     __builtin_memcpy(fqe + sizeof(fourtuple_t), flow, sizeof(flow_t));
-    bpf_map_push_elem(&flow_queue, fqe, 0);
+    bpf_map_push_elem(&flow_queue, fqe, BPF_EXIST);
 
     return flow;
 }
@@ -754,7 +754,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 		return FWD_ERROR2(errors);
 	    
 	    // send packet to userspace to be forwarded to backend(s)
-	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
+	    if (bpf_map_push_elem(&icmp_queue, buffer, BPF_EXIST) != 0)
 		return FWD_ERROR2(userspace);
 	}
 
@@ -861,7 +861,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 		return FWD_ERROR2(errors);
 
 	    // send packet to userspace to be forwarded to backend(s)
-	    if (bpf_map_push_elem(&icmp_queue, buffer, 0) != 0)
+	    if (bpf_map_push_elem(&icmp_queue, buffer, BPF_EXIST) != 0)
 		return FWD_ERROR2(userspace);
 	}
 

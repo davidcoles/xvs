@@ -417,8 +417,8 @@ try:
 // Stores a flow retrieved with ReadFlow()
 func (l *layer3) WriteFlow(f []byte) {
 
-	if len(f) != int(ft_size+flow_size) {
-		return // FIXME - check version byte?
+	if len(f) != int(ft_size+flow_size) || f[len(f)-1] != flow_version {
+		return
 	}
 
 	key := uP(&f[0])

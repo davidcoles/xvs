@@ -16,6 +16,8 @@ const (
 	T_GRE  = C.T_GRE
 	T_GUE  = C.T_GUE
 	T_IPIP = C.T_IPIP
+
+	FLOW_VERSION byte = C.FLOW_VERSION
 )
 
 func Pow64(x uint8) uint64 {

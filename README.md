@@ -1,4 +1,4 @@
-q# XDP Virtual Server
+# XDP Virtual Server
 
 An [XDP](https://en.wikipedia.org/wiki/Express_Data_Path)/[eBPF](https://en.wikipedia.org/wiki/EBPF)
 load balancer and Go API for Linux.
@@ -25,7 +25,7 @@ which allows a client to perform accurate health checks and so
 enable/disable new connections to targets as necessary.
 
 There is no requirement to use the same address family for virtual and
-real server addresses; you can forward IPv6 VIPs to backends using a
+real server addresses; you can forward IPv6 VIPs to backends using an
 IPv4 tunnel endpoint, and vice versa.
 
 Some facilities may not have been implemented in the new code yet, but

@@ -25,6 +25,10 @@ enum {
     F_TUNNEL_ENCAP_NO_CHECKSUMS =  0x01,
 };
 
+enum {
+    FLOW_VERSION = 2,
+};
+
 enum tunnel_type {
 		  T_NONE  = 0,
 		  T_IPIP  = 1,
