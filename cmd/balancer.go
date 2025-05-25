@@ -167,25 +167,31 @@ func main() {
 		for n := uint(0); n < *remove; n++ {
 
 			info, _ := client.Info()
-			fmt.Println("Info", info)
-			fmt.Println("Metrics", client.Metrics())
+			//fmt.Println("Info", info)
+			fmt.Println("Metrics", info.Metrics)
 
 			services, _ := client.Services()
+
+			vips := map[netip.Addr]bool{}
+
+			for _, s := range services {
+				vips[s.Service.Address] = true
+			}
+
+			for v, _ := range vips {
+				fmt.Println("VIP", v, client.VirtualMetrics(v))
+			}
 
 			for _, service := range services {
 
 				s, _ := client.Service(service.Service)
 
-				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats)
-
-				fmt.Println("\t VIP", client.VirtualMetrics(s.Service.Address))
-				fmt.Println("\t Service", client.ServiceMetrics(s.Service))
+				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Metrics)
 
 				destinations, _ := client.Destinations(s.Service)
 
 				for _, d := range destinations {
-					fmt.Println("\t Destination", client.DestinationMetrics(s.Service, d.Destination))
-					fmt.Println("\t", d.Destination.Address, d.Stats)
+					fmt.Println("\t", d.Destination.Address, d.Metrics)
 				}
 
 			}

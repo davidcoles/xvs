@@ -3,10 +3,12 @@
 An [XDP](https://en.wikipedia.org/wiki/Express_Data_Path)/[eBPF](https://en.wikipedia.org/wiki/EBPF)
 load balancer and Go API for Linux.
 
-I'm now moving the new IPv6/layer 3 tunneling branch to main. It's not
+I've now moved the new IPv6/layer 3 tunneling branch to main. It's not
 quite production ready yet, so continue to use the v0.1 branch/tags
 for that. When it seems ready I'll tag with v0.2 and start migrating
-vc5 for proper testing.
+vc5 for proper testing. Ubuntu 24.04 (kernel 6.11.0) is used for
+development and it is quite possible that older kernels will fail to
+load the eBPF code.
 
 This code is originally from the
 [vc5](https://github.com/davidcoles/vc5) load balancer, and has been

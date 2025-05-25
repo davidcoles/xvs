@@ -153,7 +153,8 @@ func (s *service) extend() ServiceExtended {
 		c.add(s.layer3.counters(s.vrpp(d)))
 		t += s.sessions[d]
 	}
-	return ServiceExtended{Service: s.service, Stats: c.stats(t)}
+	metrics := s.layer3.serviceMetrics(s.key()).metrics()
+	return ServiceExtended{Service: s.service, Stats: c.stats(t), Metrics: metrics}
 }
 
 func (s *service) update(service Service) error {
@@ -199,7 +200,9 @@ func (s *service) stats(d netip.Addr) Stats {
 
 func (s *service) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
-		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), MAC: s.mac[a]})
+		m := s.layer3.counters(s.vrpp(a)).metrics()
+		mac := s.mac[a]
+		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: mac})
 	}
 	return
 }

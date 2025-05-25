@@ -57,42 +57,16 @@ type Client interface {
 
 	SetService(Service, ...Destination) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
-	Addresses() (netip.Addr, netip.Addr) // temporary?
+	//Addresses() (netip.Addr, netip.Addr) // temporary? move to Info/Config?
 
 	ReadFlow() []byte
 	WriteFlow([]byte)
 
-	Metrics() map[string]uint64
 	VirtualMetrics(netip.Addr) map[string]uint64
-	ServiceMetrics(Service) map[string]uint64
-	DestinationMetrics(Service, Destination) map[string]uint64
-}
-
-func (s *Service) bpf_servicekey() bpf_servicekey {
-	return bpf_servicekey{addr: as16(s.Address), port: s.Port, proto: uint16(s.Protocol)}
-}
-
-func (s *Service) bpf_vrpp(d Destination) bpf_vrpp {
-	return bpf_vrpp{vaddr: as16(s.Address), raddr: as16(d.Address), vport: s.Port, protocol: uint16(s.Protocol)}
-}
-
-// Metrics functions are likely to chage as the error/metrics code is
-// iterated. For now, we just return a dictionary of metric names and
-// values.
-func (l *layer3) Metrics() map[string]uint64 {
-	return l.globals().metrics() // lock not required
 }
 
 func (l *layer3) VirtualMetrics(a netip.Addr) map[string]uint64 {
 	return l.virtualMetrics(as16(a)).metrics() // lock not required
-}
-
-func (l *layer3) ServiceMetrics(s Service) map[string]uint64 {
-	return l.serviceMetrics(s.bpf_servicekey()).metrics() // lock not required
-}
-
-func (l *layer3) DestinationMetrics(s Service, d Destination) map[string]uint64 {
-	return l.counters(s.bpf_vrpp(d)).metrics() // lock not required
 }
 
 type Service struct {
@@ -118,6 +92,7 @@ type Stats struct {
 type ServiceExtended struct {
 	Service Service
 	Stats   Stats
+	Metrics map[string]uint64
 }
 
 type Destination struct {
@@ -131,6 +106,7 @@ type Destination struct {
 type DestinationExtended struct {
 	Destination Destination
 	Stats       Stats
+	Metrics     map[string]uint64
 	MAC         MAC
 }
 
@@ -178,6 +154,9 @@ func (l *layer3) Info() (Info, error) {
 		Octets:  g.octets,
 		Flows:   g.flows,
 		Latency: latency,
+		Metrics: l.globals().metrics(),
+		IPv4:    l.netns.address4(),
+		IPv6:    l.netns.address6(),
 	}, nil
 }
 
@@ -190,6 +169,9 @@ type Info struct {
 	//Blocked   uint64 // Number of packets dropped by prefix
 	//NotQueued uint64 // Failed attempts to queue flow state updates to userspace
 	//TooBig    uint64 // ICMP destination unreachable/fragmentation needed
+	Metrics map[string]uint64
+	IPv4    netip.Addr
+	IPv6    netip.Addr
 }
 
 func (l *layer3) Config() (Config, error) {
@@ -355,9 +337,9 @@ func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 // Returns the IPv4 and IPv6 address of the veth interface - if a
 // socket needs to be explicitly bound to to query the NAT addresses
 // of backend servers then these can be used.
-func (l *layer3) Addresses() (ipv4 netip.Addr, ipv6 netip.Addr) {
-	return l.netns.address4(), l.netns.address6()
-}
+//func (l *layer3) Addresses() (ipv4 netip.Addr, ipv6 netip.Addr) {
+//	return l.netns.address4(), l.netns.address6()
+//}
 
 func (d *Destination) is4() bool {
 	return d.Address.Is4()
