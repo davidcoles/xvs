@@ -481,13 +481,15 @@ func (l *layer3) background() error {
 	for {
 		select {
 		case <-ping.C:
-			// FIXME - alos add list of routers
 			clear(hosts)
 			l.mutex.Lock()
 			for _, s := range l.services {
 				for _, d := range s.local() {
 					hosts[d] = true
 				}
+			}
+			for _, r := range l.netinfo.routers() {
+				hosts[r] = true
 			}
 			l.mutex.Unlock()
 

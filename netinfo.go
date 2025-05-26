@@ -100,6 +100,16 @@ func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
 	return n.l2info4[id].ip
 }
 
+func (n *netinfo) routers() (r []netip.Addr) {
+	for _, v := range n.l3info4 {
+		r = append(r, v.ip)
+	}
+	for _, v := range n.l3info6 {
+		r = append(r, v.ip)
+	}
+	return
+}
+
 func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, error) {
 	var vlan uint16
 	var bits int
