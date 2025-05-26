@@ -509,7 +509,7 @@ __u16 icmp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
     }
 
     csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op
-    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // also a no-op
+    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // upper bits also a no-op
     csum = internet_checksum(l4, data_end, csum);
 
     // https://www.ietf.org/rfc/rfc2460.txt 8.1 - if csum is 0 then 0xffff must be used

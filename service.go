@@ -67,6 +67,7 @@ func (s *service) set(service Service, ds ...Destination) (deleted bool, err err
 	for d, _ := range destinations {
 		if _, exists := s.dests[d]; !exists {
 			s.debug("ADDING", d)
+			s.layer3.ping(d)
 			s.layer3.createCounters(s.vrpp(d))
 			s.layer3.natmap.add(s.service.Address, d)
 		}
@@ -97,6 +98,7 @@ func (s *service) createDestination(d Destination) error {
 		return err
 	}
 
+	s.layer3.ping(d.Address)
 	s.layer3.createCounters(s.vrpp(d.Address))
 	s.layer3.natmap.add(s.service.Address, d.Address)
 	s.layer3.natmap.index()
@@ -220,6 +222,17 @@ func (s *service) port() uint16  { return s.service.Port }
 func (s *service) proto() uint16 { return uint16(s.service.Protocol) }
 func (s *service) vrpp(d netip.Addr) bpf_vrpp {
 	return bpf_vrpp{vaddr: s.a16(), raddr: as16(d), vport: s.port(), protocol: s.proto()}
+}
+
+func (s *service) local() (r []netip.Addr) {
+	for a, d := range s.dests {
+		di, _ := s.layer3.tunnel(d)
+		if di.flags&uint8(notLocal) == 0 {
+			r = append(r, a)
+		}
+	}
+
+	return
 }
 
 func (s *service) recalc() {

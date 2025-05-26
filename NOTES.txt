@@ -141,3 +141,52 @@ __u16 internet_checksum(void *data, void *data_end, __u32 csum)
 	}
     }
     */
+
+
+
+
+
+	// https://stackoverflow.com/questions/41248866/golang-dropping-privileges-v1-7
+
+import (
+    "os/user"
+    "strconv"
+    "syscall"
+)
+
+import (
+    //#include <unistd.h>
+    //#include <errno.h>
+    "C"
+)
+
+	if syscall.Getuid() == 0 {
+		log.Println("Running as root, downgrading to user www-data")
+		user, err := user.Lookup("sysadm")
+		if err != nil {
+			log.Fatalln("User not found or other error:", err)
+		}
+		// TODO: Write error handling for int from string parsing
+		uid, _ := strconv.ParseInt(user.Uid, 10, 32)
+		gid, _ := strconv.ParseInt(user.Gid, 10, 32)
+		/*
+			cerr, errno := C.setgid(C.__gid_t(gid))
+			if cerr != 0 {
+				log.Fatalln("Unable to set GID due to error:", errno)
+			}
+			cerr, errno = C.setuid(C.__uid_t(uid))
+			if cerr != 0 {
+				log.Fatalln("Unable to set UID due to error:", errno)
+			}
+		*/
+		err = syscall.Setgid(int(gid))
+		if err != nil {
+			log.Fatalln("Unable to set GID due to error:", err)
+		}
+		err = syscall.Setuid(int(uid))
+		if err != nil {
+			log.Fatalln("Unable to set UID due to error:", err)
+		}
+
+		log.Fatal(syscall.Getuid(), syscall.Getgid())
+	}

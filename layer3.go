@@ -111,6 +111,7 @@ type layer3 struct {
 	natmap   natmap6
 	netinfo  *netinfo
 	netns    *newns
+	icmp     *icmp
 	maps     maps
 	latency  uint64
 
@@ -361,8 +362,15 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 		natmap:     natmap6{},
 		netinfo:    &netinfo{},
 		netns:      ns,
+		icmp:       &icmp{},
 		maps:       m,
 		killswitch: options.KillSwitch,
+	}
+
+	err = l3.icmp.start()
+
+	if err != nil {
+		return nil, err
 	}
 
 	err = l3.initialiseFlows(x, options.Flows)
@@ -450,20 +458,43 @@ func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
 
 	return nil
 }
+func (l *layer3) ping(ip netip.Addr) {
+	l.icmp.ping(ip)
+}
 
 func (l *layer3) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
-	icmp := time.NewTicker(time.Millisecond * 100) // 10Hz
+	icmp := time.NewTicker(time.Millisecond * 100)
+	ping := time.NewTicker(time.Minute)
 
-	defer reconfig.Stop()
-	defer sessions.Stop()
-	defer icmp.Stop()
+	defer func() {
+		reconfig.Stop()
+		sessions.Stop()
+		icmp.Stop()
+		ping.Stop()
+	}()
 
 	var latencies []uint64
+	hosts := make(map[netip.Addr]bool, 65536)
 
 	for {
 		select {
+		case <-ping.C:
+			// FIXME - alos add list of routers
+			clear(hosts)
+			l.mutex.Lock()
+			for _, s := range l.services {
+				for _, d := range s.local() {
+					hosts[d] = true
+				}
+			}
+			l.mutex.Unlock()
+
+			for ip, _ := range hosts {
+				l.ping(ip)
+			}
+
 		case <-sessions.C:
 			l.mutex.Lock()
 
