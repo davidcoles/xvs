@@ -28,6 +28,12 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
+type ip4 [4]byte
+type ip6 [16]byte
+
+func (i ip6) String() string { return netip.AddrFrom16(i).String() }
+func (i ip4) String() string { return netip.AddrFrom4(i).String() }
+
 type nic struct {
 	idx int
 	ip4 ip4

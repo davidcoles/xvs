@@ -18,10 +18,59 @@
 
 package xvs
 
-import "unsafe"
-import "fmt"
+import (
+	"fmt"
+	"net/netip"
+	"unsafe"
+)
 
 type uP = unsafe.Pointer
+
+type addr16 [16]byte
+type addr4 [4]byte
+type mac [6]byte
+
+func (m mac) String() string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+func (a addr16) String() string {
+	var is6 bool = false
+	for n := 0; n < 12; n++ {
+		if a[n] != 0 {
+			is6 = true
+		}
+	}
+
+	if is6 {
+		return netip.AddrFrom16(a).String()
+	}
+
+	var a4 [4]byte
+
+	copy(a4[:], a[12:])
+
+	return netip.AddrFrom4(a4).String()
+}
+
+func from16(a [16]byte) netip.Addr {
+	var is6 bool = false
+	for n := 0; n < 12; n++ {
+		if a[n] != 0 {
+			is6 = true
+		}
+	}
+
+	if is6 {
+		return netip.AddrFrom16(a)
+	}
+
+	var a4 [4]byte
+
+	copy(a4[:], a[12:])
+
+	return netip.AddrFrom4(a4)
+}
 
 type bpf_vrpp struct {
 	vaddr    addr16 // virtual service IP
@@ -115,8 +164,13 @@ type bpf_tunnel struct {
 	_interface uint32  // userspace only
 }
 
-type addr16 [16]byte
-type addr4 [4]byte
+func (t bpf_tunnel) String() string {
+	return fmt.Sprintf("[%d:%d:%d %s->%s %s->%s]", t.method, t.vlanid, t._interface, t.h_source, t.h_dest, t.saddr, t.daddr)
+}
+
+func (t *bpf_tunnel) remote() bool {
+	return t.hints&notLocal != 0
+}
 
 type bpf_vlaninfo struct {
 	ip4 addr16

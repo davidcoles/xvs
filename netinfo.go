@@ -28,44 +28,17 @@ import (
 	"regexp"
 )
 
-type mac [6]byte
-type ip4 [4]byte
-type ip6 [16]byte
-
-func (i ip6) String() string { return netip.AddrFrom16(i).String() }
-func (i ip4) String() string { return netip.AddrFrom4(i).String() }
-func (m mac) String() string {
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
-}
-
 type netinfo struct {
 	vlan4 map[uint16]vlaninfo
 	vlan6 map[uint16]vlaninfo
 	route map[netip.Prefix]uint16
 	mac   map[netip.Addr]mac
 }
+
+// could lose this
 type neighbor struct {
 	dev string
 	mac mac
-}
-
-func from16(a [16]byte) netip.Addr {
-	var is6 bool = false
-	for n := 0; n < 12; n++ {
-		if a[n] != 0 {
-			is6 = true
-		}
-	}
-
-	if is6 {
-		return netip.AddrFrom16(a)
-	}
-
-	var a4 [4]byte
-
-	copy(a4[:], a[12:])
-
-	return netip.AddrFrom4(a4)
 }
 
 func (n *netinfo) config(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) error {
@@ -392,66 +365,58 @@ type backend struct {
 	_i int  // interface
 }
 
-func (c backend) remote() bool {
-	return !c._l
+func (b backend) remote() bool {
+	return !b._l
 }
 
-func (v bpf_tunnel) String() string {
-	return fmt.Sprintf("[%d:%d:%d %s->%s %s->%s]", v.method, v.vlanid, v._interface, v.h_source, v.h_dest, from16(v.saddr), from16(v.daddr))
-}
-
-func (t *bpf_tunnel) remote() bool {
-	return t.hints&notLocal != 0
-}
-
-func (c backend) bpf_tunnel(method TunnelType, flags TunnelFlags, dport uint16) (t bpf_tunnel) {
-	if !c.ok() {
+func (b backend) bpf_tunnel(method TunnelType, flags TunnelFlags, dport uint16) (t bpf_tunnel) {
+	if !b.ok() {
 		return
 	}
 
-	if method == NONE && c.remote() {
+	if method == NONE && b.remote() {
 		return // we can't sent to layer 2 DSR via a router - it must be local
 	}
 
 	var hints uint8
 
-	if c.remote() {
+	if b.remote() {
 		hints |= notLocal
 	}
 
 	return bpf_tunnel{
-		daddr:      as16(c.ip_dst),
-		saddr:      as16(c.ip_src),
+		daddr:      as16(b.ip_dst),
+		saddr:      as16(b.ip_src),
 		dport:      dport,
 		sport:      0,
-		vlanid:     c.vlanid,
+		vlanid:     b.vlanid,
 		method:     uint8(method),
 		flags:      uint8(flags),
-		h_dest:     c.hw_dst,
-		h_source:   c.hw_src,
+		h_dest:     b.hw_dst,
+		h_source:   b.hw_src,
 		hints:      hints,
-		_interface: uint32(c._i),
+		_interface: uint32(b._i),
 	}
 }
 
-func (v backend) ok() bool {
+func (b backend) ok() bool {
 	var nul mac
 
-	if v.vlanid == 0 || v._i == 0 {
+	if b.vlanid == 0 || b._i == 0 {
 		return false
 	}
 
-	if v.hw_src == nul || v.hw_dst == nul {
+	if b.hw_src == nul || b.hw_dst == nul {
 		return false
 	}
 
-	if !v.ip_src.IsValid() || !v.ip_dst.IsValid() {
+	if !b.ip_src.IsValid() || !b.ip_dst.IsValid() {
 		return false
 	}
 
 	return true
 }
 
-func (v backend) String() string {
-	return fmt.Sprintf("[rem:%v %d(%d) %s->%s %s->%s]", v.remote(), v.vlanid, v._i, v.hw_src, v.hw_dst, v.ip_src, v.ip_dst)
+func (b backend) String() string {
+	return fmt.Sprintf("[rem:%v %d(%d) %s->%s %s->%s]", b.remote(), b.vlanid, b._i, b.hw_src, b.hw_dst, b.ip_src, b.ip_dst)
 }
