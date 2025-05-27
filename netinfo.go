@@ -235,17 +235,14 @@ func (n *netinfo) vlaninfo(i uint16) (bpf_vlaninfo, uint32, uint32) {
 	v4 := n.vlan4[i]
 	v6 := n.vlan6[i]
 
-	vi := bpf_vlaninfo{
+	return bpf_vlaninfo{
 		ip4: as16(v4.ip_addr),
-		gw4: as4(v4.gw_ip_addr),
 		ip6: as16(v6.ip_addr),
-		gw6: as16(v6.gw_ip_addr),
 		hw4: v4.hw_addr,
 		hw6: v6.hw_addr,
 		gh4: v4.gw_hw_addr,
 		gh6: v6.gw_hw_addr,
-	}
-	return vi, uint32(v4.if_index), uint32(v6.if_index)
+	}, uint32(v4.if_index), uint32(v6.if_index)
 }
 
 type vlaninfo struct {

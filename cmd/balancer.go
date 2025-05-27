@@ -152,15 +152,6 @@ func main() {
 		}
 	}
 
-	services, _ := client.Services()
-
-	for _, service := range services {
-		destinations, _ := client.Destinations(service.Service)
-		for _, destination := range destinations {
-			fmt.Println("DEST", service.Service, destination.Destination)
-		}
-	}
-
 	if *remove != 0 {
 
 		for n := uint(0); n < *remove; n++ {

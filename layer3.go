@@ -108,7 +108,7 @@ type layer3 struct {
 	settings bpf_settings
 	natmap   natmap6
 	netinfo  *netinfo
-	netns    *newns
+	netns    *natns
 	icmp     *icmp
 	maps     maps
 	latency  uint64
@@ -379,7 +379,6 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 
 	for _, nic := range nics {
 		if err = x.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
-			//if err = x.LoadBpfSection("xdp_fwd_func", true, nic); err != nil {
 			return nil, err
 		}
 	}

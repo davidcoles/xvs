@@ -29,8 +29,6 @@ type TunnelType uint8
 type TunnelFlags uint8
 type Flags uint8
 
-//type MAC [6]byte
-
 const (
 	TCP Protocol = 0x06
 	UDP Protocol = 0x11
@@ -65,7 +63,6 @@ type Client interface {
 
 	SetService(Service, ...Destination) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
-	//Addresses() (netip.Addr, netip.Addr) // temporary? move to Info/Config?
 
 	ReadFlow() []byte
 	WriteFlow([]byte)

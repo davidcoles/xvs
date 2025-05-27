@@ -132,6 +132,26 @@ struct {
     __uint(max_entries, 4096);
 } redirect_map6 SEC(".maps");
 
+struct settings {
+    __u64 watchdog;
+    __u64 packets;
+    __u64 latency;
+    __u32 veth;
+    __u8 vetha[6];
+    __u8 vethb[6];
+    __u8 multi;
+    __u8 era;
+    __u8 active;
+    __u8 pad[5]; // must be multiple of 8 bytes
+};
+typedef struct settings settings_t;
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct settings);
+    __uint(max_entries, 1);
+} settings SEC(".maps");
 
 #include "nat.h"
 
@@ -341,27 +361,6 @@ struct {
 
 /**********************************************************************/
 
-struct settings {
-    __u64 watchdog;
-    __u64 packets;
-    __u64 latency;
-    __u32 veth;
-    __u8 vetha[6];
-    __u8 vethb[6];
-    __u8 multi;
-    __u8 era;
-    __u8 active;
-    __u8 pad[5]; // must be multiple of 8 bytes
-};
-typedef struct settings settings_t;
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, __u32);
-    __type(value, struct settings);
-    __uint(max_entries, 1);
-} settings SEC(".maps");
-
 #define BUFFER 2048
 
 struct {
@@ -382,8 +381,8 @@ struct {
 struct vlaninfo {
     addr_t ip4;
     addr_t ip6;
-    addr_t gw6;
-    __be32 gw4;
+    //addr_t _gw6; // unused
+    //__be32 _gw4; // unused
     __u8 hw4[6];
     __u8 hw6[6];
     __u8 gh4[6];
@@ -978,111 +977,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 
 
 
-
-SEC("xdp")
-int xdp_pass_func(struct xdp_md *ctx)
-{
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_vethb_func(struct xdp_md *ctx)
-{
-    __u64 start = bpf_ktime_get_ns();
-
-    struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
-
-    if (!s || !s->active)
-	return XDP_PASS;
-
-    // settings is a per-CPU map, so no concurrency issues
-    if (s->watchdog == 0) {
-	s->watchdog = start;
-    } else if (s->watchdog + (TIMEOUT * SECOND_NS) < start) {
-	return XDP_PASS;
-    }
-
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    struct ip6_hdr *ip6 = (void *)(eth + 1);
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	if (ip + 1 > data_end)
-	    return XDP_DROP;
-	
-	struct icmphdr *icmp4 = (void *)(ip + 1);
-	
-	switch(ip->protocol) {
-	case IPPROTO_ICMP: // fallthrough
-	    if (icmp4 + 1 > data_end)
-	    	return XDP_DROP;
-	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED))
-		return XDP_PASS;
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-	
-    case bpf_htons(ETH_P_IPV6):
-	if (ip6 + 1 > data_end)
-	    return XDP_DROP;
-
-	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
-	
-	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
-	case IPPROTO_ICMPV6:
-	    if (icmp6 + 1 > data_end)
-	    	return XDP_DROP;
-	    //bpf_printk("ICMP6 %d %d", icmp6->icmp6_type, icmp6->icmp6_code);
-	    switch (icmp6->icmp6_type) {
-	    case ND_NEIGHBOR_SOLICIT:
-	    case ND_NEIGHBOR_ADVERT:
-		return XDP_PASS;
-	    case ICMP6_PACKET_TOO_BIG:
-		break;
-	    default:
-		return XDP_DROP;
-	    }
-        case ICMP6_PACKET_TOO_BIG:
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-    }
-    
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_vetha_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-	return XDP_DROP;
-
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return XDP_PASS == xdp_reply_v4(ctx) ? XDP_PASS : xdp_request_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-	return XDP_PASS == xdp_reply_v6(ctx) ? XDP_PASS : xdp_request_v6(ctx);
-    }
-
-    return XDP_PASS;
-}
-
-
 SEC("xdp")
 int xdp_fwd_func(struct xdp_md *ctx)
 {
@@ -1156,7 +1050,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 
 	if (metadata.backend)
 	    COUNTERS(metadata.backend, metadata);
-		
+	
 	switch (s->multi) {
 	case 0: // untagged bond - multi NIC, but only single VLAN in config
 	    return XDP_TX;
@@ -1164,6 +1058,7 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	    return XDP_TX;
 	}
 
+	
 	// multi-interface, if tagged packets then just TX to appropriate VLAN (previously set)
 	if (dot1q)
 	    return XDP_TX; 

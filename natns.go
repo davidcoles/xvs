@@ -46,24 +46,24 @@ func (n *nic) String() string {
 	return fmt.Sprintf("%s|%d|%s|%s", n.nic, n.idx, n.ip4, n.mac)
 }
 
-type newns struct {
+type natns struct {
 	a, b nic
 	ns   string
 	ip4  netip.Addr
 	ip6  netip.Addr
 }
 
-//func (n *newns) namespace() string { return n.ns }
-//func (n *newns) addr() [4]byte     { return n.b.ip4 }
-//func (n *newns) id() uint32        { return uint32(n.a.idx) }
+//func (n *natns) namespace() string { return n.ns }
+//func (n *natns) addr() [4]byte     { return n.b.ip4 }
+//func (n *natns) id() uint32        { return uint32(n.a.idx) }
 
-func (n *newns) nat4(i uint16) (nat [16]byte) {
+func (n *natns) nat4(i uint16) (nat [16]byte) {
 	nat = n.nat6(i)
 	nat[0] = 0
 	nat[1] = 0
 	return
 }
-func (n *newns) nat6(i uint16) (nat [16]byte) {
+func (n *natns) nat6(i uint16) (nat [16]byte) {
 	nat = n.a.ip6 //netip.MustParseAddr(IP6_2).As16()
 	nat[13] = 0
 	nat[14] = byte(i >> 8)
@@ -71,7 +71,7 @@ func (n *newns) nat6(i uint16) (nat [16]byte) {
 	return
 }
 
-func (n *newns) addr(idx uint16, ipv6 bool) (r netip.Addr) {
+func (n *natns) addr(idx uint16, ipv6 bool) (r netip.Addr) {
 	if idx == 0 {
 		return
 	}
@@ -87,20 +87,20 @@ func (n *newns) addr(idx uint16, ipv6 bool) (r netip.Addr) {
 	return
 }
 
-func (n *newns) ipv4() [4]byte  { return n.b.ip4 }
-func (n *newns) ipv6() [16]byte { return n.b.ip6 }
+func (n *natns) ipv4() [4]byte  { return n.b.ip4 }
+func (n *natns) ipv6() [16]byte { return n.b.ip6 }
 
-func (n *newns) address4() netip.Addr { return netip.MustParseAddr("255.255.255.253") } // FIXME
-func (n *newns) address6() netip.Addr { return netip.MustParseAddr("fefe::ffff:fffd") } //FIXME
+func (n *natns) address4() netip.Addr { return netip.MustParseAddr("255.255.255.253") } // FIXME
+func (n *natns) address6() netip.Addr { return netip.MustParseAddr("fefe::ffff:fffd") } //FIXME
 
-func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
+func nat3(x *xdp.XDP, inside string, outside string) (*natns, error) {
 
 	const IPA = "fefe::ffff:fffd"
 	const IPB = "fefe::ffff:fffe"
 
 	namespace := "l3"
 
-	var n newns
+	var n natns
 	n.ns = namespace
 	n.a.nic = namespace
 	n.b.nic = namespace + "ns"
@@ -149,7 +149,7 @@ func nat3(x *xdp.XDP, inside string, outside string) (*newns, error) {
 	return &n, nil
 }
 
-func (n *newns) clean() {
+func (n *natns) clean() {
 	script := `
     ip link del ` + n.a.nic + ` >/dev/null 2>&1 || true
     ip netns del ` + n.ns + ` >/dev/null 2>&1 || true
@@ -157,7 +157,7 @@ func (n *newns) clean() {
 	exec.Command("/bin/sh", "-e", "-c", script).Output()
 }
 
-func (n *newns) create_pair(if1, if2 string) error {
+func (n *natns) create_pair(if1, if2 string) error {
 	script := `
 ip link del ` + if1 + ` >/dev/null 2>&1 || true
 ip link add ` + if1 + ` type veth peer name ` + if2 + `
@@ -168,7 +168,7 @@ ip link add ` + if1 + ` type veth peer name ` + if2 + `
 	return nil
 }
 
-func (n *newns) prefix4() string {
+func (n *natns) prefix4() string {
 	p4 := n.a.ip4
 	p4[1] = 0
 	p4[2] = 0
@@ -176,7 +176,7 @@ func (n *newns) prefix4() string {
 	return p4.String() + "/8"
 }
 
-func (n *newns) prefix6() string {
+func (n *natns) prefix6() string {
 	p6 := n.a.ip6
 	p6[13] = 0
 	p6[14] = 0
@@ -185,7 +185,7 @@ func (n *newns) prefix6() string {
 }
 
 // can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32
-func (n *newns) config_pair_orig(ns string, a, b nic) error {
+func (n *natns) config_pair_orig(ns string, a, b nic) error {
 	a4 := a.ip4.String()
 	b4 := b.ip4.String()
 	prefix4 := n.prefix4()
@@ -224,7 +224,7 @@ ip netns exec ` + ns + ` ethtool -K ` + b.nic + ` tx off
 }
 
 // can set mac: ip l set vc5 addr 26:7c:d6:2c:d9:32
-func (n *newns) config_pair(ns string, a, b nic) error {
+func (n *natns) config_pair(ns string, a, b nic) error {
 	a4 := a.ip4.String()
 	b4 := b.ip4.String()
 	prefix4 := n.prefix4()
