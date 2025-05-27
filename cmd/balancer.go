@@ -143,7 +143,6 @@ func main() {
 					tport = uint16(*tportg)
 				}
 
-				//destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport, Weight: 1}
 				destination := xvs.Destination{Address: netip.MustParseAddr(rip), TunnelType: tun, TunnelPort: tport}
 
 				if err := client.CreateDestination(service, destination); err != nil {
@@ -195,7 +194,7 @@ func main() {
 
 			}
 
-			fmt.Println("")
+			fmt.Println()
 
 			time.Sleep(time.Second)
 		}
@@ -207,13 +206,6 @@ func main() {
 		for _, service := range services {
 			client.RemoveService(service.Service)
 		}
-
-		//for _, vip := range vips {
-		//	for _, port := range ports {
-		//		service := xvs.Service{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
-		//		client.RemoveService(service)
-		//	}
-		//}
 	}
 
 	fmt.Println("OK")

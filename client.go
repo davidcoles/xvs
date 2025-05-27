@@ -24,11 +24,12 @@ import (
 	"time"
 )
 
-type Protocol = uint8
+type Protocol uint8
 type TunnelType uint8
 type TunnelFlags uint8
 type Flags uint8
-type MAC [6]byte
+
+//type MAC [6]byte
 
 const (
 	TCP Protocol = 0x06
@@ -114,7 +115,7 @@ type DestinationExtended struct {
 	Destination Destination
 	Stats       Stats
 	Metrics     map[string]uint64
-	MAC         MAC
+	MAC         [6]byte
 }
 
 type Config struct {

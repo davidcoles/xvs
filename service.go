@@ -201,7 +201,7 @@ func (s *service) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
 		m := s.layer3.counters(s.vrpp(a)).metrics()
 		mac := s.mac[a]
-		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: MAC(mac)})
+		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: mac})
 	}
 	return
 }

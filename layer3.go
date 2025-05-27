@@ -77,7 +77,7 @@ const notLocal uint8 = bpf.F_NOT_LOCAL
 type threetuple struct {
 	address  netip.Addr
 	port     uint16
-	protocol uint8
+	protocol Protocol
 }
 
 func as16(a netip.Addr) (r addr16) {
