@@ -26,9 +26,9 @@ import (
 
 var mutex6 sync.RWMutex
 
-type natmap6 map[[2]netip.Addr]uint16
+type natmap map[[2]netip.Addr]uint16
 
-func (f natmap6) add(v, r netip.Addr) uint16 {
+func (f natmap) add(v, r netip.Addr) uint16 {
 	mutex6.Lock()
 	defer mutex6.Unlock()
 	k := [2]netip.Addr{v, r}
@@ -37,14 +37,14 @@ func (f natmap6) add(v, r netip.Addr) uint16 {
 	return n
 }
 
-func (f natmap6) get(v, r netip.Addr) uint16 {
+func (f natmap) get(v, r netip.Addr) uint16 {
 	mutex6.RLock()
 	defer mutex6.RUnlock()
 	k := [2]netip.Addr{v, r}
 	return f[k]
 }
 
-func (f natmap6) all() map[[2]netip.Addr]uint16 {
+func (f natmap) all() map[[2]netip.Addr]uint16 {
 	mutex6.RLock()
 	defer mutex6.RUnlock()
 	m := map[[2]netip.Addr]uint16{}
@@ -54,7 +54,7 @@ func (f natmap6) all() map[[2]netip.Addr]uint16 {
 	return m
 }
 
-func (f natmap6) index() (b bool, e error) {
+func (f natmap) index() (b bool, e error) {
 	mutex6.Lock()
 	defer mutex6.Unlock()
 	m := map[uint16]bool{}
@@ -80,7 +80,7 @@ func (f natmap6) index() (b bool, e error) {
 
 	return b, e
 }
-func (f natmap6) rips() map[netip.Addr]bool {
+func (f natmap) rips() map[netip.Addr]bool {
 	mutex6.RLock()
 	defer mutex6.RUnlock()
 	rips := map[netip.Addr]bool{}
@@ -91,7 +91,7 @@ func (f natmap6) rips() map[netip.Addr]bool {
 	return rips
 }
 
-func (f natmap6) clean(m map[[2]netip.Addr]bool) (c bool) {
+func (f natmap) clean(m map[[2]netip.Addr]bool) (c bool) {
 	mutex6.Lock()
 	defer mutex6.Unlock()
 	for k, _ := range f {

@@ -43,7 +43,7 @@ type service struct {
 }
 
 func (s *service) debug(info ...any) {
-	fmt.Println(info...)
+	//fmt.Println(info...)
 }
 
 func (s *Service) key() threetuple {

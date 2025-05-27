@@ -106,8 +106,8 @@ type layer3 struct {
 	mutex    sync.Mutex
 	services map[threetuple]*service
 	settings bpf_settings
-	natmap   natmap6
-	netinfo  *netinfo
+	natmap   natmap
+	netinfo  netinfo
 	netns    *natns
 	icmp     *icmp
 	maps     maps
@@ -241,8 +241,7 @@ func (l *layer3) ext(vlanid uint16, ipv6 bool) netip.Addr {
 }
 
 func (l *layer3) tunnel(d Destination) bpf_tunnel {
-	x := l.netinfo.find(d.Address)
-	return x.bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
+	return l.netinfo.find(d.Address).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
 }
 
 func (l *layer3) updateSettings() {
@@ -330,11 +329,11 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 	config := &Config{VLANs4: options.VLANs4, VLANs6: options.VLANs6}
 
 	l3 := &layer3{
-		config:     config.copy(),
-		services:   map[threetuple]*service{},
-		settings:   settings,
-		natmap:     natmap6{},
-		netinfo:    &netinfo{},
+		config:   config.copy(),
+		services: map[threetuple]*service{},
+		settings: settings,
+		natmap:   natmap{},
+		//netinfo:    netinfo{},
 		netns:      ns,
 		icmp:       &icmp{},
 		maps:       m,
@@ -347,7 +346,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 		return nil, err
 	}
 
-	err = l3.initialiseFlows(x, options.Flows)
+	err = l3.initialiseFlows(options.Flows)
 
 	if err != nil {
 		return nil, err
@@ -391,9 +390,9 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 const ft_size uint32 = 36
 const flow_size uint32 = 80
 
-func (l *layer3) initialiseFlows(x *xdp.XDP, max uint32) error {
+func (l *layer3) initialiseFlows(max uint32) error {
 
-	flows_tcp, err := x.FindMap("flows_tcp", 4, 4)
+	flows_tcp, err := l.maps.xdp.FindMap("flows_tcp", 4, 4)
 
 	if err != nil {
 		return err
@@ -439,8 +438,7 @@ func (l *layer3) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
 	icmp := time.NewTicker(time.Millisecond * 100)
-	//ping := time.NewTicker(time.Minute)
-	ping := time.NewTicker(10 * time.Second)
+	ping := time.NewTicker(time.Minute)
 
 	defer func() {
 		reconfig.Stop()
@@ -468,7 +466,7 @@ func (l *layer3) background() error {
 			l.mutex.Unlock()
 
 			for ip, _ := range hosts {
-				fmt.Println("PING", ip)
+				//fmt.Println("PING", ip)
 				l.ping(ip)
 			}
 
@@ -684,6 +682,8 @@ func (l *layer3) clean() {
 
 func (m *maps) init(x *xdp.XDP) (err error) {
 
+	m.xdp = x
+
 	if unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{}) {
 		return fmt.Errorf("Inconsistent bpf_global definition")
 	}
@@ -692,89 +692,59 @@ func (m *maps) init(x *xdp.XDP) (err error) {
 		return fmt.Errorf("Tunnel size is not 64 bytes")
 	}
 
-	m.xdp = x
-
-	m.redirect_map4, err = x.FindMap("redirect_map4", 4, 4)
-
-	if err != nil {
+	if m.redirect_map4, err = x.FindMap("redirect_map4", 4, 4); err != nil {
 		return err
 	}
 
-	m.redirect_map6, err = x.FindMap("redirect_map6", 4, 4)
-
-	if err != nil {
+	if m.redirect_map6, err = x.FindMap("redirect_map6", 4, 4); err != nil {
 		return err
 	}
 
-	m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service{})))
-
-	if err != nil {
+	if m.services, err = x.FindMap("services", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_service{}))); err != nil {
 		return err
 	}
 
-	m.service_metrics, err = x.FindMap("service_metrics", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_global{})))
-
-	if err != nil {
+	if m.service_metrics, err = x.FindMap("service_metrics", int(unsafe.Sizeof(bpf_servicekey{})), int(unsafe.Sizeof(bpf_global{}))); err != nil {
 		return err
 	}
 
-	m.nat_to_vip_rip, err = x.FindMap("nat_to_vip_rip", 16, int(unsafe.Sizeof(bpf_vip_rip{})))
-
-	if err != nil {
+	if m.nat_to_vip_rip, err = x.FindMap("nat_to_vip_rip", 16, int(unsafe.Sizeof(bpf_vip_rip{}))); err != nil {
 		return err
 	}
 
-	m.vlaninfo, err = x.FindMap("vlaninfo", 4, int(unsafe.Sizeof(bpf_vlaninfo{})))
-
-	if err != nil {
+	if m.vlaninfo, err = x.FindMap("vlaninfo", 4, int(unsafe.Sizeof(bpf_vlaninfo{}))); err != nil {
 		return err
 	}
 
-	m.settings, err = x.FindMap("settings", 4, int(unsafe.Sizeof(bpf_settings{})))
-
-	if err != nil {
+	if m.settings, err = x.FindMap("settings", 4, int(unsafe.Sizeof(bpf_settings{}))); err != nil {
 		return err
 	}
 
-	m.stats, err = x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp{})), int(unsafe.Sizeof(bpf_counter{})))
-
-	if err != nil {
+	if m.stats, err = x.FindMap("stats", int(unsafe.Sizeof(bpf_vrpp{})), int(unsafe.Sizeof(bpf_counter{}))); err != nil {
 		return err
 	}
 
-	m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp{})), 8)
-
-	if err != nil {
+	if m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp{})), 8); err != nil {
 		return err
 	}
 
-	m.flow_queue, err = x.FindMap("flow_queue", 0, int(ft_size+flow_size))
-
-	if err != nil {
+	if m.flow_queue, err = x.FindMap("flow_queue", 0, int(ft_size+flow_size)); err != nil {
 		return err
 	}
 
-	m.icmp_queue, err = x.FindMap("icmp_queue", 0, int(2048))
-
-	if err != nil {
+	if m.icmp_queue, err = x.FindMap("icmp_queue", 0, 2048); err != nil {
 		return err
 	}
 
-	m.shared, err = x.FindMap("shared", int(ft_size), int(flow_size))
-
-	if err != nil {
+	if m.shared, err = x.FindMap("shared", int(ft_size), int(flow_size)); err != nil {
 		return err
 	}
 
-	m.global_metrics, err = x.FindMap("global_metrics", 4, int(unsafe.Sizeof(bpf_global{})))
-
-	if err != nil {
+	if m.global_metrics, err = x.FindMap("global_metrics", 4, int(unsafe.Sizeof(bpf_global{}))); err != nil {
 		return err
 	}
 
-	m.vip_metrics, err = x.FindMap("vip_metrics", 16, int(unsafe.Sizeof(bpf_global{})))
-
-	if err != nil {
+	if m.vip_metrics, err = x.FindMap("vip_metrics", 16, int(unsafe.Sizeof(bpf_global{}))); err != nil {
 		return err
 	}
 

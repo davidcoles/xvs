@@ -329,11 +329,11 @@ func (n *netinfo) find(ip netip.Addr) (c backend) {
 
 	for prefix, id := range n.route {
 		if prefix.Contains(ip) && prefix.Bits() > bits {
-			fmt.Println("MATCH?") // need to check if the VLAN has a gateway - or should we just obey?
+			//fmt.Println("MATCH?") // need to check if the VLAN has a gateway - or should we just obey?
 			if v, ok := vlan[id]; ok && v.gw_ip_addr.IsValid() {
 				bits = prefix.Bits()
 
-				fmt.Println("MATCHED", prefix, id, bits)
+				//fmt.Println("MATCHED", prefix, id, bits)
 				return backend{vlanid: id, _i: v.if_index, hw_src: v.hw_addr, hw_dst: v.gw_hw_addr, ip_src: v.ip_addr, ip_dst: ip}
 			}
 			return
