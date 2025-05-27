@@ -18,8 +18,12 @@ pristine:
 	cd bpf && $(MAKE) pristine
 
 cloc:
-	ls -1 */*_test.go > tests.txt
-	cloc --exclude-list-file=tests.txt *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
+	#ls -1 */*_test.go > tests.txt
+	#cloc --exclude-list-file=tests.txt *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/*.c xdp/*.h
+	cloc  $$(ls -1 *.go bpf/*.go maglev/*.go xdp/*.go  bpf/*.c bpf/*.h xdp/xdp.* | grep -v _test.go)
+
+
+
 
 tests:
 	(cd bpf/ && go test -v)
