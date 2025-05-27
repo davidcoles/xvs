@@ -28,6 +28,18 @@ import (
 	"github.com/davidcoles/xvs/xdp"
 )
 
+type nic struct {
+	idx int
+	ip4 ip4
+	ip6 ip6
+	mac mac
+	nic string
+}
+
+func (n *nic) String() string {
+	return fmt.Sprintf("%s|%d|%s|%s", n.nic, n.idx, n.ip4, n.mac)
+}
+
 type newns struct {
 	a, b nic
 	ns   string

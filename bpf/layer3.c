@@ -103,7 +103,9 @@ struct tunnel {
     __u8 flags; // no_udp_checksum
     __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
     __u8 h_source[6]; // local hw address
-    __u8 pad[12]; // round this up to 64 bytes - the size of a cache line
+    __u8 hints; // internal flags (ie.: not TunnelFlags)
+    __u8 pad[7]; // round this up to 64 bytes - the size of a cache line
+    __u32 _interface; // userspace use only!
 };
 typedef struct tunnel tunnel_t;
 
@@ -513,9 +515,10 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft)
 	memcpy(h_gw, vlan->gh6, 6);
     }
 
-    // if the destination is not on a local VLAN then we neeto to send
+    // if the destination is not on a local VLAN then we need to send
     // the packet to the router using the h_gw address we set earlier
-    if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
+    //if ((t->method != T_NONE) && (t->flags & F_NOT_LOCAL)) {
+    if ((t->method != T_NONE) && (t->hints & F_NOT_LOCAL)) {	
 	memcpy(t->h_dest, h_gw, 6);
     }
 
@@ -766,6 +769,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 
     enum fwd_action r = lookup(ft, t, metadata);
 
+    // FIXME - apply to all hosts on local VLANs?
     if (FWD_LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
 
@@ -872,7 +876,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     }
 
     enum fwd_action r = lookup(ft, t, metadata);
-    
+
+    // FIXME - apply to all hosts on local VLANs?
     if (FWD_LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
     

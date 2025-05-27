@@ -29,10 +29,8 @@ import (
 )
 
 type dest struct {
-	//weight   uint8
 	disable bool
 	tunnel  bpf_tunnel
-	netinfo ninfo // only used for debug purposes atm
 }
 
 type service struct {
@@ -40,10 +38,9 @@ type service struct {
 	mac      map[netip.Addr]mac
 	service  Service
 	layer3   *layer3
+	tunnel   map[netip.Addr]bpf_tunnel
 	sessions map[netip.Addr]uint64
 }
-
-//type service3 = service
 
 func (s *service) debug(info ...any) {
 	fmt.Println(info...)
@@ -204,7 +201,7 @@ func (s *service) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
 		m := s.layer3.counters(s.vrpp(a)).metrics()
 		mac := s.mac[a]
-		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: mac})
+		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: MAC(mac)})
 	}
 	return
 }
@@ -225,11 +222,8 @@ func (s *service) vrpp(d netip.Addr) bpf_vrpp {
 }
 
 func (s *service) local() (r []netip.Addr) {
-	for a, d := range s.dests {
-		di, _ := s.layer3.tunnel(d)
-		if di.flags&uint8(notLocal) == 0 {
-			r = append(r, a)
-		}
+	for a, _ := range s.mac {
+		r = append(r, a)
 	}
 
 	return
@@ -241,13 +235,15 @@ func (s *service) recalc() {
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
-		di, ni := s.layer3.tunnel(d)
-		//reals[k] = dest{tunnel: di, netinfo: ni, weight: d.Weight}
-		reals[k] = dest{tunnel: di, netinfo: ni, disable: d.Disable}
-		if di.flags&uint8(notLocal) == 0 {
-			macs[k] = di.h_dest
+		t := s.layer3.tunnel(d)
+
+		reals[k] = dest{tunnel: t, disable: d.Disable}
+
+		if !t.remote() {
+			macs[k] = t.h_dest
 		}
-		s.debug("FWD", ni, di.flags)
+
+		s.debug("FWD", d, t)
 	}
 
 	s.mac = macs
@@ -269,19 +265,19 @@ func (s *service) nat(reals map[netip.Addr]dest) {
 	vip := s.service.Address
 
 	for k, v := range reals {
-		nat := s.layer3.nat(s.service.Address, k)
-		n16 := as16(nat)
-		ext := s.layer3.netinfo.ext(v.tunnel.vlanid, s.service.Address.Is6())
+		tun := v.tunnel
+		nat := s.layer3.nat(vip, k)
+		ext := s.layer3.ext(tun.vlanid, vip.Is6())
 
 		if !nat.IsValid() || !ext.IsValid() {
-			v.tunnel.vlanid = 0
+			tun.vlanid = 0 // request will be dropped
 		}
 
-		vip_rip := bpf_vip_rip{tunnel: v.tunnel, vip: as16(vip), ext: as16(ext)}
-		s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&n16), uP(&vip_rip), xdp.BPF_ANY)
+		key := as16(nat)
+		vip_rip := bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
+		s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&key), uP(&vip_rip), xdp.BPF_ANY)
 
-		s.debug("NAT", s.service.Address, k, nat, v.netinfo, ext, vip)
-		s.debug("TUN", v.tunnel, nat)
+		s.debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
 	}
 }
 

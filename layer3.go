@@ -70,11 +70,9 @@ const (
 	Sticky Flags = bpf.F_STICKY
 
 	TunnelEncapNoChecksums TunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
-	notLocal               TunnelFlags = bpf.F_NOT_LOCAL
 )
 
-type addr16 [16]byte
-type addr4 [4]byte
+const notLocal uint8 = bpf.F_NOT_LOCAL
 
 type threetuple struct {
 	address  netip.Addr
@@ -238,37 +236,13 @@ func (l *layer3) readAndClearSession(vrpp bpf_vrpp) (total uint64) {
 	return
 }
 
-// empty vlanid in tunnel/ni indicates error
-func (l *layer3) tunnel(d Destination) (bpf_tunnel, ninfo) {
-	ni, err := l.netinfo.info(d.Address)
+func (l *layer3) ext(vlanid uint16, ipv6 bool) netip.Addr {
+	return l.netinfo.ext(vlanid, ipv6)
+}
 
-	if err != nil || ni.vlanid == 0 {
-		//log.Fatal("FWD ERROR", err)
-		return bpf_tunnel{}, ninfo{}
-	}
-
-	if d.TunnelType == NONE && ni.l3 {
-		//log.Fatal("LOOP ERROR (FIXME)", ni)
-		return bpf_tunnel{}, ninfo{}
-	}
-
-	flags := d.TunnelFlags & 0x7f
-
-	if ni.l3 {
-		flags |= notLocal
-	}
-
-	return bpf_tunnel{
-		daddr:    as16(ni.daddr),
-		saddr:    as16(ni.saddr),
-		dport:    d.TunnelPort,
-		sport:    0,
-		vlanid:   ni.vlanid,
-		method:   d.TunnelType,
-		flags:    uint8(flags),
-		h_dest:   ni.h_dest,
-		h_source: ni.h_source,
-	}, ni
+func (l *layer3) tunnel(d Destination) bpf_tunnel {
+	x := l.netinfo.find(d.Address)
+	return x.bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
 }
 
 func (l *layer3) updateSettings() {
@@ -466,7 +440,8 @@ func (l *layer3) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
 	icmp := time.NewTicker(time.Millisecond * 100)
-	ping := time.NewTicker(time.Minute)
+	//ping := time.NewTicker(time.Minute)
+	ping := time.NewTicker(10 * time.Second)
 
 	defer func() {
 		reconfig.Stop()
@@ -494,6 +469,7 @@ func (l *layer3) background() error {
 			l.mutex.Unlock()
 
 			for ip, _ := range hosts {
+				fmt.Println("PING", ip)
 				l.ping(ip)
 			}
 
@@ -612,6 +588,12 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 
 	route := map[netip.Prefix]uint16{}
 
+	pref4 := netip.MustParsePrefix("10.0.0.0/8")
+	pref6 := netip.MustParsePrefix("fd6e:eec8:76ac:b00b::/64")
+
+	route[pref4] = 1
+	route[pref6] = 1
+
 	err := l.netinfo.config(vlan4, vlan6, route)
 
 	if err != nil {
@@ -619,7 +601,7 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix) error {
 	}
 
 	for i := uint32(1); i < 4095; i++ {
-		vi, v4, v6 := l.netinfo.vlaninfo(i)
+		vi, v4, v6 := l.netinfo.vlaninfo(uint16(i))
 		l.maps.redirect_map4.UpdateElem(uP(&i), uP(&v4), xdp.BPF_ANY)
 		l.maps.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
 		l.maps.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
@@ -703,8 +685,12 @@ func (l *layer3) clean() {
 
 func (m *maps) init(x *xdp.XDP) (err error) {
 
-	if (unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{})) {
+	if unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{}) {
 		return fmt.Errorf("Inconsistent bpf_global definition")
+	}
+
+	if unsafe.Sizeof(bpf_tunnel{}) != 64 {
+		return fmt.Errorf("Tunnel size is not 64 bytes")
 	}
 
 	m.xdp = x

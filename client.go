@@ -24,9 +24,16 @@ import (
 	"time"
 )
 
+type Protocol = uint8
 type TunnelType uint8
 type TunnelFlags uint8
 type Flags uint8
+type MAC [6]byte
+
+const (
+	TCP Protocol = 0x06
+	UDP Protocol = 0x11
+)
 
 type Options struct {
 	Native bool

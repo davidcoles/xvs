@@ -101,17 +101,22 @@ type bpf_settings struct {
 }
 
 type bpf_tunnel struct {
-	daddr    addr16
-	saddr    addr16
-	dport    uint16
-	sport    uint16
-	vlanid   uint16
-	method   TunnelType // uint8
-	flags    uint8
-	h_dest   mac
-	h_source mac
-	pad      [12]byte // pad to 64 bytes
+	daddr      addr16
+	saddr      addr16
+	dport      uint16
+	sport      uint16
+	vlanid     uint16
+	method     uint8
+	flags      uint8
+	h_dest     mac
+	h_source   mac
+	hints      uint8
+	pad        [7]byte // pad to 64 bytes
+	_interface uint32  // userspace only
 }
+
+type addr16 [16]byte
+type addr4 [4]byte
 
 type bpf_vlaninfo struct {
 	ip4 addr16

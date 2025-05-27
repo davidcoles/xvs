@@ -21,7 +21,6 @@ package xvs
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -29,269 +28,59 @@ import (
 	"regexp"
 )
 
-type b4 = [4]byte
-type b6 = [6]byte
-
-const _b4s = "%d.%d.%d.%d"
-const _b6s = "%02x:%02x:%02x:%02x:%02x:%02x"
-
-func b4s(i b4) string { return fmt.Sprintf(_b4s, i[0], i[1], i[2], i[3]) }
-func b6s(i b6) string { return fmt.Sprintf(_b6s, i[0], i[1], i[2], i[3], i[4], i[5]) }
-
 type mac [6]byte
 type ip4 [4]byte
+type ip6 [16]byte
 
-func (i *ip4) String() string { return b4s(*i) }
-func (m *mac) String() string { return b6s(*m) }
-
-type Protocol = uint8
-
-const (
-	TCP Protocol = 0x06
-	UDP Protocol = 0x11
-)
-
-type MAC = mac
+func (i ip6) String() string { return netip.AddrFrom16(i).String() }
+func (i ip4) String() string { return netip.AddrFrom4(i).String() }
+func (m mac) String() string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
 
 type netinfo struct {
-	vinfo4  vinfo
-	vinfo6  vinfo
-	l2info4 l2info
-	l2info6 l2info
-	l3info4 l3info
-	l3info6 l3info
-	hwinfo  hwinfo
-	rtinfo  rtinfo
+	vlan4 map[uint16]vlaninfo
+	vlan6 map[uint16]vlaninfo
+	route map[netip.Prefix]uint16
+	mac   map[netip.Addr]mac
 }
 type neighbor struct {
 	dev string
 	mac mac
 }
 
-type fu struct {
-	ifindex uint32
-	hw      mac
-	ip      netip.Addr
+func from16(a [16]byte) netip.Addr {
+	var is6 bool = false
+	for n := 0; n < 12; n++ {
+		if a[n] != 0 {
+			is6 = true
+		}
+	}
+
+	if is6 {
+		return netip.AddrFrom16(a)
+	}
+
+	var a4 [4]byte
+
+	copy(a4[:], a[12:])
+
+	return netip.AddrFrom4(a4)
 }
 
-type hwinfo = map[netip.Addr]mac
-type l2info = map[uint16]fu
+func (n *netinfo) config(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) error {
 
-// type l3info = map[uint16]mac
-type l3info = map[uint16]fu
-type vinfo = map[uint16]netip.Prefix
-type rtinfo = map[netip.Prefix]uint16
-
-func (n *netinfo) info(a netip.Addr) (ninfo, error) {
-	if a.Is4() {
-		return n.info2(a, n.vinfo4, n.l2info4, n.l3info4)
-	}
-
-	return n.info2(a, n.vinfo6, n.l2info6, n.l3info6)
-}
-
-// FIXME - choosing extenal IP for tunnelled packets does not require
-// it to be on the same VLAN. Fall-back to *some* IPv6 enabled VLAN if
-// not present on this VLAN
-func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
-	if v6 {
-		return n.l2info6[id].ip
-	}
-	return n.l2info4[id].ip
-}
-
-func (n *netinfo) routers() (r []netip.Addr) {
-	for _, v := range n.l3info4 {
-		r = append(r, v.ip)
-	}
-	for _, v := range n.l3info6 {
-		r = append(r, v.ip)
-	}
-	return
-}
-
-func (n *netinfo) info2(a netip.Addr, vinfo vinfo, l2info l2info, l3info l3info) (ninfo, error) {
-	var vlan uint16
-	var bits int
-	var f fu
-	var h_dest mac
-	var l3 bool
-	var gw netip.Addr
-
-	for id, p := range vinfo {
-		if p.Contains(a) && p.Bits() > bits {
-			bits = p.Bits()
-			vlan = id
-		}
-	}
-
-	if vlan != 0 {
-		// local device
-		f = l2info[vlan]
-		h_dest = n.hwinfo[a]
-	} else {
-		// not local, work out routing
-
-		l3 = true
-		bits = 0
-
-		for p, id := range n.rtinfo {
-			if p.Contains(a) && p.Bits() > bits {
-				bits = p.Bits()
-				vlan = id
-
-				x, ok := l3info[id]
-				if !ok {
-					return ninfo{}, fmt.Errorf("Desination unreachable")
-				}
-				h_dest = x.hw
-				gw = x.ip
-			}
-		}
-
-		if vlan == 0 {
-			for id, x := range l3info {
-				if id > vlan {
-					vlan = id
-					//h_dest = mac
-					h_dest = x.hw
-					gw = x.ip
-				}
-			}
-		}
-
-		if vlan == 0 {
-			return ninfo{}, fmt.Errorf("Desination unreachable")
-		}
-
-		g, ok := vinfo[vlan]
-
-		if !ok {
-			return ninfo{}, fmt.Errorf("Desination unreachable")
-		}
-
-		gw = g.Addr()
-		f = l2info[vlan]
-	}
-
-	return ninfo{
-		saddr:    f.ip,
-		h_source: f.hw,
-		ifindex:  f.ifindex,
-		daddr:    a,
-		h_dest:   h_dest,
-		vlanid:   vlan,
-		gw:       gw,
-		l3:       l3,
-	}, nil
-}
-
-type ninfo struct {
-	saddr    netip.Addr
-	daddr    netip.Addr
-	h_source mac
-	h_dest   mac
-	vlanid   uint16
-	ifindex  uint32
-	gw       netip.Addr
-	l3       bool
-}
-
-func (n ninfo) String() string {
-	return fmt.Sprintf("{%s->%s [%s->%s] %d:%d %v:%s}", n.saddr, n.daddr, n.h_source.String(), n.h_dest.String(), n.vlanid, n.ifindex, n.l3, n.gw)
-}
-
-type vinfo2 = map[uint16][2]netip.Prefix
-
-// func (n *netinfo) config(vlans vinfo2, rtinfo rtinfo) error {
-func (n *netinfo) config(vlan4, vlan6 vinfo, rtinfo rtinfo) error {
-
-	hw := n.hw()
-	n.hwinfo = hw
-
-	n.vinfo4 = vlan4
-	n.vinfo6 = vlan6
-	n.rtinfo = rtinfo
-
-	l2info4, l3info4 := n.config2(vlan4, hw)
-	l2info6, l3info6 := n.config2(vlan6, hw)
-
-	for id, nic := range l2info4 {
-		if nic.ifindex == 0 {
-			log.Fatal("4: nic.ifindex == 0", id)
-		}
-		n, ok := l2info6[id]
-		if ok && n.ifindex != nic.ifindex {
-			log.Fatal("4: n.ifindex != nic.ifindex", id)
-		}
-	}
-
-	for id, nic := range l2info6 {
-		if nic.ifindex == 0 {
-			log.Fatal("6: nic.ifindex == 0", id)
-		}
-		n, ok := l2info4[id]
-		if ok && n.ifindex != nic.ifindex {
-			log.Fatal("6: n.ifindex != nic.ifindex", id)
-		}
-	}
-
-	//fmt.Println("INFO4", l2info4, l3info4)
-	//fmt.Println("INFO6", l2info6, l3info6)
-
-	n.l2info4 = l2info4
-	n.l2info6 = l2info6
-	n.l3info4 = l3info4
-	n.l3info6 = l3info6
+	n.mac = n.hw()
+	n.vlan4 = n.conf2(vlan4)
+	n.vlan6 = n.conf2(vlan6)
+	n.route = route
 
 	return nil
 }
 
-func (n *netinfo) config2(vlan map[uint16]netip.Prefix, hw map[netip.Addr]mac) (l2info, l3info) {
-
-	foo := map[uint16]fu{}
-	l3 := map[uint16]fu{}
-
-	for id, prefix := range vlan {
-
-		// identify which interface we will use for health probes on this vlan,
-		// the address that we should use as source IP, and the source MAC to use
-		if i, a := n.bestInterface(prefix.Masked()); i != nil {
-
-			//fmt.Println("BEST", i.Name, prefix)
-
-			f := fu{
-				ifindex: uint32(i.Index),
-				ip:      a,
-			}
-
-			if len(i.HardwareAddr) == 6 {
-				copy(f.hw[:], i.HardwareAddr[:])
-			}
-
-			foo[id] = f
-
-			// l3 eligible
-			if prefix.Masked() != prefix {
-				//l3[id] = hw[prefix.Addr()] // look up mac for address
-				mac := hw[prefix.Addr()]
-				l3[id] = fu{hw: mac, ip: prefix.Addr()}
-			}
-		}
-	}
-
-	return foo, l3
-}
-
 func (n *netinfo) hw() map[netip.Addr]mac {
 
-	r := map[netip.Addr]mac{}
-
-	arp, _ := arp()
-
-	for a, m := range arp {
-		r[netip.AddrFrom4(a)] = m
-	}
+	r := n.arp()
 
 	for a, n := range n.hw6() {
 		r[a] = n.mac
@@ -404,33 +193,9 @@ func (n *netinfo) hw6() map[netip.Addr]neighbor {
 	return hw6
 }
 
-func (netinfo *netinfo) vlaninfo(i uint32) (bpf_vlaninfo, uint32, uint32) {
-	f4 := netinfo.l2info4[uint16(i)]
-	f6 := netinfo.l2info6[uint16(i)]
+func (n *netinfo) arp() map[netip.Addr]mac {
 
-	g4 := netinfo.l3info4[uint16(i)]
-	g6 := netinfo.l3info6[uint16(i)]
-
-	vi := bpf_vlaninfo{
-		ip4: as16(f4.ip),
-		gw4: as4(g4.ip),
-		ip6: as16(f6.ip),
-		gw6: as16(g6.ip),
-		hw4: f4.hw,
-		hw6: f6.hw,
-		gh4: g4.hw,
-		gh6: g6.hw,
-	}
-	return vi, f4.ifindex, f6.ifindex
-}
-
-func arp() (map[ip4]mac, map[ip4]raw) {
-
-	var nul mac
-
-	ip2mac := make(map[ip4]mac)
-	ip2nic := make(map[ip4]*net.Interface)
-	ip2raw := make(map[ip4]raw)
+	ip2mac := make(map[netip.Addr]mac)
 
 	// flags: https://superuser.com/questions/822054/definition-of-arp-result-flags/822089#822089
 	// 0x0 incomplete
@@ -441,7 +206,7 @@ func arp() (map[ip4]mac, map[ip4]raw) {
 
 	file, err := os.OpenFile("/proc/net/arp", os.O_RDONLY, os.ModePerm)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 	defer file.Close()
 
@@ -451,91 +216,242 @@ func arp() (map[ip4]mac, map[ip4]raw) {
 
 		m := re.FindStringSubmatch(line)
 
-		if len(m) > 3 {
+		if len(m) != 4 {
+			continue
+		}
 
-			ip := net.ParseIP(m[1])
+		ip := net.ParseIP(m[1])
 
-			if ip == nil {
-				continue
+		if ip == nil {
+			continue
+		}
+
+		ip = ip.To4()
+
+		if ip == nil || len(ip) != 4 {
+			continue
+		}
+
+		hw, err := net.ParseMAC(m[2])
+
+		if err != nil || len(hw) != 6 {
+			continue
+		}
+
+		var ip4 [4]byte
+		var mac [6]byte
+
+		copy(ip4[:], ip[:])
+		copy(mac[:], hw[:])
+
+		if ip4 == [4]byte{0, 0, 0, 0} {
+			continue
+		}
+
+		if mac == [6]byte{0, 0, 0, 0, 0, 0} {
+			continue
+		}
+
+		ip2mac[netip.AddrFrom4(ip4)] = mac
+	}
+
+	return ip2mac
+}
+
+func (n *netinfo) vlaninfo(i uint16) (bpf_vlaninfo, uint32, uint32) {
+	v4 := n.vlan4[i]
+	v6 := n.vlan6[i]
+
+	vi := bpf_vlaninfo{
+		ip4: as16(v4.ip_addr),
+		gw4: as4(v4.gw_ip_addr),
+		ip6: as16(v6.ip_addr),
+		gw6: as16(v6.gw_ip_addr),
+		hw4: v4.hw_addr,
+		hw6: v6.hw_addr,
+		gh4: v4.gw_hw_addr,
+		gh6: v6.gw_hw_addr,
+	}
+	return vi, uint32(v4.if_index), uint32(v6.if_index)
+}
+
+type vlaninfo struct {
+	prefix     netip.Prefix
+	ip_addr    netip.Addr
+	hw_addr    mac
+	if_index   int
+	gw_ip_addr netip.Addr
+	gw_hw_addr mac
+}
+
+func (v vlaninfo) String() string {
+	return fmt.Sprint(v.prefix, v.ip_addr, v.hw_addr, v.gw_ip_addr, v.gw_hw_addr)
+}
+
+func (n *netinfo) ext(id uint16, v6 bool) netip.Addr {
+	if v6 {
+		return n.vlan6[id].ip_addr
+	}
+	return n.vlan4[id].ip_addr
+}
+
+func (n *netinfo) routers() (r []netip.Addr) {
+	for _, v := range n.vlan4 {
+		if v.gw_ip_addr.IsValid() {
+			r = append(r, v.gw_ip_addr)
+		}
+	}
+	for _, v := range n.vlan6 {
+		if v.gw_ip_addr.IsValid() {
+			r = append(r, v.gw_ip_addr)
+		}
+
+	}
+	return
+}
+
+func (n *netinfo) conf2(vlan map[uint16]netip.Prefix) (r map[uint16]vlaninfo) {
+
+	r = map[uint16]vlaninfo{}
+
+	for id, prefix := range vlan {
+		if iface, ip_addr := n.bestInterface(prefix.Masked()); iface != nil {
+
+			var hw_addr mac
+			copy(hw_addr[:], iface.HardwareAddr[:])
+
+			var gw_ip_addr netip.Addr
+			var gw_hw_addr mac
+
+			if prefix.Masked() != prefix {
+				gw_ip_addr = prefix.Addr()
+				gw_hw_addr = n.mac[prefix.Addr()]
 			}
 
-			ip = ip.To4()
-
-			if ip == nil || len(ip) != 4 {
-				continue
-			}
-
-			hw, err := net.ParseMAC(m[2])
-
-			if err != nil || len(hw) != 6 {
-				continue
-			}
-
-			iface, err := net.InterfaceByName(m[3])
-
-			if err != nil {
-				continue
-			}
-
-			var ip4 ip4
-			var mac [6]byte
-
-			copy(ip4[:], ip[:])
-			copy(mac[:], hw[:])
-
-			if ip4.String() == "0.0.0.0" {
-				continue
-			}
-
-			if mac == [6]byte{0, 0, 0, 0, 0, 0} {
-				continue
-			}
-
-			ip2mac[ip4] = mac
-			ip2nic[ip4] = iface
-
-			if iface != nil && len(iface.HardwareAddr) == 6 {
-
-				var src MAC
-
-				copy(src[:], iface.HardwareAddr[:])
-
-				if mac != nul {
-					ip2raw[ip4] = raw{
-						idx: iface.Index,
-						src: src,
-						dst: mac,
-					}
-				}
+			r[id] = vlaninfo{
+				prefix:     prefix,
+				if_index:   iface.Index,
+				ip_addr:    ip_addr,
+				hw_addr:    hw_addr,
+				gw_ip_addr: gw_ip_addr,
+				gw_hw_addr: gw_hw_addr,
 			}
 		}
 	}
 
-	return ip2mac, ip2raw
+	return
 }
 
-type nic struct {
-	idx int
-	ip4 ip4
-	ip6 ip6
-	mac mac
-	nic string
+func (n *netinfo) find(ip netip.Addr) (c backend) {
+
+	vlan := n.vlan4
+	bits := 0
+
+	if ip.Is6() {
+		vlan = n.vlan6
+	}
+
+	for id, v := range vlan {
+		if v.prefix.Contains(ip) {
+			return backend{_l: true, vlanid: id, _i: v.if_index, hw_src: v.hw_addr, hw_dst: n.mac[ip], ip_src: v.ip_addr, ip_dst: ip}
+		}
+	}
+
+	for prefix, id := range n.route {
+		if prefix.Contains(ip) && prefix.Bits() > bits {
+			fmt.Println("MATCH?") // need to check if the VLAN has a gateway - or should we just obey?
+			if v, ok := vlan[id]; ok && v.gw_ip_addr.IsValid() {
+				bits = prefix.Bits()
+
+				fmt.Println("MATCHED", prefix, id, bits)
+				return backend{vlanid: id, _i: v.if_index, hw_src: v.hw_addr, hw_dst: v.gw_hw_addr, ip_src: v.ip_addr, ip_dst: ip}
+			}
+			return
+		}
+	}
+
+	// default route
+	for id := uint16(1); id < 4095; id++ {
+		if v, ok := vlan[id]; ok && v.gw_ip_addr.IsValid() {
+			return backend{vlanid: id, _i: v.if_index, hw_src: v.hw_addr, hw_dst: v.gw_hw_addr, ip_src: v.ip_addr, ip_dst: ip}
+		}
+	}
+
+	return
 }
 
-// how to send raw packets
-type raw struct {
-	idx int // interface index
-	src mac // source MAC (local interface HW address)
-	dst mac // dest MAC (backend's HW address)
-	//nic string // interface name
+// can probably skip this and go straight to bpf_tunnel
+type backend struct {
+	vlanid uint16
+	hw_src mac
+	hw_dst mac
+	ip_src netip.Addr
+	ip_dst netip.Addr
+
+	_l bool // local
+	_i int  // interface
 }
 
-func (n *nic) String() string {
-	return fmt.Sprintf("%s|%d|%s|%s", n.nic, n.idx, b4s(n.ip4), b6s(n.mac))
+func (c backend) remote() bool {
+	return !c._l
 }
 
-type ip6 [16]byte
+func (v bpf_tunnel) String() string {
+	return fmt.Sprintf("[%d:%d:%d %s->%s %s->%s]", v.method, v.vlanid, v._interface, v.h_source, v.h_dest, from16(v.saddr), from16(v.daddr))
+}
 
-func (i *ip6) String() string {
-	return netip.AddrFrom16(*i).String()
+func (t *bpf_tunnel) remote() bool {
+	return t.hints&notLocal != 0
+}
+
+func (c backend) bpf_tunnel(method TunnelType, flags TunnelFlags, dport uint16) (t bpf_tunnel) {
+	if !c.ok() {
+		return
+	}
+
+	if method == NONE && c.remote() {
+		return // we can't sent to layer 2 DSR via a router - it must be local
+	}
+
+	var hints uint8
+
+	if c.remote() {
+		hints |= notLocal
+	}
+
+	return bpf_tunnel{
+		daddr:      as16(c.ip_dst),
+		saddr:      as16(c.ip_src),
+		dport:      dport,
+		sport:      0,
+		vlanid:     c.vlanid,
+		method:     uint8(method),
+		flags:      uint8(flags),
+		h_dest:     c.hw_dst,
+		h_source:   c.hw_src,
+		hints:      hints,
+		_interface: uint32(c._i),
+	}
+}
+
+func (v backend) ok() bool {
+	var nul mac
+
+	if v.vlanid == 0 || v._i == 0 {
+		return false
+	}
+
+	if v.hw_src == nul || v.hw_dst == nul {
+		return false
+	}
+
+	if !v.ip_src.IsValid() || !v.ip_dst.IsValid() {
+		return false
+	}
+
+	return true
+}
+
+func (v backend) String() string {
+	return fmt.Sprintf("[rem:%v %d(%d) %s->%s %s->%s]", v.remote(), v.vlanid, v._i, v.hw_src, v.hw_dst, v.ip_src, v.ip_dst)
 }

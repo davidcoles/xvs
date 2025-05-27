@@ -190,3 +190,11 @@ import (
 
 		log.Fatal(syscall.Getuid(), syscall.Getgid())
 	}
+
+
+
+working/needing testing
+* return too_big if packet won't fit in tunnel
+* propagate too_big from systems on the net - add callback to handel?
+* ping local hosts/routers on addition and perioically
+* rationalise netinfo

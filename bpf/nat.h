@@ -201,7 +201,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
     bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
-    
+
     return is_ipv4_addr(t.daddr) ?
 	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
