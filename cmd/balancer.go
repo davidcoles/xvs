@@ -21,7 +21,7 @@ func main() {
 	var vips list
 	var serv list
 
-	remove := flag.Uint("r", 0, "If non-zero, remove services after this many seconds")
+	remove := flag.Uint("r", 60, "If non-zero, remove services after this many seconds")
 	sticky := flag.Bool("s", false, "Sticky")
 	tunnel := flag.String("t", "none", "Tunnel type none|fou|gre|gue|ipip")
 	tport4 := flag.Uint("4", 9999, "Port to use for FOU IPv4 VIPs")
@@ -157,7 +157,7 @@ func main() {
 		for n := uint(0); n < *remove; n++ {
 
 			info, _ := client.Info()
-			fmt.Println("Global", info.Metrics)
+			fmt.Println("Global", info.Stats, info.Metrics)
 
 			services, _ := client.Services()
 

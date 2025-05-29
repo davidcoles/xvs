@@ -41,14 +41,14 @@ type neighbor struct {
 	mac mac
 }
 
-func (n *netinfo) config(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) error {
-
+func (n *netinfo) config(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) {
 	n.mac = n.hw()
 	n.vlan4 = n.conf2(vlan4)
 	n.vlan6 = n.conf2(vlan6)
-	n.route = route
-
-	return nil
+	n.route = map[netip.Prefix]uint16{}
+	for k, v := range route {
+		n.route[k] = v
+	}
 }
 
 func (n *netinfo) hw() map[netip.Addr]mac {

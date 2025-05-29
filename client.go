@@ -41,7 +41,11 @@ type Options struct {
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
 	//Bonded    bool
-	KillSwitch bool
+	UntaggedBond bool
+}
+
+func (o *Options) config() *Config {
+	return &Config{VLANs4: o.VLANs4, VLANs6: o.VLANs6}
 }
 
 type Client interface {
@@ -71,7 +75,7 @@ type Client interface {
 }
 
 func (l *layer3) VirtualMetrics(a netip.Addr) map[string]uint64 {
-	return l.virtualMetrics(as16(a)).metrics() // lock not required
+	return l.maps.virtualMetrics(as16(a)).metrics() // lock not required
 }
 
 type Service struct {
@@ -87,11 +91,6 @@ type Stats struct {
 	Flows   uint64 // rename? "Connections" (total connections, a counter, like Packets and Octets, more in tune with ipvs)
 	Current uint64 // rename? or move to DestinationExtended - ActiveConnections, like ipvs
 	Errors  uint64 // maybe remove?
-
-	//SYN uint64
-	//ACK uint64
-	//FIN uint64
-	//RST uint64
 }
 
 type ServiceExtended struct {
@@ -118,21 +117,39 @@ type DestinationExtended struct {
 type Config struct {
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
+	Routes map[netip.Prefix]uint16
 }
 
-func (c *Config) copy() (r Config) {
+func (c *Config) copy() (r Config, e error) {
+	r = *c
 	r.VLANs4 = make(map[uint16]netip.Prefix, len(c.VLANs4))
 	r.VLANs6 = make(map[uint16]netip.Prefix, len(c.VLANs6))
+	r.Routes = make(map[netip.Prefix]uint16, len(c.Routes))
+
+	for k, v := range c.Routes {
+		r.Routes[k] = v
+	}
+
 	for k, v := range c.VLANs4 {
-		if v.Addr().Is4() {
-			r.VLANs4[k] = v
+		if k == 0 || k > 4094 {
+			return r, fmt.Errorf("%d is not a valid VLAN ID", k)
 		}
+		if !v.Addr().Is4() {
+			return r, fmt.Errorf("Non-IPv4 prefix in VLANs4: %s", v)
+		}
+		r.VLANs4[k] = v
 	}
+
 	for k, v := range c.VLANs6 {
-		if v.Addr().Is6() {
-			r.VLANs6[k] = v
+		if k == 0 || k > 4094 {
+			return r, fmt.Errorf("%d is not a valid VLAN ID", k)
 		}
+		if !v.Addr().Is6() {
+			return r, fmt.Errorf("Non-IPv6 prefix in VLANs6: %s", v)
+		}
+		r.VLANs6[k] = v
 	}
+
 	return
 }
 
@@ -148,32 +165,29 @@ func (l *layer3) Info() (Info, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	g := l.globals()
+	g := l.maps.globals()
 	latency := l.latency
 	if latency == 0 {
 		latency = 1000 // 0 would clearly be nonsense (happens at statup), so set to something realistic
 	}
 
 	return Info{
-		Packets: g.packets,
-		Octets:  g.octets,
-		Flows:   g.flows,
+		Stats: Stats{
+			Packets: g.packets,
+			Octets:  g.octets,
+			Flows:   g.flows,
+			Current: l.current(),
+		},
 		Latency: latency,
-		Metrics: l.globals().metrics(),
-		IPv4:    l.netns.address4(),
-		IPv6:    l.netns.address6(),
+		Metrics: l.maps.globals().metrics(),
+		IPv4:    l.ns.address4(),
+		IPv6:    l.ns.address6(),
 	}, nil
 }
 
 type Info struct {
-	Packets uint64 // Total number of packets received by XDP hooks
-	Octets  uint64 // Total number of bytes received by XDP hooks
-	Flows   uint64 // Total number of new flow entries created in hash tables
-	Latency uint64 // Average measurable latency for XDP hook
-	//Dropped   uint64 // Number of non-conforming packets dropped
-	//Blocked   uint64 // Number of packets dropped by prefix
-	//NotQueued uint64 // Failed attempts to queue flow state updates to userspace
-	//TooBig    uint64 // ICMP destination unreachable/fragmentation needed
+	Stats   Stats
+	Latency uint64
 	Metrics map[string]uint64
 	IPv4    netip.Addr
 	IPv6    netip.Addr
@@ -190,7 +204,13 @@ func (l *layer3) SetConfig(c Config) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	l.config = c
+	config, err := c.copy()
+
+	if err != nil {
+		return err
+	}
+
+	l.config = config
 
 	l.reconfig()
 
@@ -412,5 +432,5 @@ func (l *layer3) WriteFlow(f []byte) {
 	val := uP(&f[ft_size])
 	time := (*uint64)(val)
 	*time = ktime() // set first 8 bytes of state to the local kernel time
-	fmt.Println(l.maps.shared.UpdateElem(key, val, xdpBPF_ANY))
+	fmt.Println(l.maps.shared.UpdateElem(key, val, bpf_any))
 }

@@ -47,10 +47,13 @@ func (n *nic) String() string {
 }
 
 type natns struct {
-	a, b nic
-	ns   string
-	ip4  netip.Addr
-	ip6  netip.Addr
+	veth  uint32
+	vetha mac
+	vethb mac
+	a, b  nic
+	ns    string
+	ip4   netip.Addr
+	ip6   netip.Addr
 }
 
 //func (n *natns) namespace() string { return n.ns }
@@ -93,6 +96,7 @@ func (n *natns) ipv6() [16]byte { return n.b.ip6 }
 func (n *natns) address4() netip.Addr { return netip.MustParseAddr("255.255.255.253") } // FIXME
 func (n *natns) address6() netip.Addr { return netip.MustParseAddr("fefe::ffff:fffd") } //FIXME
 
+/*
 func nat3(x *xdp.XDP, inside string, outside string) (*natns, error) {
 
 	const IPA = "fefe::ffff:fffd"
@@ -124,6 +128,8 @@ func nat3(x *xdp.XDP, inside string, outside string) (*natns, error) {
 	} else {
 		copy(n.a.mac[:], iface.HardwareAddr[:])
 		n.a.idx = iface.Index
+		n.veth = uint32(iface.Index)
+		n.vetha = n.a.mac
 	}
 
 	if iface, err := net.InterfaceByName(n.b.nic); err != nil {
@@ -131,6 +137,7 @@ func nat3(x *xdp.XDP, inside string, outside string) (*natns, error) {
 	} else {
 		copy(n.b.mac[:], iface.HardwareAddr[:])
 		n.b.idx = iface.Index
+        n.vethb = n.b.mac
 	}
 
 	if err := x.LoadBpfSection(inside, false, uint32(n.a.idx)); err != nil {
@@ -147,6 +154,64 @@ func nat3(x *xdp.XDP, inside string, outside string) (*natns, error) {
 	}
 
 	return &n, nil
+}
+*/
+
+func (n *natns) nat3(x *xdp.XDP, inside string, outside string) error {
+
+	const IPA = "fefe::ffff:fffd"
+	const IPB = "fefe::ffff:fffe"
+
+	namespace := "l3"
+
+	//var n natns
+	n.ns = namespace
+	n.a.nic = namespace
+	n.b.nic = namespace + "ns"
+
+	n.a.ip6 = netip.MustParseAddr(IPA).As16()
+	n.b.ip6 = netip.MustParseAddr(IPB).As16()
+
+	copy(n.a.ip4[:], n.a.ip6[12:])
+	copy(n.b.ip4[:], n.b.ip6[12:])
+
+	if err := n.create_pair(n.a.nic, n.b.nic); err != nil {
+		return err
+	}
+
+	time.Sleep(time.Second * 1) // TODO race condition with assigned MACs
+
+	if iface, err := net.InterfaceByName(n.a.nic); err != nil {
+		return err
+	} else {
+		copy(n.a.mac[:], iface.HardwareAddr[:])
+		n.a.idx = iface.Index
+		n.veth = uint32(iface.Index)
+		n.vetha = n.a.mac
+	}
+
+	if iface, err := net.InterfaceByName(n.b.nic); err != nil {
+		return err
+	} else {
+		copy(n.b.mac[:], iface.HardwareAddr[:])
+		n.b.idx = iface.Index
+		n.vethb = n.b.mac
+	}
+
+	if err := x.LoadBpfSection(inside, false, uint32(n.a.idx)); err != nil {
+		return err
+	}
+
+	// this seems to be needed to make native mode hardware work
+	if err := x.LoadBpfSection(outside, false, uint32(n.b.idx)); err != nil {
+		return err
+	}
+
+	if err := n.config_pair(n.ns, n.a, n.b); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (n *natns) clean() {

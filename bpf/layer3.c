@@ -994,7 +994,6 @@ int xdp_fwd_func(struct xdp_md *ctx)
 	return XDP_PASS;
     }
 
-    //metadata_t metadata = { .era = s->era, .global = global };
     metadata_t metadata = { .era = s->era  };
     void *data_end = (void *)(long)ctx->data_end;
     //void *data     = (void *)(long)ctx->data;

@@ -65,14 +65,14 @@ func (s *service) set(service Service, ds ...Destination) (deleted bool, err err
 		if _, exists := s.dests[d]; !exists {
 			s.debug("ADDING", d)
 			s.layer3.ping(d)
-			s.layer3.createCounters(s.vrpp(d))
+			s.layer3.maps.createCounters(s.vrpp(d))
 			s.layer3.natmap.add(s.service.Address, d)
 		}
 	}
 
 	for d, _ := range s.dests {
 		if _, exists := destinations[d]; !exists {
-			s.layer3.removeCounters(s.vrpp(d)) // d was deleted
+			s.layer3.maps.removeCounters(s.vrpp(d)) // d was deleted
 			deleted = true
 		}
 	}
@@ -96,7 +96,7 @@ func (s *service) createDestination(d Destination) error {
 	}
 
 	s.layer3.ping(d.Address)
-	s.layer3.createCounters(s.vrpp(d.Address))
+	s.layer3.maps.createCounters(s.vrpp(d.Address))
 	s.layer3.natmap.add(s.service.Address, d.Address)
 	s.layer3.natmap.index()
 	s.dests[d.Address] = d
@@ -110,7 +110,7 @@ func (s *service) removeDestination(d Destination) error {
 		return fmt.Errorf("Destination does not exist")
 	}
 
-	s.layer3.removeCounters(s.vrpp(d.Address))
+	s.layer3.maps.removeCounters(s.vrpp(d.Address))
 
 	delete(s.dests, d.Address)
 	s.recalc()
@@ -145,14 +145,21 @@ func (l *layer3) createService(s Service, ds ...Destination) error {
 	return nil
 }
 
+func (s *service) current() (r uint64) {
+	for d, _ := range s.dests {
+		r += s.sessions[d]
+	}
+	return
+}
+
 func (s *service) extend() ServiceExtended {
 	var c bpf_counter
 	var t uint64
 	for d, _ := range s.dests {
-		c.add(s.layer3.counters(s.vrpp(d)))
+		c.add(s.layer3.maps.counters(s.vrpp(d)))
 		t += s.sessions[d]
 	}
-	metrics := s.layer3.serviceMetrics(s.key()).metrics()
+	metrics := s.layer3.maps.serviceMetrics(s.key()).metrics()
 	return ServiceExtended{Service: s.service, Stats: c.stats(t), Metrics: metrics}
 }
 
@@ -170,7 +177,7 @@ func (s *service) remove() error {
 	key := s.key()
 
 	for d, _ := range s.dests {
-		s.layer3.removeCounters(s.vrpp(d))
+		s.layer3.maps.removeCounters(s.vrpp(d))
 	}
 
 	s.layer3.maps.services.DeleteElem(uP(&key))
@@ -194,12 +201,12 @@ func (s *service) updateDestination(d Destination) error {
 }
 
 func (s *service) stats(d netip.Addr) Stats {
-	return s.layer3.counters(s.vrpp(d)).stats(s.sessions[d])
+	return s.layer3.maps.counters(s.vrpp(d)).stats(s.sessions[d])
 }
 
 func (s *service) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
-		m := s.layer3.counters(s.vrpp(a)).metrics()
+		m := s.layer3.maps.counters(s.vrpp(a)).metrics()
 		mac := s.mac[a]
 		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: mac})
 	}
@@ -209,7 +216,7 @@ func (s *service) destinations() (r []DestinationExtended, e error) {
 func (s *service) readSessions() {
 	sessions := make(map[netip.Addr]uint64, len(s.dests))
 	for d, _ := range s.dests {
-		sessions[d] = s.layer3.readAndClearSession(s.vrpp(d))
+		sessions[d] = s.layer3.maps.readAndClearSession(s.vrpp(d), s.layer3.era())
 	}
 	s.sessions = sessions
 }
