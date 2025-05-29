@@ -30,6 +30,27 @@ type addr16 [16]byte
 type addr4 [4]byte
 type mac [6]byte
 
+func as16(a netip.Addr) (r addr16) {
+	if a.Is6() {
+		return a.As16()
+	}
+
+	if a.Is4() {
+		ip := a.As4()
+		copy(r[12:], ip[:])
+	}
+
+	return
+}
+
+//func as4(a netip.Addr) (r addr4) {
+//	if a.Is4() {
+//		return a.As4()
+//	}
+//
+//	return
+//}
+
 func (m mac) String() string {
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 }

@@ -36,12 +36,11 @@ const (
 
 type Options struct {
 	Native bool
+	Bond   bool
 	BPF    []byte
 	Flows  uint32
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
-	//Bonded    bool
-	UntaggedBond bool
 }
 
 func (o *Options) config() *Config {
@@ -423,14 +422,5 @@ try:
 
 // Stores a flow retrieved with ReadFlow()
 func (l *layer3) WriteFlow(f []byte) {
-
-	if len(f) != int(ft_size+flow_size) || f[len(f)-1] != flow_version {
-		return
-	}
-
-	key := uP(&f[0])
-	val := uP(&f[ft_size])
-	time := (*uint64)(val)
-	*time = ktime() // set first 8 bytes of state to the local kernel time
-	fmt.Println(l.maps.shared.UpdateElem(key, val, bpf_any))
+	l.maps.writeFlow(f)
 }

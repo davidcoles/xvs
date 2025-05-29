@@ -36,7 +36,7 @@ var layer3_gz []byte
 
 const ft_size uint32 = 36
 const flow_size uint32 = 80
-const bpf_any = xdp.BPF_ANY
+const notLocal uint8 = bpf.F_NOT_LOCAL
 
 const (
 	NONE TunnelType = bpf.T_NONE
@@ -49,8 +49,6 @@ const (
 
 	TunnelEncapNoChecksums TunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
 )
-
-const notLocal uint8 = bpf.F_NOT_LOCAL
 
 func ktime() uint64 { return xdp.KtimeGet() * uint64(time.Second) }
 
@@ -219,6 +217,16 @@ func (m *maps) readLatency() uint64 {
 	}
 
 	return 0
+}
+
+func (m *maps) writeFlow(f []byte) {
+	if len(f) == int(ft_size+flow_size) && f[len(f)-1] == flow_version {
+		key := uP(&f[0])
+		val := uP(&f[ft_size])
+		time := (*uint64)(val)
+		*time = ktime() // set first 8 bytes of state to the local kernel time
+		m.shared.UpdateElem(key, val, xdp.BPF_ANY)
+	}
 }
 
 func (m *maps) init(bpf []byte) (err error) {

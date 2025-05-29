@@ -34,27 +34,6 @@ type threetuple struct {
 	protocol Protocol
 }
 
-func as16(a netip.Addr) (r addr16) {
-	if a.Is6() {
-		return a.As16()
-	}
-
-	if a.Is4() {
-		ip := a.As4()
-		copy(r[12:], ip[:])
-	}
-
-	return
-}
-
-func as4(a netip.Addr) (r addr4) {
-	if a.Is4() {
-		return a.As4()
-	}
-
-	return
-}
-
 type layer3 struct {
 	config   Config
 	mutex    sync.Mutex
@@ -70,7 +49,7 @@ type layer3 struct {
 
 func (l *layer3) ping(ip netip.Addr)                { l.icmp.ping(ip) }
 func (l *layer3) nat(v, r netip.Addr) netip.Addr    { return l.ns.addr(l.natmap.get(v, r), v.Is6()) }
-func (l *layer3) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(vlanid, v6) }
+func (l *layer3) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(id, v6) }
 func (l *layer3) era() bool                         { return l.settings.era%2 > 0 }
 
 func (l *layer3) tunnel(d Destination) bpf_tunnel {
@@ -90,10 +69,7 @@ func newClient(interfaces ...string) (*layer3, error) {
 
 func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err error) {
 
-	l3 := &layer3{
-		services: map[threetuple]*service{},
-		natmap:   natmap{},
-	}
+	l3 := &layer3{services: map[threetuple]*service{}, natmap: natmap{}}
 
 	if l3.config, err = options.config().copy(); err != nil {
 		return nil, err
@@ -109,8 +85,8 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 
 	l3.settings = bpf_settings{veth: l3.ns.veth, vetha: l3.ns.vetha, vethb: l3.ns.vethb, active: 1}
 
-	if options.UntaggedBond {
-		l3.settings.multi = 0
+	if options.Bond {
+		l3.settings.multi = 0 // if untagged packet recieved then TX it rather redirect
 	} else {
 		l3.settings.multi = uint8(len(interfaces))
 	}
@@ -222,18 +198,6 @@ func (l *layer3) background() error {
 	}
 }
 
-// 16 bits of metadata (inc packet length)
-// 16 bits of port (host byte order)
-// ip source address (4 or 16 bytes)
-// original packet
-
-// metadata:
-// 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
-// 1 bit source; 0 - IPv4, 1 - IPv6
-// 1 bit protocol; 0 - TCP, 1 - UDP
-// 3 bits reason codes
-//   000 - fragmentation needed
-
 func (l *layer3) icmpQueue() {
 
 	const IPv4 = 0
@@ -244,6 +208,18 @@ func (l *layer3) icmpQueue() {
 		if l.maps.icmp_queue.LookupAndDeleteElem(nil, uP(&buff[0])) != 0 {
 			return
 		}
+
+		// 16 bits of metadata (inc packet length)
+		// 16 bits of port (host byte order)
+		// ip source address (4 or 16 bytes)
+		// original packet
+
+		// metadata:
+		// 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
+		// 1 bit source; 0 - IPv4, 1 - IPv6
+		// 1 bit protocol; 0 - TCP, 1 - UDP
+		// 3 bits reason codes
+		//   000 - fragmentation needed
 
 		meta := *(*uint16)(uP(&buff[0]))
 		port := *(*uint16)(uP(&buff[2]))
@@ -294,7 +270,7 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Pre
 
 func (l *layer3) reconfig() {
 
-	l.vlans(l.config.VLANs4, l.config.VLANs6, nil)
+	l.vlans(l.config.VLANs4, l.config.VLANs6, l.config.Routes)
 
 	for _, s := range l.services {
 		s.recalc()
