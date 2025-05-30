@@ -80,7 +80,6 @@ type maps struct {
 	stats           xdp.Map
 }
 
-// func (l *layer3) counters(vrpp bpf_vrpp) (c bpf_counter) {
 func (m *maps) counters(vrpp bpf_vrpp) (c bpf_counter) {
 	all := make([]bpf_counter, xdp.BpfNumPossibleCpus())
 
@@ -93,7 +92,6 @@ func (m *maps) counters(vrpp bpf_vrpp) (c bpf_counter) {
 	return c
 }
 
-// func (l *layer3) globals() (c bpf_global) {
 func (m *maps) globals() (c bpf_global) {
 	var ZERO uint32 = 0
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
@@ -111,7 +109,6 @@ func (m *maps) globals() (c bpf_global) {
 	return c
 }
 
-// func (l *layer3) virtualMetrics(a16 addr16) (c bpf_global) {
 func (m *maps) virtualMetrics(a16 addr16) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
@@ -128,7 +125,6 @@ func (m *maps) virtualMetrics(a16 addr16) (c bpf_global) {
 	return
 }
 
-// func (l *layer3) serviceMetrics(key bpf_servicekey) (c bpf_global) {
 func (m *maps) serviceMetrics(key bpf_servicekey) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
@@ -145,7 +141,6 @@ func (m *maps) serviceMetrics(key bpf_servicekey) (c bpf_global) {
 	return
 }
 
-// func (l *layer3) createCounters(vrpp bpf_vrpp) {
 func (m *maps) createCounters(vrpp bpf_vrpp) {
 	counters := make([]bpf_counter, xdp.BpfNumPossibleCpus())
 	m.stats.UpdateElem(uP(&vrpp), uP(&counters[0]), xdp.BPF_NOEXIST)
@@ -156,7 +151,6 @@ func (m *maps) createCounters(vrpp bpf_vrpp) {
 	m.sessions.UpdateElem(uP(&vrpp), uP(&sessions[0]), xdp.BPF_NOEXIST)
 }
 
-// func (l *layer3) removeCounters(vrpp bpf_vrpp) {
 func (m *maps) removeCounters(vrpp bpf_vrpp) {
 	m.stats.DeleteElem(uP(&vrpp))
 	m.sessions.DeleteElem(uP(&vrpp))
@@ -164,7 +158,6 @@ func (m *maps) removeCounters(vrpp bpf_vrpp) {
 	m.sessions.DeleteElem(uP(&vrpp))
 }
 
-// func (l *layer3) readAndClearSession(vrpp bpf_vrpp) (total uint64) {
 func (m *maps) readAndClearSession(vrpp bpf_vrpp, era bool) (total uint64) {
 	all := make([]int64, xdp.BpfNumPossibleCpus())
 
@@ -186,7 +179,6 @@ func (m *maps) readAndClearSession(vrpp bpf_vrpp, era bool) (total uint64) {
 	return
 }
 
-// func (l *layer3) updateSettings() {
 func (m *maps) updateSettings(settings bpf_settings) {
 	var ZERO uint32 = 0
 
@@ -198,7 +190,6 @@ func (m *maps) updateSettings(settings bpf_settings) {
 	m.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
-// func (l *layer3) readLatency() uint64 {
 func (m *maps) readLatency() uint64 {
 	var ZERO uint32 = 0
 	var packets uint64
