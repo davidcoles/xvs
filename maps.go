@@ -184,7 +184,8 @@ func (m *maps) removeService(key bpf_servicekey) {
 	m.service_metrics.DeleteElem(uP(&key))
 }
 
-func (m *maps) createServiceMetrics(key bpf_servicekey) {
+func (m *maps) setService(key bpf_servicekey, fwd bpf_service) {
+	m.services.UpdateElem(uP(&key), uP(&fwd), xdp.BPF_ANY)
 	v16 := key.addr
 	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
 	m.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
@@ -200,6 +201,10 @@ func (m *maps) updateSettings(settings bpf_settings) {
 	}
 
 	m.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
+}
+
+func (m *maps) nat(key addr16, vip_rip bpf_vip_rip) {
+	m.nat_to_vip_rip.UpdateElem(uP(&key), uP(&vip_rip), xdp.BPF_ANY) // FIXME
 }
 
 func (m *maps) readLatency() uint64 {

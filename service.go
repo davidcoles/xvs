@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/davidcoles/xvs/maglev"
-	"github.com/davidcoles/xvs/xdp"
+	//"github.com/davidcoles/xvs/xdp"
 )
 
 type dest struct {
@@ -257,11 +257,11 @@ func (s *service) recalc() {
 	key := s.key()
 	fwd := s.forwarding(reals)
 
-	s.layer3.maps.services.UpdateElem(uP(&key), uP(&fwd), xdp.BPF_ANY)
+	//s.layer3.maps.services.UpdateElem(uP(&key), uP(&fwd), xdp.BPF_ANY)
+	s.layer3.maps.setService(key, fwd)
 
 	s.nat(reals)
 
-	s.layer3.maps.createServiceMetrics(key)
 	//v16 := as16(s.service.Address)
 	//all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
 	//s.layer3.maps.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
@@ -280,9 +280,10 @@ func (s *service) nat(reals map[netip.Addr]dest) {
 			tun.vlanid = 0 // request will be dropped
 		}
 
-		key := as16(nat)
-		vip_rip := bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
-		s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&key), uP(&vip_rip), xdp.BPF_ANY)
+		//key := as16(nat)
+		//vip_rip := bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
+		//s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&key), uP(&vip_rip), xdp.BPF_ANY) // FIXME
+		s.layer3.maps.nat(as16(nat), bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)})
 
 		s.debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
 	}
