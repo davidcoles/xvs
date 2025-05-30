@@ -179,6 +179,18 @@ func (m *maps) readAndClearSession(vrpp bpf_vrpp, era bool) (total uint64) {
 	return
 }
 
+func (m *maps) removeService(key bpf_servicekey) {
+	m.services.DeleteElem(uP(&key))
+	m.service_metrics.DeleteElem(uP(&key))
+}
+
+func (m *maps) createServiceMetrics(key bpf_servicekey) {
+	v16 := key.addr
+	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
+	m.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
+	m.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
+}
+
 func (m *maps) updateSettings(settings bpf_settings) {
 	var ZERO uint32 = 0
 

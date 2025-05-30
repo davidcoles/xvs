@@ -174,14 +174,13 @@ func (s *service) key() bpf_servicekey {
 }
 
 func (s *service) remove() error {
-	key := s.key()
-
 	for d, _ := range s.dests {
 		s.layer3.maps.removeCounters(s.vrpp(d))
 	}
 
-	s.layer3.maps.services.DeleteElem(uP(&key))
-	s.layer3.maps.service_metrics.DeleteElem(uP(&key))
+	//s.layer3.maps.services.DeleteElem(uP(&key))
+	//s.layer3.maps.service_metrics.DeleteElem(uP(&key))
+	s.layer3.maps.removeService(s.key())
 	delete(s.layer3.services, s.service.key())
 	s.layer3.clean()
 	return nil
@@ -242,7 +241,7 @@ func (s *service) recalc() {
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
-		t := s.layer3.tunnel(d)
+		t := s.layer3.find(d).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
 
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
@@ -262,10 +261,11 @@ func (s *service) recalc() {
 
 	s.nat(reals)
 
-	v16 := as16(s.service.Address)
-	all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
-	s.layer3.maps.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
-	s.layer3.maps.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
+	s.layer3.maps.createServiceMetrics(key)
+	//v16 := as16(s.service.Address)
+	//all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
+	//s.layer3.maps.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
+	//s.layer3.maps.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
 }
 
 func (s *service) nat(reals map[netip.Addr]dest) {

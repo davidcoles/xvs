@@ -179,6 +179,7 @@ struct flow {
 };
 typedef struct flow flow_t;
 
+/*
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
     __type(key, __u32);
@@ -195,6 +196,24 @@ struct {
                 __type(value, __u8[sizeof(flow_t)]);
                 __uint(max_entries, FLOW_STATE_SIZE);
             });
+} flows_tcp SEC(".maps");
+*/
+
+struct flows {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, fourtuple_t);
+    __type(value, flow_t);
+    //__type(key, __u8[sizeof(fourtuple_t)]);
+    //__type(value, __u8[sizeof(flow_t)]);
+    __uint(max_entries, 1);
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, MAX_CPU_SUPPORT);
+    __array(values, struct flows);
 } flows_tcp SEC(".maps");
 
 // UDP: eventually, track flow for ~30s, reselect backend, and time

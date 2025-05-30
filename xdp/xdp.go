@@ -154,7 +154,6 @@ func KtimeGet() uint64 {
 	return uint64(C.ktime_get())
 }
 
-// int do_stuff(int outer_fd, int index, const char *name, int key, int val, int max) {
 func (m Map) CreateLruHash(index uint32, name string, key, val, max uint32) int {
 	return int(C.create_lru_hash(C.int(m), C.int(index), C.CString(name), C.int(key), C.int(val), C.int(max)))
 }

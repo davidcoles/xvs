@@ -51,10 +51,7 @@ func (l *layer3) ping(ip netip.Addr)                { l.icmp.ping(ip) }
 func (l *layer3) nat(v, r netip.Addr) netip.Addr    { return l.netns.nat(l.natmap.get(v, r), v.Is6()) }
 func (l *layer3) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(id, v6) }
 func (l *layer3) era() bool                         { return l.settings.era%2 > 0 }
-
-func (l *layer3) tunnel(d Destination) bpf_tunnel {
-	return l.netinfo.find(d.Address).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
-}
+func (l *layer3) find(d Destination) backend        { return l.netinfo.find(d.Address) }
 
 func (l *layer3) current() (r uint64) {
 	for _, s := range l.services {
@@ -70,6 +67,16 @@ func newClient(interfaces ...string) (*layer3, error) {
 func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err error) {
 
 	l3 := &layer3{services: map[threetuple]*service{}, natmap: natmap{}}
+
+	var nics []uint32
+
+	for _, ifname := range interfaces {
+		if iface, err := net.InterfaceByName(ifname); err != nil {
+			return nil, err
+		} else {
+			nics = append(nics, uint32(iface.Index))
+		}
+	}
 
 	if l3.config, err = options.config().copy(); err != nil {
 		return nil, err
@@ -95,22 +102,15 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 		return nil, err
 	}
 
+	for _, nic := range nics {
+		l3.maps.xdp.LinkDetach(nic)
+	}
+
 	if err = l3.maps.initialiseFlows(options.Flows); err != nil {
 		return nil, err
 	}
 
-	var nics []uint32
-
-	for _, ifname := range interfaces {
-		if iface, err := net.InterfaceByName(ifname); err != nil {
-			return nil, err
-		} else {
-			nics = append(nics, uint32(iface.Index))
-		}
-	}
-
 	for _, nic := range nics {
-		l3.maps.xdp.LinkDetach(nic)
 		if err = l3.maps.xdp.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
 			return nil, err
 		}
