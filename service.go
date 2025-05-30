@@ -178,8 +178,6 @@ func (s *service) remove() error {
 		s.layer3.maps.removeCounters(s.vrpp(d))
 	}
 
-	//s.layer3.maps.services.DeleteElem(uP(&key))
-	//s.layer3.maps.service_metrics.DeleteElem(uP(&key))
 	s.layer3.maps.removeService(s.key())
 	delete(s.layer3.services, s.service.key())
 	s.layer3.clean()
