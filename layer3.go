@@ -41,14 +41,14 @@ type layer3 struct {
 	settings bpf_settings
 	natmap   natmap
 	netinfo  netinfo
-	ns       natns
+	netns    netns
 	icmp     icmp
 	maps     maps
 	latency  uint64
 }
 
 func (l *layer3) ping(ip netip.Addr)                { l.icmp.ping(ip) }
-func (l *layer3) nat(v, r netip.Addr) netip.Addr    { return l.ns.addr(l.natmap.get(v, r), v.Is6()) }
+func (l *layer3) nat(v, r netip.Addr) netip.Addr    { return l.netns.nat(l.natmap.get(v, r), v.Is6()) }
 func (l *layer3) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(id, v6) }
 func (l *layer3) era() bool                         { return l.settings.era%2 > 0 }
 
@@ -79,11 +79,11 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 		return nil, err
 	}
 
-	if err = l3.ns.nat3(l3.maps.xdp, "xdp_vetha_func", "xdp_vethb_func"); err != nil {
+	if err = l3.netns.init(l3.maps.xdp, "xdp_vetha_func", "xdp_vethb_func"); err != nil {
 		return nil, err
 	}
 
-	l3.settings = bpf_settings{veth: l3.ns.veth, vetha: l3.ns.vetha, vethb: l3.ns.vethb, active: 1}
+	l3.settings = bpf_settings{veth: l3.netns.veth(), vetha: l3.netns.vetha(), vethb: l3.netns.vethb(), active: 1}
 
 	if options.Bond {
 		l3.settings.multi = 0 // if untagged packet recieved then TX it rather redirect
@@ -327,7 +327,7 @@ func (l *layer3) clean() {
 	l.natmap.clean(nmap)
 
 	for k, v := range l.natmap.all() {
-		nat := l.ns.addr(v, k[0].Is6()) // k[0] is the vip
+		nat := l.netns.nat(v, k[0].Is6()) // k[0] is the vip
 		nats[nat] = true
 	}
 

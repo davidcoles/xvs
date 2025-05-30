@@ -179,8 +179,8 @@ func (l *layer3) Info() (Info, error) {
 		},
 		Latency: latency,
 		Metrics: l.maps.globals().metrics(),
-		IPv4:    l.ns.address4(),
-		IPv6:    l.ns.address6(),
+		IPv4:    l.netns.ipv4(),
+		IPv6:    l.netns.ipv6(),
 	}, nil
 }
 
@@ -357,13 +357,6 @@ func (l *layer3) SetService(s Service, ds ...Destination) error {
 func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return l.nat(vip, rip)
 }
-
-// Returns the IPv4 and IPv6 address of the veth interface - if a
-// socket needs to be explicitly bound to to query the NAT addresses
-// of backend servers then these can be used.
-//func (l *layer3) Addresses() (ipv4 netip.Addr, ipv6 netip.Addr) {
-//	return l.netns.address4(), l.netns.address6()
-//}
 
 func (d *Destination) is4() bool {
 	return d.Address.Is4()
