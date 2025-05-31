@@ -204,7 +204,7 @@ func (l *layer3) icmpQueue() {
 	const IPv6 = 1
 
 	for n := 0; n < 100; n++ {
-		var buff [2048]byte
+		var buff [buffer_length]byte
 		if l.maps.icmp_queue.LookupAndDeleteElem(nil, uP(&buff[0])) != 0 {
 			return
 		}
@@ -215,8 +215,8 @@ func (l *layer3) icmpQueue() {
 		// original packet
 
 		// metadata:
-		// 11 bits (2047 bytes > MTU of 1500) orig (IP) packet length
-		// 1 bit source; 0 - IPv4, 1 - IPv6
+		// 11 bits (2047 bytes > MTU of 1500) original ip packet length
+		// 1 bit address family; 0 - IPv4, 1 - IPv6
 		// 1 bit protocol; 0 - TCP, 1 - UDP
 		// 3 bits reason codes
 		//   000 - fragmentation needed
@@ -226,8 +226,18 @@ func (l *layer3) icmpQueue() {
 
 		length := meta >> 5
 		family := meta >> 4 & 0x01
-		//proto4 := meta >> 3 & 0x01
-		//reason := meta & 0x07
+		proto4 := meta >> 3 & 0x01
+		reason := meta & 0x07
+
+		protocol := TCP
+
+		if proto4 != 0 {
+			protocol = UDP
+		}
+
+		if length > 2000 {
+			continue // unfeasibly large packet - avoid overstepping array bounds
+		}
 
 		var addr netip.Addr
 		var packet []byte
@@ -235,25 +245,21 @@ func (l *layer3) icmpQueue() {
 			var four [4]byte
 			copy(four[:], buff[4:])
 			addr = netip.AddrFrom4(four)
-			packet = buff[4+4 : 4+4+length]
+			packet = buff[4+4 : 4+4+length] // 4 metadata header, plus 4 bytes source address
 		} else {
 			var sixteen [16]byte
 			copy(sixteen[:], buff[4:])
 			addr = netip.AddrFrom16(sixteen)
-			packet = buff[4+16 : 4+16+length]
+			packet = buff[4+16 : 4+16+length] // 4 metadata header, plus 16 bytes source address
 		}
 
-		//fmt.Println(length, family, proto4, reason, addr, port)
-
-		skey := threetuple{address: addr, port: port, protocol: TCP}
+		skey := threetuple{address: addr, port: port, protocol: protocol}
 		if s, ok := l.services[skey]; ok {
-			s.repeat(packet, func(p []byte) { l.raw(p) })
+			s.repeat(packet, uint8(reason), func(p []byte) {
+				l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, p)
+			})
 		}
 	}
-}
-
-func (l *layer3) raw(packet []byte) {
-	l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, packet)
 }
 
 func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) {
@@ -277,6 +283,37 @@ func (l *layer3) reconfig() {
 	}
 }
 
+func (l *layer3) clean() {
+	mark := time.Now()
+	vips := map[netip.Addr]bool{}
+	nats := map[netip.Addr]bool{}
+	nmap := map[[2]netip.Addr]bool{}
+	vrpp := map[bpf_vrpp]bool{}
+
+	for k, v := range l.services {
+		vips[k.address] = true
+		for r, _ := range v.dests {
+			nmap[[2]netip.Addr{k.address, r}] = true
+			vv := v.vrpp(r)
+			vrpp[vv] = true
+			vv.protocol |= 0xff00
+			vrpp[vv] = true
+		}
+	}
+
+	l.natmap.clean(nmap)
+
+	for k, v := range l.natmap.all() {
+		nat := l.netns.nat(v, k[0].Is6()) // k[0] is the vip
+		nats[nat] = true
+	}
+
+	l.maps.clean(vips, vrpp, nats)
+
+	log.Println("Clean-up took", time.Now().Sub(mark))
+}
+
+/*
 func (l *layer3) clean() {
 
 	clean_map := func(m xdp.Map, a map[netip.Addr]bool) {
@@ -338,3 +375,4 @@ func (l *layer3) clean() {
 
 	log.Println("Clean-up took", time.Now().Sub(mark))
 }
+*/

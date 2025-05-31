@@ -24,6 +24,8 @@ import (
 	_ "embed"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"net/netip"
 	"time"
 	"unsafe"
 
@@ -37,6 +39,7 @@ var layer3_gz []byte
 const ft_size uint32 = 36
 const flow_size uint32 = 80
 const notLocal uint8 = bpf.F_NOT_LOCAL
+const buffer_length = bpf.BUFFER
 
 const (
 	NONE TunnelType = bpf.T_NONE
@@ -359,4 +362,41 @@ func (m *maps) initialiseFlows(max uint32) error {
 	}
 
 	return nil
+}
+
+func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[netip.Addr]bool) {
+
+	clean_addr := func(m xdp.Map, a map[netip.Addr]bool) {
+		b := map[addr16]bool{}
+
+		for k, _ := range a {
+			b[as16(k)] = true
+		}
+
+		var key, next, nul addr16
+		for r := 0; r == 0; key = next {
+			r = m.GetNextKey(uP(&key), uP(&next))
+			if _, exists := b[key]; !exists && key != nul {
+				m.DeleteElem(uP(&key))
+			}
+		}
+	}
+
+	// TODO - reveal any clean-up bugs
+	clean_vrpp := func(m xdp.Map, a map[bpf_vrpp]bool) {
+		var key, next, nul bpf_vrpp
+		for r := 0; r == 0; key = next {
+			r = m.GetNextKey(uP(&key), uP(&next))
+			if _, exists := a[key]; !exists && key != nul {
+				m.DeleteElem(uP(&key))
+				log.Fatal("clean_map2", key)
+			}
+		}
+	}
+
+	clean_addr(m.vip_metrics, vips)
+	clean_addr(m.nat_to_vip_rip, nats)
+	clean_vrpp(m.stats, vrpp)
+	clean_vrpp(m.sessions, vrpp)
+
 }

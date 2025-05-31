@@ -240,10 +240,9 @@ struct {
     __uint(max_entries, FLOW_QUEUE_SIZE);
 } flow_queue SEC(".maps");
 
-
 struct {
     __uint(type, BPF_MAP_TYPE_QUEUE);
-    __type(value, __u8[2048]);
+    __type(value, __u8[BUFFER]);
     __uint(max_entries, 1000);
 } icmp_queue SEC(".maps");
 
@@ -379,8 +378,6 @@ struct {
 
 
 /**********************************************************************/
-
-#define BUFFER 2048
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);

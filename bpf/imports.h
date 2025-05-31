@@ -27,6 +27,7 @@ enum {
 
 enum {
     FLOW_VERSION = 2,
+    BUFFER = 2048,
 };
 
 enum tunnel_type {

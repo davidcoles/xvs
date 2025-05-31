@@ -329,7 +329,7 @@ func (s *service) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 	return
 }
 
-func (s *service) repeat(packet []byte, send func([]byte)) {
+func (s *service) repeat(packet []byte, reason uint8, send func([]byte)) {
 
 	vip := s.service.Address
 
