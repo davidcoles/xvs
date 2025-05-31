@@ -19,6 +19,7 @@
 package xvs
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/netip"
@@ -376,3 +377,242 @@ func (l *layer3) clean() {
 	log.Println("Clean-up took", time.Now().Sub(mark))
 }
 */
+
+func (l *layer3) Info() (Info, error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	g := l.maps.globals()
+	latency := l.latency
+	if latency == 0 {
+		latency = 1000 // 0 would clearly be nonsense (happens at statup), so set to something realistic
+	}
+
+	return Info{
+		Stats: Stats{
+			Packets: g.packets,
+			Octets:  g.octets,
+			Flows:   g.flows,
+			Current: l.current(),
+		},
+		Latency: latency,
+		Metrics: l.maps.globals().metrics(),
+		IPv4:    l.netns.ipv4(),
+		IPv6:    l.netns.ipv6(),
+	}, nil
+}
+
+type Info struct {
+	Stats   Stats
+	Latency uint64
+	Metrics map[string]uint64
+	IPv4    netip.Addr
+	IPv6    netip.Addr
+}
+
+func (l *layer3) Config() (Config, error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	return l.config, nil
+}
+
+func (l *layer3) SetConfig(c Config) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	config, err := c.copy()
+
+	if err != nil {
+		return err
+	}
+
+	l.config = config
+
+	l.reconfig()
+
+	return nil
+}
+
+func (l *layer3) Services() (r []ServiceExtended, e error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	for _, v := range l.services {
+		r = append(r, ServiceExtended{Service: v.service})
+	}
+
+	return
+}
+
+func (l *layer3) Service(s Service) (r ServiceExtended, e error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return r, fmt.Errorf("Service does not exist")
+	}
+
+	return service.extend(), nil
+}
+
+func (l *layer3) CreateService(s Service) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	if _, exists := l.services[s.key()]; exists {
+		return fmt.Errorf("Service exists")
+	}
+
+	return l.createService(s)
+}
+
+func (l *layer3) UpdateService(s Service) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return fmt.Errorf("Service does not exist")
+	}
+
+	return service.update(s)
+}
+
+func (l *layer3) RemoveService(s Service) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return fmt.Errorf("Service does not exist")
+	}
+
+	return service.remove()
+}
+
+func (l *layer3) Destinations(s Service) (r []DestinationExtended, e error) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return nil, fmt.Errorf("Service does not exist")
+	}
+
+	return service.destinations()
+}
+
+func (l *layer3) CreateDestination(s Service, d Destination) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return fmt.Errorf("Service does not exist")
+	}
+
+	return service.createDestination(d)
+}
+
+func (l *layer3) UpdateDestination(s Service, d Destination) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return fmt.Errorf("Service does not exist")
+	}
+
+	return service.updateDestination(d)
+}
+
+func (l *layer3) RemoveDestination(s Service, d Destination) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return fmt.Errorf("Service does not exist")
+	}
+
+	return service.removeDestination(d)
+}
+
+// Creates a service if it does not exist, and populate the list of
+// destinations. Any extant destinations which are not specified are
+// removed.
+func (l *layer3) SetService(s Service, ds ...Destination) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	service, exists := l.services[s.key()]
+
+	if !exists {
+		return l.createService(s, ds...)
+	}
+
+	del, err := service.set(s, ds...)
+
+	if del {
+		l.clean()
+	}
+
+	return err
+}
+
+// Given the virtual IP address of a service and the address of a real
+// server this will return the NAT address that can be used to query
+// the VIP address on the backend.
+func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
+	return l.nat(vip, rip)
+}
+
+// Retrieves an opaque flow record from a ueue written to by the
+// kernel. If no flow records are available then a zero length slice
+// is returned. This can be used to share flow state with peers, with
+// the flow record stored using the WriteFlow() function. Stale
+// records are skipped.
+func (l *layer3) ReadFlow() []byte {
+	var entry [ft_size + flow_size]byte
+
+try:
+	if l.maps.flow_queue.LookupAndDeleteElem(nil, uP(&entry)) != 0 {
+		return nil
+	}
+
+	kern := ktime()
+	when := *((*uint64)(uP(&entry[ft_size])))
+
+	if when < kern {
+		// expected
+		if when+uint64(2*time.Second) < kern {
+			print("-")
+			goto try
+		}
+	} else {
+		if kern+uint64(2*time.Second) < when {
+			print("+")
+			goto try
+		}
+	}
+
+	return entry[:]
+}
+
+// Stores a flow retrieved with ReadFlow()
+func (l *layer3) WriteFlow(f []byte) {
+	l.maps.writeFlow(f)
+}
+
+func (l *layer3) VirtualMetrics(a netip.Addr) map[string]uint64 {
+	return l.maps.virtualMetrics(as16(a)).metrics() // lock not required
+}
