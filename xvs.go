@@ -65,11 +65,10 @@ type Client interface {
 
 	SetService(Service, ...Destination) error
 	NAT(netip.Addr, netip.Addr) netip.Addr
-
+	VIP(netip.Addr) VIP
+	VIPs() []VIP
 	ReadFlow() []byte
 	WriteFlow([]byte)
-
-	VirtualMetrics(netip.Addr) map[string]uint64
 }
 
 type Service struct {
@@ -106,6 +105,11 @@ type DestinationExtended struct {
 	Stats       Stats
 	Metrics     map[string]uint64
 	MAC         [6]byte
+}
+
+type VIP struct {
+	Address netip.Addr
+	Metrics map[string]uint64
 }
 
 type Config struct {

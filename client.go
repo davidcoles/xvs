@@ -35,7 +35,6 @@ type threetuple struct {
 	protocol Protocol
 }
 
-// type layer3 = client
 type client struct {
 	config   Config
 	mutex    sync.Mutex
@@ -68,7 +67,7 @@ func newClient(interfaces ...string) (*client, error) {
 
 func newClientWithOptions(options Options, interfaces ...string) (_ *client, err error) {
 
-	l3 := &client{services: map[threetuple]*service{}, natmap: natmap{}}
+	c := &client{services: map[threetuple]*service{}, natmap: natmap{}}
 
 	var nics []uint32
 
@@ -80,49 +79,49 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		}
 	}
 
-	if l3.config, err = options.config().copy(); err != nil {
+	if c.config, err = options.config().copy(); err != nil {
 		return nil, err
 	}
 
-	if err = l3.maps.init(options.BPF); err != nil {
+	if err = c.maps.init(options.BPF); err != nil {
 		return nil, err
 	}
 
-	if err = l3.netns.init(l3.maps.xdp, "xdp_vetha_func", "xdp_vethb_func"); err != nil {
+	if err = c.netns.init(c.maps.xdp, "xdp_vetha_func", "xdp_vethb_func"); err != nil {
 		return nil, err
 	}
 
-	l3.settings = bpf_settings{veth: l3.netns.veth(), vetha: l3.netns.vetha(), vethb: l3.netns.vethb(), active: 1}
+	c.settings = bpf_settings{veth: c.netns.veth(), vetha: c.netns.vetha(), vethb: c.netns.vethb(), active: 1}
 
 	if options.Bond {
-		l3.settings.multi = 0 // if untagged packet recieved then TX it rather redirect
+		c.settings.multi = 0 // if untagged packet recieved then TX it rather redirect
 	} else {
-		l3.settings.multi = uint8(len(interfaces))
+		c.settings.multi = uint8(len(interfaces))
 	}
 
-	if err = l3.icmp.start(); err != nil {
+	if err = c.icmp.start(); err != nil {
 		return nil, err
 	}
 
 	for _, nic := range nics {
-		l3.maps.xdp.LinkDetach(nic)
+		c.maps.xdp.LinkDetach(nic)
 	}
 
-	if err = l3.maps.initialiseFlows(options.Flows); err != nil {
+	if err = c.maps.initialiseFlows(options.Flows); err != nil {
 		return nil, err
 	}
 
 	for _, nic := range nics {
-		if err = l3.maps.xdp.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
+		if err = c.maps.xdp.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
 			return nil, err
 		}
 	}
 
-	l3.reconfig()
-	l3.maps.updateSettings(l3.settings)
-	go l3.background()
+	c.configure()
+	c.maps.updateSettings(c.settings)
+	go c.background()
 
-	return l3, nil
+	return c, nil
 }
 
 func (l *client) background() error {
@@ -189,7 +188,7 @@ func (l *client) background() error {
 			// re-scan network interfaces and match to VLANs
 			// recalc all services as parameters may have changed
 			l.mutex.Lock()
-			l.reconfig()
+			l.configure()
 			l.mutex.Unlock()
 
 		case <-icmp.C:
@@ -264,9 +263,9 @@ func (l *client) icmpQueue() {
 	}
 }
 
-func (l *client) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) {
+func (l *client) configure() {
 
-	l.netinfo.config(vlan4, vlan6, route)
+	l.netinfo.config(l.config.VLANs4, l.config.VLANs6, l.config.Routes)
 
 	for i := uint32(1); i < 4095; i++ {
 		vi, v4, v6 := l.netinfo.vlaninfo(uint16(i))
@@ -274,11 +273,6 @@ func (l *client) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Pre
 		l.maps.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
 		l.maps.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
 	}
-}
-
-func (l *client) reconfig() {
-
-	l.vlans(l.config.VLANs4, l.config.VLANs6, l.config.Routes)
 
 	for _, s := range l.services {
 		s.recalc()
@@ -314,70 +308,6 @@ func (l *client) clean() {
 
 	log.Println("Clean-up took", time.Now().Sub(mark))
 }
-
-/*
-func (l *client) clean() {
-
-	clean_map := func(m xdp.Map, a map[netip.Addr]bool) {
-		b := map[addr16]bool{}
-
-		for k, _ := range a {
-			b[as16(k)] = true
-		}
-
-		var key, next, nul addr16
-		for r := 0; r == 0; key = next {
-			r = m.GetNextKey(uP(&key), uP(&next))
-			if _, exists := b[key]; !exists && key != nul {
-				m.DeleteElem(uP(&key))
-			}
-		}
-	}
-
-	// TODO - reveal any clean-up bugs
-	clean_map2 := func(m xdp.Map, a map[bpf_vrpp]bool) {
-		var key, next, nul bpf_vrpp
-		for r := 0; r == 0; key = next {
-			r = m.GetNextKey(uP(&key), uP(&next))
-			if _, exists := a[key]; !exists && key != nul {
-				m.DeleteElem(uP(&key))
-				log.Fatal("clean_map2", key)
-			}
-		}
-	}
-
-	mark := time.Now()
-	vips := map[netip.Addr]bool{}
-	nats := map[netip.Addr]bool{}
-	nmap := map[[2]netip.Addr]bool{}
-	vrpp := map[bpf_vrpp]bool{}
-
-	for k, v := range l.services {
-		vips[k.address] = true
-		for r, _ := range v.dests {
-			nmap[[2]netip.Addr{k.address, r}] = true
-			vv := v.vrpp(r)
-			vrpp[vv] = true
-			vv.protocol |= 0xff00
-			vrpp[vv] = true
-		}
-	}
-
-	l.natmap.clean(nmap)
-
-	for k, v := range l.natmap.all() {
-		nat := l.netns.nat(v, k[0].Is6()) // k[0] is the vip
-		nats[nat] = true
-	}
-
-	clean_map(l.maps.vip_metrics, vips)
-	clean_map(l.maps.nat_to_vip_rip, nats)
-	clean_map2(l.maps.stats, vrpp)
-	clean_map2(l.maps.sessions, vrpp)
-
-	log.Println("Clean-up took", time.Now().Sub(mark))
-}
-*/
 
 func (l *client) Info() (Info, error) {
 	l.mutex.Lock()
@@ -430,7 +360,7 @@ func (l *client) SetConfig(c Config) error {
 
 	l.config = config
 
-	l.reconfig()
+	l.configure()
 
 	return nil
 }
@@ -614,6 +544,23 @@ func (l *client) WriteFlow(f []byte) {
 	l.maps.writeFlow(f)
 }
 
-func (l *client) VirtualMetrics(a netip.Addr) map[string]uint64 {
-	return l.maps.virtualMetrics(as16(a)).metrics() // lock not required
+func (c *client) VIP(a netip.Addr) VIP {
+	return VIP{Address: a, Metrics: c.maps.virtualMetrics(as16(a)).metrics()} // lock not required
+}
+
+func (c *client) VIPs() (r []VIP) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	vips := map[netip.Addr]bool{}
+
+	for _, s := range c.services {
+		vips[s.service.Address] = true
+	}
+
+	for v, _ := range vips {
+		r = append(r, VIP{Address: v, Metrics: c.maps.virtualMetrics(as16(v)).metrics()})
+	}
+
+	return
 }
