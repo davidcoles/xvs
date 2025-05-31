@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/davidcoles/xvs/maglev"
-	//"github.com/davidcoles/xvs/xdp"
 )
 
 type dest struct {
@@ -34,10 +33,10 @@ type dest struct {
 }
 
 type service struct {
+	service  Service
+	client   *client
 	dests    map[netip.Addr]Destination
 	mac      map[netip.Addr]mac
-	service  Service
-	layer3   *layer3
 	tunnel   map[netip.Addr]bpf_tunnel
 	sessions map[netip.Addr]uint64
 }
@@ -64,22 +63,22 @@ func (s *service) set(service Service, ds ...Destination) (deleted bool, err err
 	for d, _ := range destinations {
 		if _, exists := s.dests[d]; !exists {
 			s.debug("ADDING", d)
-			s.layer3.ping(d)
-			s.layer3.maps.createCounters(s.vrpp(d))
-			s.layer3.natmap.add(s.service.Address, d)
+			s.client.ping(d)
+			s.client.maps.createCounters(s.vrpp(d))
+			s.client.natmap.add(s.service.Address, d)
 		}
 	}
 
 	for d, _ := range s.dests {
 		if _, exists := destinations[d]; !exists {
-			s.layer3.maps.removeCounters(s.vrpp(d)) // d was deleted
+			s.client.maps.removeCounters(s.vrpp(d)) // d was deleted
 			deleted = true
 		}
 	}
 
 	s.service = service
 	s.dests = destinations
-	s.layer3.natmap.index()
+	s.client.natmap.index()
 	s.recalc()
 
 	return // do NOT run a clean here, let caller do it - service may not yet be in the client's service map
@@ -95,10 +94,10 @@ func (s *service) createDestination(d Destination) error {
 		return err
 	}
 
-	s.layer3.ping(d.Address)
-	s.layer3.maps.createCounters(s.vrpp(d.Address))
-	s.layer3.natmap.add(s.service.Address, d.Address)
-	s.layer3.natmap.index()
+	s.client.ping(d.Address)
+	s.client.maps.createCounters(s.vrpp(d.Address))
+	s.client.natmap.add(s.service.Address, d.Address)
+	s.client.natmap.index()
 	s.dests[d.Address] = d
 	s.recalc()
 	return nil
@@ -110,15 +109,15 @@ func (s *service) removeDestination(d Destination) error {
 		return fmt.Errorf("Destination does not exist")
 	}
 
-	s.layer3.maps.removeCounters(s.vrpp(d.Address))
+	s.client.maps.removeCounters(s.vrpp(d.Address))
 
 	delete(s.dests, d.Address)
 	s.recalc()
-	s.layer3.clean()
+	s.client.clean()
 	return nil
 }
 
-func (l *layer3) createService(s Service, ds ...Destination) error {
+func (l *client) createService(s Service, ds ...Destination) error {
 
 	if !s.Address.IsValid() || s.Address.IsUnspecified() || s.Address.IsMulticast() || s.Address.IsLoopback() {
 		return fmt.Errorf("Bad IP address")
@@ -132,7 +131,7 @@ func (l *layer3) createService(s Service, ds ...Destination) error {
 		return fmt.Errorf("Unsupported protocol")
 	}
 
-	service := &service{dests: map[netip.Addr]Destination{}, service: s, layer3: l}
+	service := &service{dests: map[netip.Addr]Destination{}, service: s, client: l}
 
 	_, err := service.set(s, ds...)
 
@@ -156,10 +155,10 @@ func (s *service) extend() ServiceExtended {
 	var c bpf_counter
 	var t uint64
 	for d, _ := range s.dests {
-		c.add(s.layer3.maps.counters(s.vrpp(d)))
+		c.add(s.client.maps.counters(s.vrpp(d)))
 		t += s.sessions[d]
 	}
-	metrics := s.layer3.maps.serviceMetrics(s.key()).metrics()
+	metrics := s.client.maps.serviceMetrics(s.key()).metrics()
 	return ServiceExtended{Service: s.service, Stats: c.stats(t), Metrics: metrics}
 }
 
@@ -175,12 +174,12 @@ func (s *service) key() bpf_servicekey {
 
 func (s *service) remove() error {
 	for d, _ := range s.dests {
-		s.layer3.maps.removeCounters(s.vrpp(d))
+		s.client.maps.removeCounters(s.vrpp(d))
 	}
 
-	s.layer3.maps.removeService(s.key())
-	delete(s.layer3.services, s.service.key())
-	s.layer3.clean()
+	s.client.maps.removeService(s.key())
+	delete(s.client.services, s.service.key())
+	s.client.clean()
 	return nil
 }
 
@@ -198,12 +197,12 @@ func (s *service) updateDestination(d Destination) error {
 }
 
 func (s *service) stats(d netip.Addr) Stats {
-	return s.layer3.maps.counters(s.vrpp(d)).stats(s.sessions[d])
+	return s.client.maps.counters(s.vrpp(d)).stats(s.sessions[d])
 }
 
 func (s *service) destinations() (r []DestinationExtended, e error) {
 	for a, d := range s.dests {
-		m := s.layer3.maps.counters(s.vrpp(a)).metrics()
+		m := s.client.maps.counters(s.vrpp(a)).metrics()
 		mac := s.mac[a]
 		r = append(r, DestinationExtended{Destination: d, Stats: s.stats(a), Metrics: m, MAC: mac})
 	}
@@ -213,7 +212,7 @@ func (s *service) destinations() (r []DestinationExtended, e error) {
 func (s *service) readSessions() {
 	sessions := make(map[netip.Addr]uint64, len(s.dests))
 	for d, _ := range s.dests {
-		sessions[d] = s.layer3.maps.readAndClearSession(s.vrpp(d), s.layer3.era())
+		sessions[d] = s.client.maps.readAndClearSession(s.vrpp(d), s.client.era())
 	}
 	s.sessions = sessions
 }
@@ -239,7 +238,7 @@ func (s *service) recalc() {
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
-		t := s.layer3.find(d).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
+		t := s.client.find(d).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
 
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
@@ -251,19 +250,8 @@ func (s *service) recalc() {
 	}
 
 	s.mac = macs
-
-	key := s.key()
-	fwd := s.forwarding(reals)
-
-	//s.layer3.maps.services.UpdateElem(uP(&key), uP(&fwd), xdp.BPF_ANY)
-	s.layer3.maps.setService(key, fwd)
-
+	s.client.maps.setService(s.key(), s.forwarding(reals))
 	s.nat(reals)
-
-	//v16 := as16(s.service.Address)
-	//all := make([]bpf_global, xdp.BpfNumPossibleCpus()+1)
-	//s.layer3.maps.vip_metrics.UpdateElem(uP(&v16), uP(&all[0]), xdp.BPF_NOEXIST)
-	//s.layer3.maps.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
 }
 
 func (s *service) nat(reals map[netip.Addr]dest) {
@@ -271,17 +259,14 @@ func (s *service) nat(reals map[netip.Addr]dest) {
 
 	for k, v := range reals {
 		tun := v.tunnel
-		nat := s.layer3.nat(vip, k)
-		ext := s.layer3.ext(tun.vlanid, vip.Is6())
+		nat := s.client.nat(vip, k)
+		ext := s.client.ext(tun.vlanid, vip.Is6())
 
 		if !nat.IsValid() || !ext.IsValid() {
 			tun.vlanid = 0 // request will be dropped
 		}
 
-		//key := as16(nat)
-		//vip_rip := bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
-		//s.layer3.maps.nat_to_vip_rip.UpdateElem(uP(&key), uP(&vip_rip), xdp.BPF_ANY) // FIXME
-		s.layer3.maps.nat(as16(nat), bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)})
+		s.client.maps.nat(as16(nat), bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)})
 
 		s.debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
 	}
@@ -335,7 +320,7 @@ func (s *service) repeat(packet []byte, reason uint8, send func([]byte)) {
 
 	for rip, _ := range s.dests {
 
-		nat := s.layer3.NAT(vip, rip)
+		nat := s.client.NAT(vip, rip)
 
 		if !nat.IsValid() {
 			continue

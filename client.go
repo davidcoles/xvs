@@ -35,7 +35,8 @@ type threetuple struct {
 	protocol Protocol
 }
 
-type layer3 struct {
+// type layer3 = client
+type client struct {
 	config   Config
 	mutex    sync.Mutex
 	services map[threetuple]*service
@@ -48,26 +49,26 @@ type layer3 struct {
 	latency  uint64
 }
 
-func (l *layer3) ping(ip netip.Addr)                { l.icmp.ping(ip) }
-func (l *layer3) nat(v, r netip.Addr) netip.Addr    { return l.netns.nat(l.natmap.get(v, r), v.Is6()) }
-func (l *layer3) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(id, v6) }
-func (l *layer3) era() bool                         { return l.settings.era%2 > 0 }
-func (l *layer3) find(d Destination) backend        { return l.netinfo.find(d.Address) }
+func (l *client) ping(ip netip.Addr)                { l.icmp.ping(ip) }
+func (l *client) nat(v, r netip.Addr) netip.Addr    { return l.netns.nat(l.natmap.get(v, r), v.Is6()) }
+func (l *client) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(id, v6) }
+func (l *client) era() bool                         { return l.settings.era%2 > 0 }
+func (l *client) find(d Destination) backend        { return l.netinfo.find(d.Address) }
 
-func (l *layer3) current() (r uint64) {
+func (l *client) current() (r uint64) {
 	for _, s := range l.services {
 		r += s.current()
 	}
 	return
 }
 
-func newClient(interfaces ...string) (*layer3, error) {
+func newClient(interfaces ...string) (*client, error) {
 	return newClientWithOptions(Options{}, interfaces...)
 }
 
-func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err error) {
+func newClientWithOptions(options Options, interfaces ...string) (_ *client, err error) {
 
-	l3 := &layer3{services: map[threetuple]*service{}, natmap: natmap{}}
+	l3 := &client{services: map[threetuple]*service{}, natmap: natmap{}}
 
 	var nics []uint32
 
@@ -124,7 +125,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *layer3, err
 	return l3, nil
 }
 
-func (l *layer3) background() error {
+func (l *client) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
 	icmp := time.NewTicker(time.Millisecond * 100)
@@ -199,7 +200,7 @@ func (l *layer3) background() error {
 	}
 }
 
-func (l *layer3) icmpQueue() {
+func (l *client) icmpQueue() {
 
 	const IPv4 = 0
 	const IPv6 = 1
@@ -263,7 +264,7 @@ func (l *layer3) icmpQueue() {
 	}
 }
 
-func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) {
+func (l *client) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Prefix]uint16) {
 
 	l.netinfo.config(vlan4, vlan6, route)
 
@@ -275,7 +276,7 @@ func (l *layer3) vlans(vlan4, vlan6 map[uint16]netip.Prefix, route map[netip.Pre
 	}
 }
 
-func (l *layer3) reconfig() {
+func (l *client) reconfig() {
 
 	l.vlans(l.config.VLANs4, l.config.VLANs6, l.config.Routes)
 
@@ -284,7 +285,7 @@ func (l *layer3) reconfig() {
 	}
 }
 
-func (l *layer3) clean() {
+func (l *client) clean() {
 	mark := time.Now()
 	vips := map[netip.Addr]bool{}
 	nats := map[netip.Addr]bool{}
@@ -315,7 +316,7 @@ func (l *layer3) clean() {
 }
 
 /*
-func (l *layer3) clean() {
+func (l *client) clean() {
 
 	clean_map := func(m xdp.Map, a map[netip.Addr]bool) {
 		b := map[addr16]bool{}
@@ -378,7 +379,7 @@ func (l *layer3) clean() {
 }
 */
 
-func (l *layer3) Info() (Info, error) {
+func (l *client) Info() (Info, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -410,14 +411,14 @@ type Info struct {
 	IPv6    netip.Addr
 }
 
-func (l *layer3) Config() (Config, error) {
+func (l *client) Config() (Config, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
 	return l.config, nil
 }
 
-func (l *layer3) SetConfig(c Config) error {
+func (l *client) SetConfig(c Config) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -434,7 +435,7 @@ func (l *layer3) SetConfig(c Config) error {
 	return nil
 }
 
-func (l *layer3) Services() (r []ServiceExtended, e error) {
+func (l *client) Services() (r []ServiceExtended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -445,7 +446,7 @@ func (l *layer3) Services() (r []ServiceExtended, e error) {
 	return
 }
 
-func (l *layer3) Service(s Service) (r ServiceExtended, e error) {
+func (l *client) Service(s Service) (r ServiceExtended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -458,7 +459,7 @@ func (l *layer3) Service(s Service) (r ServiceExtended, e error) {
 	return service.extend(), nil
 }
 
-func (l *layer3) CreateService(s Service) error {
+func (l *client) CreateService(s Service) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -469,7 +470,7 @@ func (l *layer3) CreateService(s Service) error {
 	return l.createService(s)
 }
 
-func (l *layer3) UpdateService(s Service) error {
+func (l *client) UpdateService(s Service) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -482,7 +483,7 @@ func (l *layer3) UpdateService(s Service) error {
 	return service.update(s)
 }
 
-func (l *layer3) RemoveService(s Service) error {
+func (l *client) RemoveService(s Service) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -495,7 +496,7 @@ func (l *layer3) RemoveService(s Service) error {
 	return service.remove()
 }
 
-func (l *layer3) Destinations(s Service) (r []DestinationExtended, e error) {
+func (l *client) Destinations(s Service) (r []DestinationExtended, e error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -508,7 +509,7 @@ func (l *layer3) Destinations(s Service) (r []DestinationExtended, e error) {
 	return service.destinations()
 }
 
-func (l *layer3) CreateDestination(s Service, d Destination) error {
+func (l *client) CreateDestination(s Service, d Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -521,7 +522,7 @@ func (l *layer3) CreateDestination(s Service, d Destination) error {
 	return service.createDestination(d)
 }
 
-func (l *layer3) UpdateDestination(s Service, d Destination) error {
+func (l *client) UpdateDestination(s Service, d Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -534,7 +535,7 @@ func (l *layer3) UpdateDestination(s Service, d Destination) error {
 	return service.updateDestination(d)
 }
 
-func (l *layer3) RemoveDestination(s Service, d Destination) error {
+func (l *client) RemoveDestination(s Service, d Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -550,7 +551,7 @@ func (l *layer3) RemoveDestination(s Service, d Destination) error {
 // Creates a service if it does not exist, and populate the list of
 // destinations. Any extant destinations which are not specified are
 // removed.
-func (l *layer3) SetService(s Service, ds ...Destination) error {
+func (l *client) SetService(s Service, ds ...Destination) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -572,7 +573,7 @@ func (l *layer3) SetService(s Service, ds ...Destination) error {
 // Given the virtual IP address of a service and the address of a real
 // server this will return the NAT address that can be used to query
 // the VIP address on the backend.
-func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
+func (l *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return l.nat(vip, rip)
 }
 
@@ -581,7 +582,7 @@ func (l *layer3) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 // is returned. This can be used to share flow state with peers, with
 // the flow record stored using the WriteFlow() function. Stale
 // records are skipped.
-func (l *layer3) ReadFlow() []byte {
+func (l *client) ReadFlow() []byte {
 	var entry [ft_size + flow_size]byte
 
 try:
@@ -609,10 +610,10 @@ try:
 }
 
 // Stores a flow retrieved with ReadFlow()
-func (l *layer3) WriteFlow(f []byte) {
+func (l *client) WriteFlow(f []byte) {
 	l.maps.writeFlow(f)
 }
 
-func (l *layer3) VirtualMetrics(a netip.Addr) map[string]uint64 {
+func (l *client) VirtualMetrics(a netip.Addr) map[string]uint64 {
 	return l.maps.virtualMetrics(as16(a)).metrics() // lock not required
 }
