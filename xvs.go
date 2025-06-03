@@ -118,6 +118,27 @@ type Config struct {
 	Routes map[netip.Prefix]uint16
 }
 
+func (s *Service) vrpp(d netip.Addr) bpf_vrpp {
+	return bpf_vrpp{vaddr: as16(s.Address), raddr: as16(d), vport: s.Port, protocol: uint16(s.Protocol)}
+}
+
+func (s *Service) check() error {
+
+	if !s.Address.IsValid() || s.Address.IsUnspecified() || s.Address.IsMulticast() || s.Address.IsLoopback() {
+		return fmt.Errorf("Bad IP address")
+	}
+
+	if s.Port == 0 {
+		return fmt.Errorf("Reserved port")
+	}
+
+	if s.Protocol != TCP && s.Protocol != UDP {
+		return fmt.Errorf("Unsupported protocol")
+	}
+
+	return nil
+}
+
 func (c *Config) copy() (r Config, e error) {
 	r = *c
 	r.VLANs4 = make(map[uint16]netip.Prefix, len(c.VLANs4))

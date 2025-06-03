@@ -20,6 +20,7 @@ package xvs
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"unsafe"
 )
@@ -29,6 +30,19 @@ type uP = unsafe.Pointer
 type addr16 [16]byte
 type addr4 [4]byte
 type mac [6]byte
+
+func mustParseMAC(s string) (m mac) {
+	hw, err := net.ParseMAC(s)
+	if err != nil {
+		panic(err.Error())
+	}
+	if len(hw) != 6 {
+		panic(`mac.mustParse("` + s + `"): length not six bytes`)
+	}
+
+	copy(m[:], hw[:])
+	return m
+}
 
 func as16(a netip.Addr) (r addr16) {
 	if a.Is6() {
@@ -256,7 +270,7 @@ type bpf_global struct {
 	tcp_header         uint64
 	udp_header         uint64
 	icmp_header        uint64
-	fwd_packets        uint64
+	_current           uint64
 	fwd_octets         uint64
 	icmp_too_big       uint64
 	icmp_frag_needed   uint64
@@ -266,6 +280,15 @@ type bpf_global struct {
 func (p bpf_global) String() string {
 	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d syn:%d ack:%d",
 		p.malformed, p.not_ip, p.not_a_vip, p.too_big, p.packets, p.flows, p.syn, p.ack)
+}
+
+func (f bpf_global) stats() (s Stats) {
+	s.Packets = f.packets
+	s.Octets = f.octets
+	s.Flows = f.flows
+	s.Current = f._current
+	s.Errors = f.errors
+	return
 }
 
 func (f bpf_global) metrics() map[string]uint64 {
@@ -298,7 +321,7 @@ func (f bpf_global) metrics() map[string]uint64 {
 	m["tcp_header"] = f.tcp_header
 	m["udp_header"] = f.udp_header
 	m["icmp_header"] = f.icmp_header
-	//m["fwd_packets"] = f.fwd_packets
+	m["current"] = f._current
 	//m["fwd_octets"] = f.fwd_octets
 	m["icmp_too_big"] = f.icmp_too_big
 	m["icmp_frag_needed"] = f.icmp_frag_needed

@@ -35,6 +35,10 @@ type threetuple struct {
 	protocol Protocol
 }
 
+func (t threetuple) bpf() bpf_servicekey {
+	return bpf_servicekey{addr: as16(t.address), port: t.port, proto: uint16(t.protocol)}
+}
+
 type client struct {
 	config   Config
 	mutex    sync.Mutex
@@ -46,16 +50,17 @@ type client struct {
 	icmp     icmp
 	maps     maps
 	latency  uint64
+	test     bool
 }
 
-func (l *client) ping(ip netip.Addr)                { l.icmp.ping(ip) }
-func (l *client) nat(v, r netip.Addr) netip.Addr    { return l.netns.nat(l.natmap.get(v, r), v.Is6()) }
-func (l *client) ext(id uint16, v6 bool) netip.Addr { return l.netinfo.ext(id, v6) }
-func (l *client) era() bool                         { return l.settings.era%2 > 0 }
-func (l *client) find(d Destination) backend        { return l.netinfo.find(d.Address) }
+func (c *client) ping(ip netip.Addr)                { c.icmp.ping(ip) }
+func (c *client) nat(v, r netip.Addr) netip.Addr    { return c.netns.nat(c.natmap.get(v, r), v.Is6()) }
+func (c *client) ext(id uint16, v6 bool) netip.Addr { return c.netinfo.ext(id, v6) }
+func (c *client) era() bool                         { return c.settings.era%2 > 0 }
+func (c *client) find(d Destination) backend        { return c.netinfo.find(d.Address) }
 
-func (l *client) current() (r uint64) {
-	for _, s := range l.services {
+func (c *client) current() (r uint64) {
+	for _, s := range c.services {
 		r += s.current()
 	}
 	return
@@ -124,7 +129,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 	return c, nil
 }
 
-func (l *client) background() error {
+func (c *client) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
 	icmp := time.NewTicker(time.Millisecond * 100)
@@ -144,25 +149,25 @@ func (l *client) background() error {
 		select {
 		case <-ping.C:
 			clear(hosts)
-			l.mutex.Lock()
-			for _, s := range l.services {
+			c.mutex.Lock()
+			for _, s := range c.services {
 				for _, d := range s.local() {
 					hosts[d] = true
 				}
 			}
-			for _, r := range l.netinfo.routers() {
+			for _, r := range c.netinfo.routers() {
 				hosts[r] = true
 			}
-			l.mutex.Unlock()
+			c.mutex.Unlock()
 
 			for ip, _ := range hosts {
 				//fmt.Println("PING", ip)
-				l.ping(ip)
+				c.ping(ip)
 			}
 
 		case <-sessions.C:
 
-			latencies = append(latencies, l.maps.readLatency())
+			latencies = append(latencies, c.maps.readLatency())
 
 			for len(latencies) > 5 {
 				latencies = latencies[1:]
@@ -173,40 +178,40 @@ func (l *client) background() error {
 				for _, l := range latencies {
 					total += l
 				}
-				l.latency = total / uint64(len(latencies))
+				c.latency = total / uint64(len(latencies))
 			}
 
-			l.mutex.Lock()
-			l.settings.era++
-			l.maps.updateSettings(l.settings) // reset the watchdog
-			for _, s := range l.services {
-				s.readSessions()
+			c.mutex.Lock()
+			c.settings.era++
+			c.maps.updateSettings(c.settings) // reset the watchdog
+			for _, s := range c.services {
+				s.readSessions(c.maps, c.era())
 			}
-			l.mutex.Unlock()
+			c.mutex.Unlock()
 
 		case <-reconfig.C:
 			// re-scan network interfaces and match to VLANs
 			// recalc all services as parameters may have changed
-			l.mutex.Lock()
-			l.configure()
-			l.mutex.Unlock()
+			c.mutex.Lock()
+			c.configure()
+			c.mutex.Unlock()
 
 		case <-icmp.C:
-			l.mutex.Lock()
-			l.icmpQueue()
-			l.mutex.Unlock()
+			c.mutex.Lock()
+			c.icmpQueue()
+			c.mutex.Unlock()
 		}
 	}
 }
 
-func (l *client) icmpQueue() {
+func (c *client) icmpQueue() {
 
 	const IPv4 = 0
 	const IPv6 = 1
 
 	for n := 0; n < 100; n++ {
 		var buff [buffer_length]byte
-		if l.maps.icmp_queue.LookupAndDeleteElem(nil, uP(&buff[0])) != 0 {
+		if c.maps.icmp_queue.LookupAndDeleteElem(nil, uP(&buff[0])) != 0 {
 			return
 		}
 
@@ -228,7 +233,7 @@ func (l *client) icmpQueue() {
 		length := meta >> 5
 		family := meta >> 4 & 0x01
 		proto4 := meta >> 3 & 0x01
-		reason := meta & 0x07
+		//reason := meta & 0x07
 
 		protocol := TCP
 
@@ -255,81 +260,96 @@ func (l *client) icmpQueue() {
 		}
 
 		skey := threetuple{address: addr, port: port, protocol: protocol}
-		if s, ok := l.services[skey]; ok {
-			s.repeat(packet, uint8(reason), func(p []byte) {
-				l.maps.xdp.SendRawPacket(int(l.settings.veth), l.settings.vethb, l.settings.vetha, p)
-			})
+		s, ok := c.services[skey]
+
+		if !ok {
+			continue
+		}
+
+		for _, rip := range s.rips() {
+			//nat := s.client.NAT(addr, rip)
+			nat := c.NAT(addr, rip)
+
+			if !nat.IsValid() {
+				continue
+			}
+
+			if nat.Is4() {
+				as4 := nat.As4()
+				copy(packet[16:], as4[:]) // offset 16 is the destination address in IPv4
+			} else if nat.Is6() {
+				as16 := nat.As16()
+				copy(packet[24:], as16[:]) // offset 24 is the destination address in IPv6
+			} else {
+				continue
+			}
+
+			c.maps.xdp.SendRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet)
 		}
 	}
 }
 
-func (l *client) configure() {
+func (c *client) configure() {
 
-	l.netinfo.config(l.config.VLANs4, l.config.VLANs6, l.config.Routes)
+	c.netinfo.config(c.config.VLANs4, c.config.VLANs6, c.config.Routes)
 
 	for i := uint32(1); i < 4095; i++ {
-		vi, v4, v6 := l.netinfo.vlaninfo(uint16(i))
-		l.maps.redirect_map4.UpdateElem(uP(&i), uP(&v4), xdp.BPF_ANY)
-		l.maps.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
-		l.maps.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
+		vi, v4, v6 := c.netinfo.vlaninfo(uint16(i))
+		c.maps.redirect_map4.UpdateElem(uP(&i), uP(&v4), xdp.BPF_ANY)
+		c.maps.redirect_map6.UpdateElem(uP(&i), uP(&v6), xdp.BPF_ANY)
+		c.maps.vlaninfo.UpdateElem(uP(&i), uP(&vi), xdp.BPF_ANY)
 	}
 
-	for _, s := range l.services {
-		s.recalc()
+	for _, s := range c.services {
+		c.calcService(s)
 	}
 }
 
-func (l *client) clean() {
+func (c *client) clean() {
 	mark := time.Now()
 	vips := map[netip.Addr]bool{}
 	nats := map[netip.Addr]bool{}
 	nmap := map[[2]netip.Addr]bool{}
 	vrpp := map[bpf_vrpp]bool{}
 
-	for k, v := range l.services {
+	for k, service := range c.services {
 		vips[k.address] = true
-		for r, _ := range v.dests {
-			nmap[[2]netip.Addr{k.address, r}] = true
-			vv := v.vrpp(r)
-			vrpp[vv] = true
-			vv.protocol |= 0xff00
-			vrpp[vv] = true
+		for a, v := range service.vrpps() {
+			nmap[[2]netip.Addr{k.address, a}] = true
+			vrpp[v] = true
+			v.protocol |= 0xff00
+			vrpp[v] = true
 		}
 	}
 
-	l.natmap.clean(nmap)
+	c.natmap.clean(nmap)
 
-	for k, v := range l.natmap.all() {
-		nat := l.netns.nat(v, k[0].Is6()) // k[0] is the vip
+	for k, v := range c.natmap.all() {
+		nat := c.netns.nat(v, k[0].Is6()) // k[0] is the vip
 		nats[nat] = true
 	}
 
-	l.maps.clean(vips, vrpp, nats)
+	c.maps.clean(vips, vrpp, nats, c.test)
 
 	log.Println("Clean-up took", time.Now().Sub(mark))
 }
 
-func (l *client) Info() (Info, error) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) Info() (Info, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	g := l.maps.globals()
-	latency := l.latency
+	metrics := c.maps.globals(c.current())
+	latency := c.latency
 	if latency == 0 {
 		latency = 1000 // 0 would clearly be nonsense (happens at statup), so set to something realistic
 	}
 
 	return Info{
-		Stats: Stats{
-			Packets: g.packets,
-			Octets:  g.octets,
-			Flows:   g.flows,
-			Current: l.current(),
-		},
+		Stats:   metrics.stats(),
+		Metrics: metrics.metrics(),
 		Latency: latency,
-		Metrics: l.maps.globals().metrics(),
-		IPv4:    l.netns.ipv4(),
-		IPv6:    l.netns.ipv6(),
+		IPv4:    c.netns.ipv4(),
+		IPv6:    c.netns.ipv6(),
 	}, nil
 }
 
@@ -341,170 +361,290 @@ type Info struct {
 	IPv6    netip.Addr
 }
 
-func (l *client) Config() (Config, error) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) Config() (Config, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	return l.config, nil
+	return c.config.copy()
 }
 
-func (l *client) SetConfig(c Config) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) SetConfig(x Config) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	config, err := c.copy()
+	config, err := x.copy()
 
 	if err != nil {
 		return err
 	}
 
-	l.config = config
+	c.config = config
 
-	l.configure()
+	c.configure()
 
 	return nil
 }
 
-func (l *client) Services() (r []ServiceExtended, e error) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	for _, v := range l.services {
-		r = append(r, ServiceExtended{Service: v.service})
-	}
-
-	return
+func (c *client) serviceExtended(s *service) ServiceExtended {
+	metrics := c.maps.serviceMetrics(s.key(), s.current())
+	return ServiceExtended{Service: s.service, Stats: metrics.stats(), Metrics: metrics.metrics()}
 }
 
-func (l *client) Service(s Service) (r ServiceExtended, e error) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) Service(s Service) (r ServiceExtended, e error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return r, fmt.Errorf("Service does not exist")
 	}
 
-	return service.extend(), nil
+	return c.serviceExtended(service), nil
 }
 
-func (l *client) CreateService(s Service) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) Services() (r []ServiceExtended, e error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	if _, exists := l.services[s.key()]; exists {
+	for _, s := range c.services {
+		r = append(r, c.serviceExtended(s))
+	}
+
+	return
+}
+
+func (c *client) createService(s Service, ds ...Destination) error {
+
+	if err := s.check(); err != nil {
+		return err
+	}
+
+	svc := &service{dests: map[netip.Addr]Destination{}, service: s}
+
+	err, add, _ := svc.set(s, ds...)
+
+	if err != nil {
+		return err
+	}
+
+	for _, d := range add {
+		c.ping(d)
+		c.maps.createCounters(s.vrpp(d))
+		c.natmap.add(s.Address, d)
+	}
+
+	c.services[s.key()] = svc
+
+	c.calcService(svc)
+
+	return nil
+}
+
+func (c *client) calcService(s *service) {
+
+	natfn := func(v, r netip.Addr) netip.Addr {
+		return c.netns.nat(c.natmap.get(v, r), v.Is6())
+	}
+
+	fwd, nat := s.recalc(&(c.netinfo), natfn)
+
+	c.maps.setService(s.key(), fwd)
+
+	for addr, vip_rip := range nat {
+		c.maps.nat(addr, vip_rip)
+	}
+}
+
+func (c *client) CreateService(s Service) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if _, exists := c.services[s.key()]; exists {
 		return fmt.Errorf("Service exists")
 	}
 
-	return l.createService(s)
+	return c.createService(s)
 }
 
-func (l *client) UpdateService(s Service) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) UpdateService(s Service) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	return service.update(s)
+	if err := service.update(s); err != nil {
+		return err
+	}
+
+	c.calcService(service)
+
+	return nil
 }
 
-func (l *client) RemoveService(s Service) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) RemoveService(s Service) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	return service.remove()
+	//service.remove(c.maps)
+	delete(c.services, s.key())
+
+	c.maps.removeService(service.key())
+	for _, d := range service.rips() {
+		c.maps.removeCounters(service.vrpp(d))
+	}
+
+	c.clean()
+	return nil
 }
 
-func (l *client) Destinations(s Service) (r []DestinationExtended, e error) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) Destinations(s Service) (r []DestinationExtended, e error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return nil, fmt.Errorf("Service does not exist")
 	}
 
-	return service.destinations()
+	for _, d := range service.destinations() {
+		a := d.Destination.Address
+		d.Metrics = c.maps.counters(service.vrpp(a)).metrics()
+		d.Stats = c.maps.counters(s.vrpp(a)).stats(service.sessions[a])
+		r = append(r, d)
+	}
+
+	return
+	//return service.destinations()
 }
 
-func (l *client) CreateDestination(s Service, d Destination) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) CreateDestination(s Service, d Destination) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	return service.createDestination(d)
+	err := service.createDestination(d)
+
+	if err != nil {
+		return err
+	}
+
+	c.ping(d.Address)
+	c.maps.createCounters(service.vrpp(d.Address))
+	c.natmap.add(service.service.Address, d.Address)
+	c.natmap.index()
+
+	c.calcService(service)
+
+	return nil
 }
 
-func (l *client) UpdateDestination(s Service, d Destination) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) UpdateDestination(s Service, d Destination) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	return service.updateDestination(d)
+	if err := service.updateDestination(d); err != nil {
+		return err
+	}
+
+	c.calcService(service)
+
+	return nil
 }
 
-func (l *client) RemoveDestination(s Service, d Destination) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) RemoveDestination(s Service, d Destination) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	return service.removeDestination(d)
+	if err := service.removeDestination(d); err != nil {
+		return err
+	}
+
+	c.maps.removeCounters(s.vrpp(d.Address))
+
+	//service.recalc()
+	c.calcService(service)
+	c.clean()
+
+	return nil
 }
 
 // Creates a service if it does not exist, and populate the list of
 // destinations. Any extant destinations which are not specified are
 // removed.
-func (l *client) SetService(s Service, ds ...Destination) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+func (c *client) SetService(s Service, ds ...Destination) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	service, exists := l.services[s.key()]
+	service, exists := c.services[s.key()]
 
 	if !exists {
-		return l.createService(s, ds...)
+		return c.createService(s, ds...)
 	}
 
-	del, err := service.set(s, ds...)
+	err, add, del := service.set(s, ds...)
 
-	if del {
-		l.clean()
+	if err != nil {
+		return err
 	}
 
-	return err
+	for _, d := range add {
+		c.ping(d)
+		c.maps.createCounters(service.vrpp(d))
+		c.natmap.add(service.service.Address, d)
+	}
+
+	if len(add) != 0 {
+		c.natmap.index()
+	}
+
+	for _, d := range del {
+		c.maps.removeCounters(s.vrpp(d))
+	}
+
+	if len(del) != 0 {
+		c.clean()
+	}
+
+	//service.recalc()
+	c.calcService(service)
+
+	return nil
 }
 
 // Given the virtual IP address of a service and the address of a real
 // server this will return the NAT address that can be used to query
 // the VIP address on the backend.
-func (l *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
-	return l.nat(vip, rip)
+func (c *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
+	return c.nat(vip, rip)
 }
 
 // Retrieves an opaque flow record from a ueue written to by the
@@ -512,11 +652,11 @@ func (l *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 // is returned. This can be used to share flow state with peers, with
 // the flow record stored using the WriteFlow() function. Stale
 // records are skipped.
-func (l *client) ReadFlow() []byte {
+func (c *client) ReadFlow() []byte {
 	var entry [ft_size + flow_size]byte
 
 try:
-	if l.maps.flow_queue.LookupAndDeleteElem(nil, uP(&entry)) != 0 {
+	if c.maps.flow_queue.LookupAndDeleteElem(nil, uP(&entry)) != 0 {
 		return nil
 	}
 
@@ -540,12 +680,24 @@ try:
 }
 
 // Stores a flow retrieved with ReadFlow()
-func (l *client) WriteFlow(f []byte) {
-	l.maps.writeFlow(f)
+func (c *client) WriteFlow(f []byte) {
+	c.maps.writeFlow(f)
 }
 
 func (c *client) VIP(a netip.Addr) VIP {
-	return VIP{Address: a, Metrics: c.maps.virtualMetrics(as16(a)).metrics()} // lock not required
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.vip(a)
+}
+
+func (c *client) vip(a netip.Addr) VIP {
+	var t uint64
+	for k, s := range c.services {
+		if k.address == a {
+			t += s.current()
+		}
+	}
+	return VIP{Address: a, Metrics: c.maps.virtualMetrics(as16(a), t).metrics()}
 }
 
 func (c *client) VIPs() (r []VIP) {
@@ -559,7 +711,8 @@ func (c *client) VIPs() (r []VIP) {
 	}
 
 	for v, _ := range vips {
-		r = append(r, VIP{Address: v, Metrics: c.maps.virtualMetrics(as16(v)).metrics()})
+		//r = append(r, VIP{Address: v, Metrics: c.maps.virtualMetrics(as16(v)).metrics()})
+		r = append(r, c.vip(v))
 	}
 
 	return

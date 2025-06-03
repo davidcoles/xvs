@@ -95,7 +95,7 @@ func (m *maps) counters(vrpp bpf_vrpp) (c bpf_counter) {
 	return c
 }
 
-func (m *maps) globals() (c bpf_global) {
+func (m *maps) globals(concurrent uint64) (c bpf_global) {
 	var ZERO uint32 = 0
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
@@ -109,10 +109,12 @@ func (m *maps) globals() (c bpf_global) {
 
 	c = *((*bpf_global)(uP(&b)))
 
+	c._current = concurrent
+
 	return c
 }
 
-func (m *maps) virtualMetrics(a16 addr16) (c bpf_global) {
+func (m *maps) virtualMetrics(a16 addr16, concurrent uint64) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
 	m.vip_metrics.LookupElem(uP(&a16), uP(&(all[0])))
@@ -125,10 +127,12 @@ func (m *maps) virtualMetrics(a16 addr16) (c bpf_global) {
 
 	c = *((*bpf_global)(uP(&b)))
 
+	c._current = concurrent
+
 	return
 }
 
-func (m *maps) serviceMetrics(key bpf_servicekey) (c bpf_global) {
+func (m *maps) serviceMetrics(key bpf_servicekey, concurrent uint64) (c bpf_global) {
 	all := make([]bpf_global_, xdp.BpfNumPossibleCpus()+1)
 
 	m.service_metrics.LookupElem(uP(&key), uP(&(all[0])))
@@ -140,6 +144,8 @@ func (m *maps) serviceMetrics(key bpf_servicekey) (c bpf_global) {
 	}
 
 	c = *((*bpf_global)(uP(&b)))
+
+	c._current = concurrent
 
 	return
 }
@@ -195,7 +201,7 @@ func (m *maps) setService(key bpf_servicekey, fwd bpf_service) {
 	m.service_metrics.UpdateElem(uP(&key), uP(&all[0]), xdp.BPF_NOEXIST)
 }
 
-func (m *maps) updateSettings(settings bpf_settings) {
+func (m *maps) updateSettings(settings bpf_settings) int {
 	var ZERO uint32 = 0
 
 	all := make([]bpf_settings, xdp.BpfNumPossibleCpus())
@@ -203,7 +209,7 @@ func (m *maps) updateSettings(settings bpf_settings) {
 		all[i] = settings
 	}
 
-	m.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
+	return m.settings.UpdateElem(uP(&ZERO), uP(&all[0]), xdp.BPF_ANY)
 }
 
 func (m *maps) nat(key addr16, vip_rip bpf_vip_rip) {
@@ -364,7 +370,7 @@ func (m *maps) initialiseFlows(max uint32) error {
 	return nil
 }
 
-func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[netip.Addr]bool) {
+func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[netip.Addr]bool, test bool) {
 
 	clean_addr := func(m xdp.Map, a map[netip.Addr]bool) {
 		b := map[addr16]bool{}
@@ -382,14 +388,28 @@ func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[
 		}
 	}
 
-	// TODO - reveal any clean-up bugs
+	clean_svc := func(m xdp.Map, all map[bpf_servicekey]bool) {
+		var key, next, nul bpf_servicekey
+		for r := 0; r == 0; key = next {
+			r = m.GetNextKey(uP(&key), uP(&next))
+			if _, exists := all[key]; !exists && key != nul {
+				m.DeleteElem(uP(&key))
+				if test {
+					log.Fatal("clean_svc", key)
+				}
+			}
+		}
+	}
+
 	clean_vrpp := func(m xdp.Map, a map[bpf_vrpp]bool) {
 		var key, next, nul bpf_vrpp
 		for r := 0; r == 0; key = next {
 			r = m.GetNextKey(uP(&key), uP(&next))
 			if _, exists := a[key]; !exists && key != nul {
 				m.DeleteElem(uP(&key))
-				log.Fatal("clean_map2", key)
+				if test {
+					log.Fatal("clean_map2 ", key)
+				}
 			}
 		}
 	}
@@ -398,5 +418,5 @@ func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[
 	clean_addr(m.nat_to_vip_rip, nats)
 	clean_vrpp(m.stats, vrpp)
 	clean_vrpp(m.sessions, vrpp)
-
+	clean_svc(m.services, nil)
 }

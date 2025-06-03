@@ -312,8 +312,8 @@ struct metrics {
     __u64 tcp_header;
     __u64 udp_header;
     __u64 icmp_header;
-    __u64 fwd_packets; // can go - forwarded packets only in backeds
-    __u64 fwd_octets;  // can go - forwarded packets only in backeds
+    __u64 _current; // placeholder for concurrent connections count (used by userspace)
+    __u64 _fwd_octets;  // can go - forwarded packets only in backeds
     __u64 icmp_too_big;     // IPv6
     __u64 icmp_frag_needed; // IPv4
     __u64 userspace;

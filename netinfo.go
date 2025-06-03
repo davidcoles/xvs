@@ -328,6 +328,7 @@ func (n *netinfo) find(ip netip.Addr) (c backend) {
 	}
 
 	for prefix, id := range n.route {
+
 		if prefix.Contains(ip) && prefix.Bits() > bits {
 			//fmt.Println("MATCH?") // need to check if the VLAN has a gateway - or should we just obey?
 			if v, ok := vlan[id]; ok && v.gw_ip_addr.IsValid() {
