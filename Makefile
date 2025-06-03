@@ -25,7 +25,8 @@ cloc:
 
 tests:
 	(cd bpf/ && go test -v)
-	(cd maglev/ && go test -v)
+	(cd maglev/ && go test -v -cover)
+	CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go test -v -cover
 
 # For Raspberry Pi (I'm using "Raspberry Pi OS Lite (32 bit): Debian Bookworm"),
 # to rebuild the eBPF object with lower memory use:	

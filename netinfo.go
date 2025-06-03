@@ -323,7 +323,7 @@ func (n *netinfo) find(ip netip.Addr) (c backend) {
 
 	for id, v := range vlan {
 		if v.prefix.Contains(ip) {
-			return backend{_l: true, vlanid: id, _i: v.if_index, hw_src: v.hw_addr, hw_dst: n.mac[ip], ip_src: v.ip_addr, ip_dst: ip}
+			return backend{local: true, vlanid: id, _i: v.if_index, hw_src: v.hw_addr, hw_dst: n.mac[ip], ip_src: v.ip_addr, ip_dst: ip}
 		}
 	}
 
@@ -358,13 +358,12 @@ type backend struct {
 	hw_dst mac
 	ip_src netip.Addr
 	ip_dst netip.Addr
-
-	_l bool // local
-	_i int  // interface
+	local  bool
+	_i     int // interface
 }
 
 func (b backend) remote() bool {
-	return !b._l
+	return !b.local
 }
 
 func (b backend) bpf_tunnel(method TunnelType, flags TunnelFlags, dport uint16) (t bpf_tunnel) {
@@ -416,5 +415,5 @@ func (b backend) ok() bool {
 }
 
 func (b backend) String() string {
-	return fmt.Sprintf("[rem:%v %d(%d) %s->%s %s->%s]", b.remote(), b.vlanid, b._i, b.hw_src, b.hw_dst, b.ip_src, b.ip_dst)
+	return fmt.Sprintf("{%s->%s %s->%s [%d:%v:%d]}", b.hw_src, b.hw_dst, b.ip_src, b.ip_dst, b.vlanid, b.local, b._i)
 }

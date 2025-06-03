@@ -496,7 +496,6 @@ func (c *client) RemoveService(s Service) error {
 		return fmt.Errorf("Service does not exist")
 	}
 
-	//service.remove(c.maps)
 	delete(c.services, s.key())
 
 	c.maps.removeService(service.key())
@@ -518,15 +517,7 @@ func (c *client) Destinations(s Service) (r []DestinationExtended, e error) {
 		return nil, fmt.Errorf("Service does not exist")
 	}
 
-	for _, d := range service.destinations() {
-		a := d.Destination.Address
-		d.Metrics = c.maps.counters(service.vrpp(a)).metrics()
-		d.Stats = c.maps.counters(s.vrpp(a)).stats(service.sessions[a])
-		r = append(r, d)
-	}
-
-	return
-	//return service.destinations()
+	return service.destinations(c.maps), nil
 }
 
 func (c *client) CreateDestination(s Service, d Destination) error {
@@ -647,7 +638,7 @@ func (c *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return c.nat(vip, rip)
 }
 
-// Retrieves an opaque flow record from a ueue written to by the
+// Retrieves an opaque flow record from a queue written to by the
 // kernel. If no flow records are available then a zero length slice
 // is returned. This can be used to share flow state with peers, with
 // the flow record stored using the WriteFlow() function. Stale
@@ -684,12 +675,6 @@ func (c *client) WriteFlow(f []byte) {
 	c.maps.writeFlow(f)
 }
 
-func (c *client) VIP(a netip.Addr) VIP {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.vip(a)
-}
-
 func (c *client) vip(a netip.Addr) VIP {
 	var t uint64
 	for k, s := range c.services {
@@ -698,6 +683,12 @@ func (c *client) vip(a netip.Addr) VIP {
 		}
 	}
 	return VIP{Address: a, Metrics: c.maps.virtualMetrics(as16(a), t).metrics()}
+}
+
+func (c *client) VIP(a netip.Addr) VIP {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.vip(a)
 }
 
 func (c *client) VIPs() (r []VIP) {
@@ -711,7 +702,6 @@ func (c *client) VIPs() (r []VIP) {
 	}
 
 	for v, _ := range vips {
-		//r = append(r, VIP{Address: v, Metrics: c.maps.virtualMetrics(as16(v)).metrics()})
 		r = append(r, c.vip(v))
 	}
 

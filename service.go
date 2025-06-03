@@ -174,7 +174,7 @@ func (s *service) recalc(netinfo *netinfo, nat func(netip.Addr, netip.Addr) neti
 
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
-		if !t.remote() {
+		if t.local() {
 			macs[k] = t.h_dest
 		}
 
@@ -256,10 +256,10 @@ func (s *service) rips() (r []netip.Addr) {
 	return
 }
 
-func (s *service) destinations() (r []DestinationExtended) {
+func (s *service) destinations(m maps) (r []DestinationExtended) {
 	for a, d := range s.dests {
-		// remember to fill in stats/metrics
-		r = append(r, DestinationExtended{Destination: d, MAC: s.mac[a], Stats: Stats{Current: s.sessions[a]}})
+		c := m.counters(s.vrpp(a), s.sessions[a])
+		r = append(r, DestinationExtended{Destination: d, MAC: s.mac[a], Stats: c.stats(), Metrics: c.metrics()})
 	}
 	return
 }

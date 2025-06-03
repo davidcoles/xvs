@@ -270,6 +270,7 @@ struct counter {
     __u64 tunnel_unsupported;
     __u64 too_big;
     __u64 adjust_failed;
+    __u64 _current;
     
 };
 typedef struct counter counter_t;

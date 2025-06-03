@@ -20,7 +20,6 @@ package xvs
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"unsafe"
 )
@@ -30,19 +29,6 @@ type uP = unsafe.Pointer
 type addr16 [16]byte
 type addr4 [4]byte
 type mac [6]byte
-
-func mustParseMAC(s string) (m mac) {
-	hw, err := net.ParseMAC(s)
-	if err != nil {
-		panic(err.Error())
-	}
-	if len(hw) != 6 {
-		panic(`mac.mustParse("` + s + `"): length not six bytes`)
-	}
-
-	copy(m[:], hw[:])
-	return m
-}
 
 func as16(a netip.Addr) (r addr16) {
 	if a.Is6() {
@@ -123,9 +109,10 @@ type bpf_counter struct {
 	ack                uint64
 	fin                uint64
 	rst                uint64
-	tunnel_unsupported uint64 // fixme
-	too_big            uint64 // fixme
-	adjust_failed      uint64 // fixme
+	tunnel_unsupported uint64
+	too_big            uint64
+	adjust_failed      uint64
+	_current           uint64
 }
 
 func (c *bpf_counter) add(x bpf_counter) {
@@ -140,12 +127,12 @@ func (c *bpf_counter) add(x bpf_counter) {
 	c.rst += x.rst
 }
 
-func (c bpf_counter) stats(sessions uint64) (s Stats) {
+func (c bpf_counter) stats() (s Stats) {
 	s.Packets = c.packets
 	s.Octets = c.octets
 	s.Flows = c.flows
 	s.Errors = c.errors
-	s.Current = sessions
+	s.Current = c._current
 
 	//s.SYN = c.syn
 	//s.ACK = c.ack
@@ -167,6 +154,7 @@ func (c bpf_counter) metrics() map[string]uint64 {
 	m["tunnel_unsupported"] = c.tunnel_unsupported
 	m["too_big"] = c.too_big
 	m["adjust_failed"] = c.adjust_failed
+	m["current"] = c._current
 	trim0(m)
 	return m
 }
@@ -205,6 +193,10 @@ func (t bpf_tunnel) String() string {
 
 func (t *bpf_tunnel) remote() bool {
 	return t.hints&notLocal != 0
+}
+
+func (t *bpf_tunnel) local() bool {
+	return t.hints&notLocal == 0
 }
 
 type bpf_vlaninfo struct {

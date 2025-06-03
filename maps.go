@@ -83,7 +83,7 @@ type maps struct {
 	stats           xdp.Map
 }
 
-func (m *maps) counters(vrpp bpf_vrpp) (c bpf_counter) {
+func (m *maps) counters(vrpp bpf_vrpp, t uint64) (c bpf_counter) {
 	all := make([]bpf_counter, xdp.BpfNumPossibleCpus())
 
 	m.stats.LookupElem(uP(&vrpp), uP(&(all[0])))
@@ -91,6 +91,8 @@ func (m *maps) counters(vrpp bpf_vrpp) (c bpf_counter) {
 	for _, v := range all {
 		c.add(v)
 	}
+
+	c._current = t
 
 	return c
 }
