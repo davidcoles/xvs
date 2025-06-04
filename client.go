@@ -99,7 +99,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 	c.settings = bpf_settings{veth: c.netns.veth(), vetha: c.netns.vetha(), vethb: c.netns.vethb(), active: 1}
 
 	if options.Bond {
-		c.settings.multi = 0 // if untagged packet recieved then TX it rather redirect
+		c.settings.multi = 0 // if untagged packet recieved then TX it rather than redirect
 	} else {
 		c.settings.multi = uint8(len(interfaces))
 	}
@@ -331,7 +331,7 @@ func (c *client) clean() {
 
 	c.maps.clean(vips, vrpp, nats, c.test)
 
-	log.Println("Clean-up took", time.Now().Sub(mark))
+	c.debug("Clean-up took", time.Now().Sub(mark))
 }
 
 func (c *client) Info() (Info, error) {
@@ -441,13 +441,23 @@ func (c *client) createService(s Service, ds ...Destination) error {
 	return nil
 }
 
+func (c *client) debug(info ...any) {
+	if c.test {
+		log.Println(info...)
+	}
+}
+
 func (c *client) calcService(s *service) {
+
+	debug := func(info ...any) {
+		c.debug(info...)
+	}
 
 	natfn := func(v, r netip.Addr) netip.Addr {
 		return c.netns.nat(c.natmap.get(v, r), v.Is6())
 	}
 
-	fwd, nat := s.recalc(&(c.netinfo), natfn)
+	fwd, nat := s.recalc(debug, &(c.netinfo), natfn)
 
 	c.maps.setService(s.key(), fwd)
 

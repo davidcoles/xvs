@@ -27,7 +27,7 @@ import (
 	"github.com/davidcoles/xvs/maglev"
 )
 
-type dest struct {
+type xdest struct {
 	disable bool
 	tunnel  bpf_tunnel
 }
@@ -164,7 +164,7 @@ func (s *service) local() (r []netip.Addr) {
 	return
 }
 
-func (s *service) recalc(netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
+func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
 	macs := make(map[netip.Addr]mac, len(s.dests))
@@ -183,10 +183,10 @@ func (s *service) recalc(netinfo *netinfo, nat func(netip.Addr, netip.Addr) neti
 
 	s.mac = macs
 
-	return s.forwarding(reals), s.nat(netinfo, nat, reals)
+	return s.forwarding(debug, reals), s.nat(debug, netinfo, nat, reals)
 }
 
-func (s *service) nat(netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip.Addr, reals map[netip.Addr]dest) map[addr16]bpf_vip_rip {
+func (s *service) nat(debug func(...any), netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip.Addr, reals map[netip.Addr]dest) map[addr16]bpf_vip_rip {
 	vip := s.service.Address
 	ret := map[addr16]bpf_vip_rip{}
 
@@ -199,7 +199,7 @@ func (s *service) nat(netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip
 			tun.vlanid = 0 // request will be dropped
 		}
 
-		s.debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
+		debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
 
 		ret[as16(nat)] = bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
 	}
@@ -207,7 +207,7 @@ func (s *service) nat(netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip
 	return ret
 }
 
-func (s *service) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
+func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
@@ -244,7 +244,7 @@ func (s *service) forwarding(reals map[netip.Addr]dest) (fwd bpf_service) {
 		duration = time.Now().Sub(now)
 	}
 
-	s.debug("MAG", s.service, fwd.hash[0:32], duration)
+	debug("MAG", s.service, fwd.hash[0:32], duration)
 
 	return
 }
