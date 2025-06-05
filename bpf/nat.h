@@ -658,3 +658,9 @@ int xdp_vetha_func(struct xdp_md *ctx)
 
     return XDP_PASS;
 }
+
+SEC("xdp")
+int xdp_pass(struct xdp_md *ctx)
+{
+    return XDP_PASS;
+}

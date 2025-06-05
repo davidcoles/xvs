@@ -39,6 +39,8 @@ type nic struct {
 type netns struct {
 	ns   string
 	a, b nic
+
+	c, d nic
 }
 
 func (n *netns) nat4(i uint16) (nat [16]byte) {
@@ -76,13 +78,13 @@ func (n *netns) vethb() [6]byte   { return n.b.mac }
 func (n *netns) ipv4() netip.Addr { return n.a.ip4 }
 func (n *netns) ipv6() netip.Addr { return n.a.ip6 }
 
-func (n *netns) init(x *xdp.XDP, inside string, outside string) error {
+func (n *netns) init(x *xdp.XDP) error {
 
 	var a, b nic
 
 	namespace := "xvs"
 
-	a.nic = namespace
+	a.nic = namespace + "0"
 	b.nic = namespace + "ns"
 	a.ip4 = netip.MustParseAddr("255.255.255.253")
 	a.ip6 = netip.MustParseAddr("fefe::ffff:fffd")
@@ -96,11 +98,11 @@ func (n *netns) init(x *xdp.XDP, inside string, outside string) error {
 		return fmt.Errorf("Error creating netns: %s", err.Error())
 	}
 
-	if err := x.LoadBpfSection(inside, false, uint32(a.idx)); err != nil {
+	if err := x.LoadBpfSection("xdp_vetha_func", false, uint32(a.idx)); err != nil {
 		return err
 	}
 
-	if err := x.LoadBpfSection(outside, false, uint32(b.idx)); err != nil {
+	if err := x.LoadBpfSection("xdp_vethb_func", false, uint32(b.idx)); err != nil {
 		return err
 	}
 
@@ -112,8 +114,33 @@ func (n *netns) init(x *xdp.XDP, inside string, outside string) error {
 	n.a = a
 	n.b = b
 
+	n.c.nic = namespace + "1"
+	n.d.nic = namespace + "2"
+
+	if err := n.create_pair(&n.c, &n.d); err != nil {
+		return fmt.Errorf("Error creating netns2: %s", err.Error())
+	}
+
+	if err := x.LoadBpfSection("xdp_pass", false, uint32(n.c.idx)); err != nil {
+		return err
+	}
+
+	if err := x.LoadBpfSection("xdp_vetha_func", true, uint32(n.d.idx)); err != nil {
+		return err
+	}
+
+	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.c.nic+" up").Output()
+	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.d.nic+" up").Output()
+	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf.all.rp_filter=0").Output()
+	//exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.c.nic+".rp_filter=0").Output()
+	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.d.nic+".rp_filter=0").Output()
+
 	return nil
 }
+
+func (n *netns) nic() uint32  { return uint32(n.c.idx) }
+func (n *netns) src() [6]byte { return n.c.mac }
+func (n *netns) dst() [6]byte { return n.d.mac }
 
 // func (n *netns) create_pair(if1, if2 string) (a nic, b nic, err error) {
 func (n *netns) create_pair(a, b *nic) (err error) {

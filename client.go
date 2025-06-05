@@ -72,7 +72,7 @@ func newClient(interfaces ...string) (*client, error) {
 
 func newClientWithOptions(options Options, interfaces ...string) (_ *client, err error) {
 
-	c := &client{services: map[threetuple]*service{}, natmap: natmap{}}
+	c := &client{services: map[threetuple]*service{}, natmap: natmap{}, test: true}
 
 	var nics []uint32
 
@@ -92,11 +92,12 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	if err = c.netns.init(c.maps.xdp, "xdp_vetha_func", "xdp_vethb_func"); err != nil {
+	if err = c.netns.init(c.maps.xdp); err != nil {
 		return nil, err
 	}
 
-	c.settings = bpf_settings{veth: c.netns.veth(), vetha: c.netns.vetha(), vethb: c.netns.vethb(), active: 1}
+	//c.settings = bpf_settings{veth: c.netns.veth(), vetha: c.netns.vetha(), vethb: c.netns.vethb(), active: 1}
+	c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
 
 	if options.Bond {
 		c.settings.multi = 0 // if untagged packet recieved then TX it rather than redirect
@@ -133,7 +134,7 @@ func (c *client) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
 	icmp := time.NewTicker(time.Millisecond * 100)
-	ping := time.NewTicker(time.Minute)
+	ping := time.NewTicker(time.Second * 30)
 
 	defer func() {
 		reconfig.Stop()

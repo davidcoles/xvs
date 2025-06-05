@@ -27,7 +27,7 @@ import (
 	"github.com/davidcoles/xvs/maglev"
 )
 
-type xdest struct {
+type dest struct {
 	disable bool
 	tunnel  bpf_tunnel
 }
@@ -54,7 +54,7 @@ func (s *service) concurrent() (c uint64) {
 }
 
 func (s *service) debug(info ...any) {
-	//fmt.Println(info...)
+	fmt.Println(info...)
 }
 
 func (s *Service) key() threetuple {
@@ -167,12 +167,21 @@ func (s *service) local() (r []netip.Addr) {
 func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
+	tunn := make(map[netip.Addr]bpf_tunnel, len(s.dests))
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
 		t := netinfo.find(k).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
 
+		d.Disable = false
+
+		fmt.Println(d.Disable, t.vlanid)
+
 		reals[k] = dest{tunnel: t, disable: d.Disable}
+
+		if !d.Disable && t.vlanid != 0 {
+			tunn[k] = t
+		}
 
 		if t.local() {
 			macs[k] = t.h_dest
@@ -208,11 +217,12 @@ func (s *service) nat(debug func(...any), netinfo *netinfo, natfn func(netip.Add
 }
 
 func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd bpf_service) {
+	//func (s *service) forwarding(debug func(...any), reals map[netip.Addr]bpf_tunnel) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
 	for k, v := range reals {
-		if !v.disable && v.tunnel.vlanid != 0 {
+		if v.tunnel.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
 	}
@@ -231,6 +241,7 @@ func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd
 		for i, a := range addrs {
 			dests[i] = reals[a].tunnel
 			nodes[i] = []byte(a.String())
+			//nodes[i] = []byte(reals[a].daddr.String())
 		}
 
 		for i, v := range dests {
