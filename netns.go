@@ -37,10 +37,11 @@ type nic struct {
 }
 
 type netns struct {
-	ns   string
-	a, b nic
-
-	c, d nic
+	ns string
+	i0 nic
+	i1 nic
+	i2 nic
+	i3 nic
 }
 
 func (n *netns) nat4(i uint16) (nat [16]byte) {
@@ -50,7 +51,7 @@ func (n *netns) nat4(i uint16) (nat [16]byte) {
 	return
 }
 func (n *netns) nat6(i uint16) (nat [16]byte) {
-	nat = n.a.ip6.As16()
+	nat = n.i2.ip6.As16()
 	nat[13] = 0
 	nat[14] = byte(i >> 8)
 	nat[15] = byte(i & 0xff)
@@ -72,75 +73,66 @@ func (n *netns) nat(idx uint16, ipv6 bool) (r netip.Addr) {
 	return netip.AddrFrom4(ip4)
 }
 
-func (n *netns) veth() uint32     { return uint32(n.a.idx) }
-func (n *netns) vetha() [6]byte   { return n.a.mac }
-func (n *netns) vethb() [6]byte   { return n.b.mac }
-func (n *netns) ipv4() netip.Addr { return n.a.ip4 }
-func (n *netns) ipv6() netip.Addr { return n.a.ip6 }
+// func (n *netns) veth() uint32     { return uint32(n.a.idx) }
+// func (n *netns) vetha() [6]byte   { return n.a.mac }
+// func (n *netns) vethb() [6]byte   { return n.b.mac }
+func (n *netns) ipv4() netip.Addr { return n.i2.ip4 }
+func (n *netns) ipv6() netip.Addr { return n.i2.ip6 }
 
 func (n *netns) init(x *xdp.XDP) error {
 
-	var a, b nic
-
 	namespace := "xvs"
 
-	a.nic = namespace + "0"
-	b.nic = namespace + "ns"
-	a.ip4 = netip.MustParseAddr("255.255.255.253")
-	a.ip6 = netip.MustParseAddr("fefe::ffff:fffd")
-
-	a.ip4 = a.ip4
-	a.ip6 = a.ip6
-	b.ip4 = a.ip4.Next()
-	b.ip6 = a.ip6.Next()
-
-	if err := n.create_pair(&a, &b); err != nil {
-		return fmt.Errorf("Error creating netns: %s", err.Error())
-	}
-
-	if err := x.LoadBpfSection("xdp_vetha_func", false, uint32(a.idx)); err != nil {
-		return err
-	}
-
-	if err := x.LoadBpfSection("xdp_vethb_func", false, uint32(b.idx)); err != nil {
-		return err
-	}
-
-	if _, err := n.config_pair(namespace, a, b); err != nil {
-		return fmt.Errorf("Error seting up netns: %s", err.Error())
-	}
-
 	n.ns = namespace
-	n.a = a
-	n.b = b
+	n.i0.nic = namespace + "0"
+	n.i1.nic = namespace + "1"
+	n.i2.nic = namespace + "2"
+	n.i3.nic = namespace + "3"
 
-	n.c.nic = namespace + "1"
-	n.d.nic = namespace + "2"
+	n.i2.ip4 = netip.MustParseAddr("255.255.255.253")
+	n.i2.ip6 = netip.MustParseAddr("fefe::ffff:fffd")
+	n.i3.ip4 = n.i2.ip4.Next()
+	n.i3.ip6 = n.i2.ip6.Next()
 
-	if err := n.create_pair(&n.c, &n.d); err != nil {
+	if err := n.create_pair(&n.i0, &n.i1); err != nil {
 		return fmt.Errorf("Error creating netns2: %s", err.Error())
 	}
 
-	if err := x.LoadBpfSection("xdp_pass", false, uint32(n.c.idx)); err != nil {
+	if err := x.LoadBpfSection("xdp_pass", false, uint32(n.i0.idx)); err != nil {
 		return err
 	}
 
-	if err := x.LoadBpfSection("xdp_vetha_func", true, uint32(n.d.idx)); err != nil {
+	if err := x.LoadBpfSection("xdp_reply_func", true, uint32(n.i1.idx)); err != nil {
 		return err
 	}
 
-	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.c.nic+" up").Output()
-	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.d.nic+" up").Output()
+	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.i0.nic+" up").Output()
+	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.i1.nic+" up").Output()
 	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf.all.rp_filter=0").Output()
-	//exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.c.nic+".rp_filter=0").Output()
-	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.d.nic+".rp_filter=0").Output()
+	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.i1.nic+".rp_filter=0").Output()
+
+	if err := n.create_pair(&n.i2, &n.i3); err != nil {
+		return fmt.Errorf("Error creating netns: %s", err.Error())
+	}
+
+	if err := x.LoadBpfSection("xdp_request_func", false, uint32(n.i2.idx)); err != nil {
+		return err
+	}
+
+	if err := x.LoadBpfSection("xdp_mirror_func", false, uint32(n.i3.idx)); err != nil {
+		return err
+	}
+
+	if _, err := n.config_pair(namespace, n.i2, n.i3); err != nil {
+		return fmt.Errorf("Error seting up netns: %s", err.Error())
+	}
 
 	return nil
 }
 
-func (n *netns) nic() uint32  { return uint32(n.c.idx) }
-func (n *netns) src() [6]byte { return n.c.mac }
-func (n *netns) dst() [6]byte { return n.d.mac }
+func (n *netns) nic() uint32  { return uint32(n.i0.idx) }
+func (n *netns) src() [6]byte { return n.i0.mac }
+func (n *netns) dst() [6]byte { return n.i1.mac }
 
 // func (n *netns) create_pair(if1, if2 string) (a nic, b nic, err error) {
 func (n *netns) create_pair(a, b *nic) (err error) {

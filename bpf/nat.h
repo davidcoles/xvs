@@ -563,22 +563,8 @@ int xdp_reply_v4(struct xdp_md *ctx)
 
 
 SEC("xdp")
-int xdp_vethb_func(struct xdp_md *ctx)
+int xdp_mirror_func(struct xdp_md *ctx)
 {
-    __u64 start = bpf_ktime_get_ns();
-
-    struct settings *s = bpf_map_lookup_elem(&settings, &ZERO);
-
-    if (!s || !s->active)
-	return XDP_PASS;
-
-    // settings is a per-CPU map, so no concurrency issues
-    if (s->watchdog == 0) {
-	s->watchdog = start;
-    } else if (s->watchdog + (TIMEOUT * SECOND_NS) < start) {
-	return XDP_PASS;
-    }
-
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
 
@@ -596,7 +582,7 @@ int xdp_vethb_func(struct xdp_md *ctx)
 	struct icmphdr *icmp4 = (void *)(ip + 1);
 	
 	switch(ip->protocol) {
-	case IPPROTO_ICMP: // fallthrough
+	case IPPROTO_ICMP:
 	    if (icmp4 + 1 > data_end)
 	    	return XDP_DROP;
 	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED))
@@ -618,7 +604,6 @@ int xdp_vethb_func(struct xdp_md *ctx)
 	case IPPROTO_ICMPV6:
 	    if (icmp6 + 1 > data_end)
 	    	return XDP_DROP;
-	    //bpf_printk("ICMP6 %d %d", icmp6->icmp6_type, icmp6->icmp6_code);
 	    switch (icmp6->icmp6_type) {
 	    case ND_NEIGHBOR_SOLICIT:
 	    case ND_NEIGHBOR_ADVERT:
@@ -641,19 +626,38 @@ int xdp_vethb_func(struct xdp_md *ctx)
 }
 
 SEC("xdp")
-int xdp_vetha_func(struct xdp_md *ctx)
+int xdp_reply_func(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end)
-	return XDP_DROP;
-
+        return XDP_DROP;
+    
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
-	return XDP_PASS == xdp_reply_v4(ctx) ? XDP_PASS : xdp_request_v4(ctx);
+	return xdp_reply_v4(ctx);
     case bpf_htons(ETH_P_IPV6):
-	return XDP_PASS == xdp_reply_v6(ctx) ? XDP_PASS : xdp_request_v6(ctx);
+        return xdp_reply_v6(ctx);
+    }
+
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_request_func(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	return xdp_request_v4(ctx);
+    case bpf_htons(ETH_P_IPV6):
+        return xdp_request_v6(ctx);
     }
 
     return XDP_PASS;

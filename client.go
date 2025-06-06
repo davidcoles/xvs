@@ -118,7 +118,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 	}
 
 	for _, nic := range nics {
-		if err = c.maps.xdp.LoadBpfSection("xdp_fwd_func", options.Native, nic); err != nil {
+		if err = c.maps.xdp.LoadBpfSection("xdp_forward_func", options.Native, nic); err != nil {
 			return nil, err
 		}
 	}
@@ -134,7 +134,8 @@ func (c *client) background() error {
 	reconfig := time.NewTicker(time.Minute)
 	sessions := time.NewTicker(time.Second * 5)
 	icmp := time.NewTicker(time.Millisecond * 100)
-	ping := time.NewTicker(time.Second * 30)
+	ping := time.NewTicker(time.Second * 15)
+	init := time.NewTimer(time.Second * 20)
 
 	defer func() {
 		reconfig.Stop()
@@ -193,6 +194,13 @@ func (c *client) background() error {
 		case <-reconfig.C:
 			// re-scan network interfaces and match to VLANs
 			// recalc all services as parameters may have changed
+			c.mutex.Lock()
+			c.configure()
+			c.mutex.Unlock()
+
+		case <-init.C:
+			// as above, but early to catch responses of first set of pings - FIXME: kludge
+			// (native mode is sluggish to start - this speeds it up a bit)
 			c.mutex.Lock()
 			c.configure()
 			c.mutex.Unlock()
@@ -342,7 +350,7 @@ func (c *client) Info() (Info, error) {
 	metrics := c.maps.globals(c.current())
 	latency := c.latency
 	if latency == 0 {
-		latency = 1000 // 0 would clearly be nonsense (happens at statup), so set to something realistic
+		latency = 1000 // 0 would clearly be nonsense (but happens at statup), so set to something realistic
 	}
 
 	return Info{
@@ -433,6 +441,10 @@ func (c *client) createService(s Service, ds ...Destination) error {
 		c.ping(d)
 		c.maps.createCounters(s.vrpp(d))
 		c.natmap.add(s.Address, d)
+	}
+
+	if len(add) != 0 {
+		c.natmap.index()
 	}
 
 	c.services[s.key()] = svc

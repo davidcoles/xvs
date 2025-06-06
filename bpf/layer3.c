@@ -995,7 +995,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 
 
 SEC("xdp")
-int xdp_fwd_func(struct xdp_md *ctx)
+int xdp_forward_func(struct xdp_md *ctx)
 {
     __u64 start = bpf_ktime_get_ns();
 
