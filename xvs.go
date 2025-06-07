@@ -69,7 +69,7 @@ type Client interface {
 	VIPs() []VIP
 
 	// NAT returns an address which can be used to query a specific
-	// VIP on a backend server, which can be used to implement health
+	// VIP on a backend server, this can be used to implement health
 	// checks
 	NAT(vip, rip netip.Addr) (nat netip.Addr)
 
