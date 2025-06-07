@@ -53,10 +53,6 @@ func (s *service) concurrent() (c uint64) {
 	return
 }
 
-func (s *service) debug(info ...any) {
-	fmt.Println(info...)
-}
-
 func (s *Service) key() threetuple {
 	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 }
@@ -187,7 +183,7 @@ func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Ad
 			macs[k] = t.h_dest
 		}
 
-		s.debug("FWD", d, t)
+		debug("FWD", d, t)
 	}
 
 	s.mac = macs

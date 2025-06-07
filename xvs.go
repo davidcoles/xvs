@@ -40,6 +40,7 @@ type Options struct {
 	Flows  uint32
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
+	Test   bool
 }
 
 func (o *Options) config() *Config {
@@ -57,16 +58,26 @@ type Client interface {
 	CreateService(Service) error
 	UpdateService(Service) error
 	RemoveService(Service) error
+	SetService(Service, ...Destination) error
 
 	Destinations(Service) ([]DestinationExtended, error)
 	CreateDestination(Service, Destination) error
 	UpdateDestination(Service, Destination) error
 	RemoveDestination(Service, Destination) error
 
-	SetService(Service, ...Destination) error
-	NAT(netip.Addr, netip.Addr) netip.Addr
 	VIP(netip.Addr) VIP
 	VIPs() []VIP
+
+	// NAT returns an address which can be used to query a specific
+	// VIP on a backend server, which can be used to implement health
+	// checks
+	NAT(vip, rip netip.Addr) (nat netip.Addr)
+
+	// ReadFlow retrieves an opaque flow record from a queue written to by the
+	// kernel. If no flow records are available then a zero length
+	// slice is returned. This can be used to share flow state with
+	// peers, storing the flow with the WriteFlow() function. Stale
+	// records are skipped.
 	ReadFlow() []byte
 	WriteFlow([]byte)
 }

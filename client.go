@@ -72,7 +72,7 @@ func newClient(interfaces ...string) (*client, error) {
 
 func newClientWithOptions(options Options, interfaces ...string) (_ *client, err error) {
 
-	c := &client{services: map[threetuple]*service{}, natmap: natmap{}, test: true}
+	c := &client{services: map[threetuple]*service{}, natmap: natmap{}, test: options.Test}
 
 	var nics []uint32
 
@@ -96,7 +96,6 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	//c.settings = bpf_settings{veth: c.netns.veth(), vetha: c.netns.vetha(), vethb: c.netns.vethb(), active: 1}
 	c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
 
 	if options.Bond {
@@ -661,11 +660,6 @@ func (c *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
 	return c.nat(vip, rip)
 }
 
-// Retrieves an opaque flow record from a queue written to by the
-// kernel. If no flow records are available then a zero length slice
-// is returned. This can be used to share flow state with peers, with
-// the flow record stored using the WriteFlow() function. Stale
-// records are skipped.
 func (c *client) ReadFlow() []byte {
 	var entry [ft_size + flow_size]byte
 

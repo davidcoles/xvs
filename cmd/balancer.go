@@ -28,6 +28,7 @@ func main() {
 	tport6 := flag.Uint("6", 6666, "Port to use for FOU IPv6 VIPs")
 	tportg := flag.Uint("G", 8888, "Port to use for GUE")
 	extra := flag.String("V", "", "Extra VLAN")
+	test := flag.Bool("T", false, "Library test mode")
 
 	flag.Var(&vips, "v", "extra vips")
 	flag.Var(&serv, "p", "ports to add to vips")
@@ -81,7 +82,7 @@ func main() {
 		}
 	}
 
-	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6}
+	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6, Test: *test}
 
 	fmt.Println("Starting ...")
 

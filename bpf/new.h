@@ -740,66 +740,6 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
     return 0;
 }
 
-/*
-static __always_inline
-int push_fou6(struct xdp_md *ctx,  tunnel_t *t)
-{
-    struct pointers p = {};
-    
-    int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr));
-    
-    if (orig_len < 0)
-        return -1;
-
-    struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
-    
-    if (udp + 1 > p.data_end)
-        return -1;
-
-    udp->source = bpf_htons(t->sport);
-    udp->dest = bpf_htons(t->dport);
-    udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
-    udp->check = 0;
-    
-    if (! (t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
-	udp->check = udp6_checksum((void *) p.ip, udp, p.data_end);
-    
-    return 0;
-}
-*/
-
-/*
-static __always_inline
-int push_fou4(struct xdp_md *ctx,  tunnel_t *t)
-{
-    struct pointers p = {};
-    int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, sizeof(struct udphdr));
-
-    if (orig_len < 0)
-	return -1;
-
-    struct iphdr *ip = p.ip;
-    
-    if (!ip)
-        return -1;
-    
-    struct udphdr *udp = (void *) (ip + 1);
-     
-    if (udp + 1 > p.data_end)
-        return -1;
-
-    udp->source = bpf_htons(t->sport);
-    udp->dest = bpf_htons(t->dport);
-    udp->len = bpf_htons(sizeof(struct udphdr) + orig_len);
-    udp->check = 0;
-    
-    if (! (t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
-	udp->check = udp4_checksum((void *) ip, udp, p.data_end);
-
-    return 0;
-}
-*/
-
 static __always_inline
 int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
