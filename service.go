@@ -171,8 +171,6 @@ func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Ad
 
 		d.Disable = false
 
-		fmt.Println(d.Disable, t.vlanid)
-
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
 		if !d.Disable && t.vlanid != 0 {
