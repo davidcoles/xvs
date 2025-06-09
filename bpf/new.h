@@ -862,7 +862,7 @@ __u16 l4_hash_(struct l4 *ft)
 }
 
 static __always_inline
-int is_ipv4_addr(struct addr a) {
+int _is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 

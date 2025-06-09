@@ -417,11 +417,6 @@ struct {
 static __always_inline
 flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
 {
-    void *fqe = bpf_map_lookup_elem(&buffers, &ZERO);
-
-    if (!fqe)
-	return NULL;
-    
     if (!flows)
 	return NULL;
 
@@ -446,9 +441,13 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
     flow->time = time;
     flow->version = FLOW_VERSION;
 
-    __builtin_memcpy(fqe, ft, sizeof(fourtuple_t));
-    __builtin_memcpy(fqe + sizeof(fourtuple_t), flow, sizeof(flow_t));
-    bpf_map_push_elem(&flow_queue, fqe, BPF_EXIST);
+    void *fqe = NULL;
+
+    if ((fqe = bpf_map_lookup_elem(&buffers, &ZERO))) {
+	__builtin_memcpy(fqe, ft, sizeof(fourtuple_t));
+	__builtin_memcpy(fqe + sizeof(fourtuple_t), flow, sizeof(flow_t));
+	bpf_map_push_elem(&flow_queue, fqe, BPF_EXIST);
+    }
 
     return flow;
 }
@@ -520,7 +519,7 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft)
     
     // some of the tunnel parameters will be node-local (source
     // IP/MAC, etc.) - update to this node's details
-    if (is_ipv4_addr(t->daddr)) {
+    if (is_ipv4_addr_p(&(t->daddr))) {
 	t->saddr = vlan->ip4;              // set to this node's IP address on the vlan
 	memcpy(t->h_source, vlan->hw4, 6); // set to this node's MAC address on thw vlan
 	memcpy(h_gw, vlan->gh4, 6);        // copy this node's gateway MAC to temp addr
@@ -957,7 +956,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return FWD_PASS; // <- NOT AN ERROR
     }
 
-    int overhead = is_ipv4_addr(t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    int overhead = is_ipv4_addr_p(&t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
     
     switch (result) {
     case FWD_LAYER3_GRE: overhead += GRE_OVERHEAD; break;
@@ -1073,14 +1072,13 @@ int xdp_forward_func(struct xdp_md *ctx)
 	case 1: // single interface - TX either tagged or untagged
 	    return XDP_TX;
 	}
-
 	
 	// multi-interface, if tagged packets then just TX to appropriate VLAN (previously set)
 	if (dot1q)
 	    return XDP_TX; 
 	
 	// otherwise redirect to interface
-	return is_ipv4_addr(t.daddr) ?
+	return is_ipv4_addr_p(&t.daddr) ?
 	    bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
