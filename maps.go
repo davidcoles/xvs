@@ -372,7 +372,7 @@ func (m *maps) initialiseFlows(max uint32) error {
 	return nil
 }
 
-func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[netip.Addr]bool, test bool) {
+func (m *maps) clean(serv map[bpf_servicekey]bool, vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[netip.Addr]bool, test bool) {
 
 	clean_addr := func(m xdp.Map, a map[netip.Addr]bool) {
 		b := map[addr16]bool{}
@@ -410,7 +410,7 @@ func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[
 			if _, exists := a[key]; !exists && key != nul {
 				m.DeleteElem(uP(&key))
 				if test {
-					log.Fatal("clean_map2 ", key)
+					log.Fatal("clean_vrpp ", key)
 				}
 			}
 		}
@@ -420,5 +420,5 @@ func (m *maps) clean(vips map[netip.Addr]bool, vrpp map[bpf_vrpp]bool, nats map[
 	clean_addr(m.nat_to_vip_rip, nats)
 	clean_vrpp(m.stats, vrpp)
 	clean_vrpp(m.sessions, vrpp)
-	clean_svc(m.services, nil)
+	clean_svc(m.services, serv)
 }

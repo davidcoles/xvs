@@ -315,12 +315,16 @@ func (c *client) configure() {
 
 func (c *client) clean() {
 	mark := time.Now()
+	serv := map[bpf_servicekey]bool{}
 	vips := map[netip.Addr]bool{}
 	nats := map[netip.Addr]bool{}
 	nmap := map[[2]netip.Addr]bool{}
 	vrpp := map[bpf_vrpp]bool{}
 
 	for k, service := range c.services {
+
+		fmt.Println("CLEAN", k, *service)
+		serv[service.key()] = true
 		vips[k.address] = true
 		for a, v := range service.vrpps() {
 			nmap[[2]netip.Addr{k.address, a}] = true
@@ -337,7 +341,7 @@ func (c *client) clean() {
 		nats[nat] = true
 	}
 
-	c.maps.clean(vips, vrpp, nats, c.test)
+	c.maps.clean(serv, vips, vrpp, nats, c.test)
 
 	c.debug("Clean-up took", time.Now().Sub(mark))
 }
@@ -521,6 +525,7 @@ func (c *client) RemoveService(s Service) error {
 	delete(c.services, s.key())
 
 	c.maps.removeService(service.key())
+	fmt.Println("REMOVED", service.key())
 	for _, d := range service.rips() {
 		c.maps.removeCounters(service.vrpp(d))
 	}

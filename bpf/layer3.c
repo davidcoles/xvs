@@ -415,15 +415,15 @@ struct {
 
 
 static __always_inline
-flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
+flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u8 finrst)
 {
     if (!flows)
 	return NULL;
 
-    if (syn) {
-	bpf_map_delete_elem(flows, ft);
-	return NULL;
-    }
+    //if (syn) {
+    //	bpf_map_delete_elem(flows, ft);
+    //	return NULL;
+    //}
     
     flow_t *flow = bpf_map_lookup_elem(flows, ft);
     
@@ -431,10 +431,21 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn)
 	return NULL;
 
     __u64 time = bpf_ktime_get_ns();
-    
-    if (flow->time + (120 * SECOND_NS) < time)
-    	return NULL;
 
+    if (flow->time > time)
+	return NULL; // shouldn't happen!
+    
+    if (flow->time + (120 * SECOND_NS) < time) {
+	bpf_map_delete_elem(flows, ft);
+    	return NULL;
+    }
+
+    if (syn && flow->time + (60 * SECOND_NS) < time) {
+	//bpf_printk("syn");
+	bpf_map_delete_elem(flows, ft);
+	return NULL;
+    }    
+    
     if (flow->time + (60 * SECOND_NS) > time)
     	return flow; // flow updated less then 1m ago - leave for now
 
@@ -555,7 +566,6 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     vr.protocol |= era%2 ? 0xff00 : 0x0000;
     __s64 *concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr);
 
-    // we don't get SYNs any more - they will delete a session instead
     if (tcp->syn == 1)
         flow->finrst = 0;
     
@@ -618,7 +628,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn))) {
+	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn, metadata->fin|metadata->rst))) {
 	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
 	    tcp_concurrent(vrpp, metadata, flow, metadata->era);
 	    break;
@@ -659,7 +669,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
     }
-    
+
     if (!(metadata->backend = is_backend_valid(ft, t, metadata)))
 	return FWD_ERROR3(no_backend); // FIXME - new error type?
     
@@ -1010,7 +1020,7 @@ int xdp_forward_func(struct xdp_md *ctx)
 	return XDP_PASS;
     }
 
-    metadata_t metadata = { .era = s->era  };
+    metadata_t metadata = { .era = s->era };
     void *data_end = (void *)(long)ctx->data_end;
     //void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -1034,6 +1044,7 @@ int xdp_forward_func(struct xdp_md *ctx)
     tunnel_t t = {};
 
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
+    
     enum fwd_action action = xdp_fwd(ctx, eth, &ft, &t, &metadata);
 
 #define COUNTERS(c, m) \
@@ -1050,7 +1061,7 @@ int xdp_forward_func(struct xdp_md *ctx)
 
     s->packets++;
     s->latency += (bpf_ktime_get_ns() - start);
-    
+
     switch (action) {
     case FWD_TX:
 	return XDP_TX;

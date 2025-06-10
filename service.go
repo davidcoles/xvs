@@ -57,6 +57,14 @@ func (s *Service) key() threetuple {
 	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 }
 
+func (t threetuple) String() string {
+	return fmt.Sprintf("[%s %d %d]", t.address, t.port, t.protocol)
+}
+
+func (s service) String() string {
+	return fmt.Sprintf("[%s %d %d - %d]", s.service.Address, s.service.Port, s.service.Protocol, len(s.dests))
+}
+
 func (s *service) set(service Service, ds ...Destination) (err error, add []netip.Addr, del []netip.Addr) {
 
 	destinations := make(map[netip.Addr]Destination, len(ds))
@@ -163,19 +171,17 @@ func (s *service) local() (r []netip.Addr) {
 func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
-	tunn := make(map[netip.Addr]bpf_tunnel, len(s.dests))
+	//tunn := make(map[netip.Addr]bpf_tunnel, len(s.dests))
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
 		t := netinfo.find(k).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
 
-		d.Disable = false
-
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
-		if !d.Disable && t.vlanid != 0 {
-			tunn[k] = t
-		}
+		//if !d.Disable && t.vlanid != 0 {
+		//	tunn[k] = t
+		//}
 
 		if t.local() {
 			macs[k] = t.h_dest
@@ -216,7 +222,7 @@ func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd
 	addrs := make([]netip.Addr, 0, len(reals))
 
 	for k, v := range reals {
-		if v.tunnel.vlanid != 0 {
+		if !v.disable && v.tunnel.vlanid != 0 {
 			addrs = append(addrs, k)
 		}
 	}

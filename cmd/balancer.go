@@ -158,7 +158,7 @@ func main() {
 		for n := uint(0); n < *remove; n++ {
 
 			info, _ := client.Info()
-			fmt.Println("Global", info.Stats, info.Metrics)
+			fmt.Println("Global", info.Latency, info.Stats, info.Metrics)
 
 			vips := client.VIPs()
 			for _, vip := range vips {
