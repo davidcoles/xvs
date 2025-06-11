@@ -40,11 +40,12 @@ type Options struct {
 	Flows  uint32
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
+	Routes map[netip.Prefix]uint16
 	Test   bool
 }
 
 func (o *Options) config() *Config {
-	return &Config{VLANs4: o.VLANs4, VLANs6: o.VLANs6}
+	return &Config{VLANs4: o.VLANs4, VLANs6: o.VLANs6, Routes: o.Routes}
 }
 
 type Client interface {
@@ -58,26 +59,34 @@ type Client interface {
 	CreateService(Service) error
 	UpdateService(Service) error
 	RemoveService(Service) error
-	SetService(Service, ...Destination) error
 
 	Destinations(Service) ([]DestinationExtended, error)
 	CreateDestination(Service, Destination) error
 	UpdateDestination(Service, Destination) error
 	RemoveDestination(Service, Destination) error
 
-	VIP(netip.Addr) VIP
-	VIPs() []VIP
+	// SetService combines the functionality of CreateService,
+	// UpdateService, CreateDestination, UpdateDestination and
+	// RemoveDestination. If the service does not exist it will be
+	// created with the given paramaters and destinaitons, or updated
+	// to match them if extant.
+	SetService(Service, ...Destination) error
+
+	VIPs() ([]VIP, error)
+	VIP(netip.Addr) (VIP, error)
 
 	// NAT returns an address which can be used to query a specific
-	// VIP on a backend server, this can be used to implement health
-	// checks
+	// virtual IP on a backend ("real") server, this can be used to
+	// implement health checks which accurately reflect the ability of
+	// the backend to serve traffic for a particular VIP.
 	NAT(vip, rip netip.Addr) (nat netip.Addr)
 
-	// ReadFlow retrieves an opaque flow record from a queue written to by the
-	// kernel. If no flow records are available then a zero length
-	// slice is returned. This can be used to share flow state with
-	// peers, storing the flow with the WriteFlow() function. Stale
-	// records are skipped.
+	// ReadFlow retrieves an opaque flow record from a queue written
+	// to by the kernel. If no flow records are available then a zero
+	// length slice is returned. This can be used to share flow state
+	// with peers, storing the flow with the WriteFlow()
+	// function. Stale records in the queue (older than a few seconds)
+	// are skipped.
 	ReadFlow() []byte
 	WriteFlow([]byte)
 }
@@ -120,6 +129,7 @@ type DestinationExtended struct {
 
 type VIP struct {
 	Address netip.Addr
+	Stats   Stats
 	Metrics map[string]uint64
 }
 

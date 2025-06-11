@@ -160,7 +160,7 @@ func main() {
 			info, _ := client.Info()
 			fmt.Println("Global", info.Latency, info.Stats, info.Metrics)
 
-			vips := client.VIPs()
+			vips, _ := client.VIPs()
 			for _, vip := range vips {
 				fmt.Println("VIP", vip.Address, vip.Metrics)
 			}

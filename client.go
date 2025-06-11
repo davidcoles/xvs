@@ -704,16 +704,17 @@ func (c *client) vip(a netip.Addr) VIP {
 			t += s.current()
 		}
 	}
-	return VIP{Address: a, Metrics: c.maps.virtualMetrics(as16(a), t).metrics()}
+	metrics := c.maps.virtualMetrics(as16(a), t)
+	return VIP{Address: a, Stats: metrics.stats(), Metrics: metrics.metrics()}
 }
 
-func (c *client) VIP(a netip.Addr) VIP {
+func (c *client) VIP(a netip.Addr) (VIP, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	return c.vip(a)
+	return c.vip(a), nil
 }
 
-func (c *client) VIPs() (r []VIP) {
+func (c *client) VIPs() (r []VIP, e error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 

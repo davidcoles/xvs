@@ -327,6 +327,7 @@ struct metadata {
     metrics_t *vip;
     metrics_t *service;
     counter_t *backend;
+    __be32 seq;
     __u32 octets;
     __u16 mtu;
     __u8 syn:1;
@@ -337,6 +338,7 @@ struct metadata {
     __u8 psh:1;
     __u8 new_flow:1;
     __u8 era;
+    __u8 shared:1;
 };
 typedef struct metadata metadata_t;
 
@@ -415,11 +417,11 @@ struct {
 
 
 static __always_inline
-flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u8 finrst)
+flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u32 seq, __u8 shared)
 {
     if (!flows)
 	return NULL;
-
+    
     //if (syn) {
     //	bpf_map_delete_elem(flows, ft);
     //	return NULL;
@@ -446,6 +448,9 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u8 finrst)
 	return NULL;
     }    
     
+    if (syn)
+	flow->syn_seqn_reserved = bpf_ntohl(seq) + 1;
+
     if (flow->time + (60 * SECOND_NS) > time)
     	return flow; // flow updated less then 1m ago - leave for now
 
@@ -454,7 +459,7 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u8 finrst)
 
     void *fqe = NULL;
 
-    if ((fqe = bpf_map_lookup_elem(&buffers, &ZERO))) {
+    if (shared && (fqe = bpf_map_lookup_elem(&buffers, &ZERO))) {
 	__builtin_memcpy(fqe, ft, sizeof(fourtuple_t));
 	__builtin_memcpy(fqe + sizeof(fourtuple_t), flow, sizeof(flow_t));
 	bpf_map_push_elem(&flow_queue, fqe, BPF_EXIST);
@@ -566,17 +571,17 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     vr.protocol |= era%2 ? 0xff00 : 0x0000;
     __s64 *concurrent = bpf_map_lookup_elem(&vrpp_concurrent, &vr);
 
-    if (tcp->syn == 1)
+    if (tcp->syn && flow->finrst)
         flow->finrst = 0;
     
-    if (flow->finrst == 0 && ((tcp->rst == 1) || (tcp->fin == 1))) {
+    if (!flow->finrst && (tcp->rst || tcp->fin)) {
         flow->finrst = 10;
     } else {
         if (flow->finrst > 0)
-            (flow->finrst)--;
+            flow->finrst--;
     }
     
-    if (flow->era != era || tcp->syn == 1) {
+    if (flow->era != era || tcp->syn) {
         flow->era = era;
 
         switch(flow->finrst) {
@@ -599,10 +604,15 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
     }
 }
 
+/*
 #define FWD_ERROR1(F) ( metadata->global->F++, FWD_DROP )
 #define FWD_ERROR2(F) ( metadata->global->F++, metadata->vip->F++, FWD_DROP )
 #define FWD_ERROR3(F) ( metadata->global->F++, metadata->vip->F++, metadata->service->F++,FWD_DROP )
 #define FWD_ERROR4(F) ( metadata->global->F++, metadata->vip->F++, metadata->service->F++, metadata->backend->F++, FWD_DROP )
+*/
+
+#define FWD_ERROR5(M, F) ( M->global->F++, M->vip->F++, M->service->F++, M->backend->F++, FWD_DROP )
+#define FWD_ERRORX(M, F) ( M->global->F++, M->vip && M->vip->F++, M->service && M->service->F++, FWD_DROP )
 
 static __always_inline
 counter_t *is_backend_valid(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
@@ -625,37 +635,39 @@ static __always_inline
 enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
-    
+
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn, metadata->fin|metadata->rst))) {
-	    vrpp_t vrpp = { .vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto };
+	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn, metadata->seq, metadata->shared))) {
+	    vrpp_t vrpp = {.vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto};
 	    tcp_concurrent(vrpp, metadata, flow, metadata->era);
 	    break;
 	}
-	
-	flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
-	break;
 
+	if (metadata->shared)
+	    flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
+	break;
+	
     case IPPROTO_UDP:
 	flow = lookup_udp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
 	break;
     }
-
+	
     struct servicekey key = { .addr = ft->daddr, .port = bpf_ntohs(ft->dport), .proto = ft->proto };	
 
     if(!(metadata->service = bpf_map_lookup_elem(&service_metrics, &key)))
-	return FWD_ERROR2(service_not_found);
+	return FWD_ERRORX(metadata, service_not_found);
     
     if (flow) {
-	flow->era = metadata->era;
+	if (flow->era != metadata->era)
+	    flow->era = metadata->era;
 	*t = flow->tunnel;
     } else {
 	service_t *service = bpf_map_lookup_elem(&services, &key);
 	
 	if (!service) {
 	    metadata->service = NULL;
-	    return FWD_ERROR2(service_not_found);
+	    return FWD_ERRORX(metadata, service_not_found);
 	}
     
 	__u8 sticky = service->dest[0].flags & F_STICKY;
@@ -664,21 +676,26 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	__u8 index = service->hash[(sticky ? hash3 : hash4) & 0x1fff]; // limit to 0-8191
 	
 	if (!index)
-	    return FWD_ERROR3(no_backend);
+	    return FWD_ERRORX(metadata, no_backend);
 	
 	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
     }
 
     if (!(metadata->backend = is_backend_valid(ft, t, metadata)))
-	return FWD_ERROR3(no_backend); // FIXME - new error type?
+	return FWD_ERRORX(metadata, no_backend); // FIXME - new error type?
     
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
     // comes through. Of course, an attacker could send a SYN and a
-    // bogus ACK; but upstream stateful inspection DDoS could catch
+    // bogus ACK; but upstream stateful inspection DDoS prevention
+    // would catch this
 
-    if (!flow && !metadata->syn && !metadata->rst && !metadata->fin) {
+    if (flow && !metadata->syn && flow->syn_seqn_reserved) {
+	if (flow->syn_seqn_reserved == bpf_ntohl(metadata->seq))
+	    metadata->new_flow = 1;
+	flow->syn_seqn_reserved = 0;
+    } else if (!flow && !metadata->syn && !metadata->rst && !metadata->fin) {
 	metadata->new_flow = 1;
 	switch(ft->proto) {
 	case IPPROTO_TCP:
@@ -698,7 +715,8 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     case T_NONE: return FWD_LAYER2_DSR;
     }
 
-    FWD_ERROR4(tunnel_unsupported);
+    //FWD_ERROR4(tunnel_unsupported);
+    FWD_ERROR5(metadata, tunnel_unsupported);
 }
 
 static __always_inline
@@ -708,7 +726,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
-	return FWD_ERROR1(malformed);
+	return FWD_ERRORX(metadata, malformed);
     
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
@@ -728,7 +746,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     }
     
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
-	return FWD_ERROR2(expired);
+	return FWD_ERRORX(metadata, expired);
 
     (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
     
@@ -739,7 +757,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     switch (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
     case IPPROTO_TCP:
 	if (tcp + 1 > data_end)
-	    return FWD_ERROR2(tcp_header);
+	    return FWD_ERRORX(metadata, tcp_header);
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	metadata->syn = tcp->syn;
@@ -748,18 +766,19 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	metadata->fin = tcp->fin;
 	metadata->urg = tcp->urg;
 	metadata->psh = tcp->psh;
+	metadata->seq = tcp->seq;
 	break;
 	
     case IPPROTO_UDP:
 	if (udp + 1 > data_end)
-	    return FWD_ERROR2(udp_header);
+	    return FWD_ERRORX(metadata, udp_header);
 	ft->sport = udp->source;
 	ft->dport = udp->dest;
 	break;
 	
     case IPPROTO_ICMPV6:
         if (icmp + 1 > data_end)
-	    return FWD_ERROR2(icmp_header);
+	    return FWD_ERRORX(metadata, icmp_header);
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
 	    //bpf_printk("ICMPv6");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
@@ -776,20 +795,20 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 	    
 	    if (!buffer)
-		return FWD_ERROR2(errors);
+		return FWD_ERRORX(metadata, errors);
 	    
 	    if (icmp_dest_unreach_frag_needed6(ip6, icmp, data_end, buffer, BUFFER) < 0)
-		return FWD_ERROR2(errors);
+		return FWD_ERRORX(metadata, errors);
 	    
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, BPF_EXIST) != 0)
-		return FWD_ERROR2(userspace);
+		return FWD_ERRORX(metadata, userspace);
 	}
 
-	return FWD_ERROR2(icmp_echo_request);
+	return FWD_ERRORX(metadata, icmp_echo_request);
 	
     default:
-	return FWD_ERROR2(l4_unsupported);
+	return FWD_ERRORX(metadata, l4_unsupported);
     }
 
     enum fwd_action r = lookup(ft, t, metadata);
@@ -808,7 +827,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
-	return FWD_ERROR1(malformed);
+	return FWD_ERRORX(metadata, malformed);
 
     struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
@@ -828,14 +847,14 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     }    
 
     if (ip->ihl != 5)
-	return FWD_ERROR2(ip_options);
+	return FWD_ERRORX(metadata, ip_options);
 
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
-	return FWD_ERROR2(fragmented);	
+	return FWD_ERRORX(metadata, fragmented);	
     
     if (ip->ttl <= 1)
-	return FWD_ERROR2(expired);
+	return FWD_ERRORX(metadata, expired);
     	
     /* We're going to forward the packet, so we should decrement the time to live */
     ip_decrease_ttl(ip);    
@@ -847,7 +866,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     switch (ip->protocol) {
     case IPPROTO_TCP:
 	if (tcp + 1 > data_end)
-	    return FWD_ERROR2(tcp_header);
+	    return FWD_ERRORX(metadata, tcp_header);
 	ft->sport = tcp->source;
 	ft->dport = tcp->dest;
 	metadata->syn = tcp->syn;
@@ -856,18 +875,19 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	metadata->fin = tcp->fin;
 	metadata->urg = tcp->urg;
 	metadata->psh = tcp->psh;
+	metadata->seq = tcp->seq;
 	break;
 	
     case IPPROTO_UDP:
 	if (udp + 1 > data_end)
-	    return FWD_ERROR2(udp_header);
+	    return FWD_ERRORX(metadata, udp_header);
 	ft->sport = udp->source;
 	ft->dport = udp->dest;
 	break;
 	
     case IPPROTO_ICMP:
 	if (icmp + 1 > data_end)
-    	    return FWD_ERROR2(icmp_header);
+    	    return FWD_ERRORX(metadata, icmp_header);
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
 	    //bpf_printk("ICMPv4");
 	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
@@ -884,20 +904,20 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
 	    
 	    if (!buffer)
-		return FWD_ERROR2(errors);
+		return FWD_ERRORX(metadata, errors);
 	    
 	    if (icmp_dest_unreach_frag_needed(ip, icmp, data_end, buffer, BUFFER) < 0)
-		return FWD_ERROR2(errors);
+		return FWD_ERRORX(metadata, errors);
 
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, BPF_EXIST) != 0)
-		return FWD_ERROR2(userspace);
+		return FWD_ERRORX(metadata, userspace);
 	}
 
-	return FWD_ERROR2(icmp_unsupported);
+	return FWD_ERRORX(metadata, icmp_unsupported);
 
     default:
-	return FWD_ERROR2(l4_unsupported);
+	return FWD_ERRORX(metadata, l4_unsupported);
     }
 
     enum fwd_action r = lookup(ft, t, metadata);
@@ -924,9 +944,9 @@ enum fwd_action FWD(metadata_t *m, int r)
 
     // can do more detailed error reporting here if r is set to something other than -1
     
-    m->backend->adjust_failed++; // FIXME
-    m->service->adjust_failed++;
-    m->vip->adjust_failed++;
+    m->backend && m->backend->adjust_failed++; // FIXME
+    m->service && m->service->adjust_failed++;
+    m->vip && m->vip->adjust_failed++;
     m->global->adjust_failed++;
     return FWD_DROP;
 }
@@ -979,9 +999,9 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     }
 
     if ((data_end - next_header) + overhead > metadata->mtu) {
-	FWD_ERROR4(too_big); // FIXME FWD_ERROR4
+	FWD_ERRORX(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
-	    return FWD_ERROR3(adjust_failed);
+	    return FWD_ERRORX(metadata, adjust_failed);
 	return FWD_TX;
     }
     
@@ -997,7 +1017,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     default: break;
     }
 
-    return FWD_ERROR4(tunnel_unsupported);
+    return FWD_ERRORX(metadata, tunnel_unsupported);
 }
 
 
@@ -1042,6 +1062,8 @@ int xdp_forward_func(struct xdp_md *ctx)
     
     fivetuple_t ft = {};    
     tunnel_t t = {};
+
+    metadata.shared = 1; // shared: 634, !shared: 613
 
     // don't access packet pointers after here as it may have been adjusted by the forwarding functions
     
