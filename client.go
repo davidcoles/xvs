@@ -35,9 +35,9 @@ type threetuple struct {
 	protocol Protocol
 }
 
-func (t threetuple) bpf() bpf_servicekey {
-	return bpf_servicekey{addr: as16(t.address), port: t.port, proto: uint16(t.protocol)}
-}
+//func (t threetuple) bpf() bpf_servicekey {
+//	return bpf_servicekey{addr: as16(t.address), port: t.port, proto: uint16(t.protocol)}
+//}
 
 type client struct {
 	config   Config
@@ -53,11 +53,12 @@ type client struct {
 	test     bool
 }
 
-func (c *client) ping(ip netip.Addr)                { c.icmp.ping(ip) }
-func (c *client) nat(v, r netip.Addr) netip.Addr    { return c.netns.nat(c.natmap.get(v, r), v.Is6()) }
-func (c *client) ext(id uint16, v6 bool) netip.Addr { return c.netinfo.ext(id, v6) }
-func (c *client) era() bool                         { return c.settings.era%2 > 0 }
-func (c *client) find(d Destination) backend        { return c.netinfo.find(d.Address) }
+// func (c *client) nat(v, r netip.Addr) netip.Addr   { return c.netns.nat(c.natmap.get(v, r), v.Is6()) }
+// func (c *client) era() bool                        { return c.settings.era%2 > 0 }
+// func (c *client) ext(id uint16, v6 bool) netip.Addr { return c.netinfo.ext(id, v6) }
+// func (c *client) find(d Destination) backend { return c.netinfo.find(d.Address) }
+
+func (c *client) ping(ip netip.Addr) { c.icmp.ping(ip) }
 
 func (c *client) current() (r uint64) {
 	for _, s := range c.services {
@@ -186,7 +187,7 @@ func (c *client) background() error {
 			c.settings.era++
 			c.maps.updateSettings(c.settings) // reset the watchdog
 			for _, s := range c.services {
-				s.readSessions(c.maps, c.era())
+				s.readSessions(c.maps, c.settings.era%2 > 0)
 			}
 			c.mutex.Unlock()
 
@@ -275,7 +276,6 @@ func (c *client) icmpQueue() {
 		}
 
 		for _, rip := range s.rips() {
-			//nat := s.client.NAT(addr, rip)
 			nat := c.NAT(addr, rip)
 
 			if !nat.IsValid() {
@@ -309,7 +309,7 @@ func (c *client) configure() {
 	}
 
 	for _, s := range c.services {
-		c.calcService(s)
+		c.syncService(s, false, false)
 	}
 }
 
@@ -322,8 +322,6 @@ func (c *client) clean() {
 	vrpp := map[bpf_vrpp]bool{}
 
 	for k, service := range c.services {
-
-		fmt.Println("CLEAN", k, *service)
 		serv[service.key()] = true
 		vips[k.address] = true
 		for a, v := range service.vrpps() {
@@ -432,9 +430,9 @@ func (c *client) createService(s Service, ds ...Destination) error {
 		return err
 	}
 
-	svc := &service{dests: map[netip.Addr]Destination{}, service: s}
+	service := &service{dests: map[netip.Addr]Destination{}, service: s}
 
-	err, add, _ := svc.set(s, ds...)
+	add, _, err := service.set(s, ds...)
 
 	if err != nil {
 		return err
@@ -446,15 +444,9 @@ func (c *client) createService(s Service, ds ...Destination) error {
 		c.natmap.add(s.Address, d)
 	}
 
-	if len(add) != 0 {
-		c.natmap.index()
-	}
+	c.services[s.key()] = service
 
-	c.services[s.key()] = svc
-
-	c.calcService(svc)
-
-	return nil
+	return c.syncService(service, len(add) != 0, false)
 }
 
 func (c *client) debug(info ...any) {
@@ -463,23 +455,29 @@ func (c *client) debug(info ...any) {
 	}
 }
 
-func (c *client) calcService(s *service) {
+func (c *client) syncService(s *service, index, clean bool) error {
 
-	debug := func(info ...any) {
-		c.debug(info...)
+	if index {
+		c.natmap.index()
 	}
 
 	natfn := func(v, r netip.Addr) netip.Addr {
 		return c.netns.nat(c.natmap.get(v, r), v.Is6())
 	}
 
-	fwd, nat := s.recalc(debug, &(c.netinfo), natfn)
+	fwd, nat := s.recalc(func(info ...any) { c.debug(info...) }, &(c.netinfo), natfn)
 
 	c.maps.setService(s.key(), fwd)
 
 	for addr, vip_rip := range nat {
 		c.maps.nat(addr, vip_rip)
 	}
+
+	if clean {
+		c.clean()
+	}
+
+	return nil
 }
 
 func (c *client) CreateService(s Service) error {
@@ -507,9 +505,7 @@ func (c *client) UpdateService(s Service) error {
 		return err
 	}
 
-	c.calcService(service)
-
-	return nil
+	return c.syncService(service, false, false)
 }
 
 func (c *client) RemoveService(s Service) error {
@@ -525,7 +521,7 @@ func (c *client) RemoveService(s Service) error {
 	delete(c.services, s.key())
 
 	c.maps.removeService(service.key())
-	fmt.Println("REMOVED", service.key())
+
 	for _, d := range service.rips() {
 		c.maps.removeCounters(service.vrpp(d))
 	}
@@ -564,13 +560,10 @@ func (c *client) CreateDestination(s Service, d Destination) error {
 	}
 
 	c.ping(d.Address)
-	c.maps.createCounters(service.vrpp(d.Address))
-	c.natmap.add(service.service.Address, d.Address)
-	c.natmap.index()
+	c.maps.createCounters(s.vrpp(d.Address))
+	c.natmap.add(s.Address, d.Address)
 
-	c.calcService(service)
-
-	return nil
+	return c.syncService(service, true, false)
 }
 
 func (c *client) UpdateDestination(s Service, d Destination) error {
@@ -587,9 +580,7 @@ func (c *client) UpdateDestination(s Service, d Destination) error {
 		return err
 	}
 
-	c.calcService(service)
-
-	return nil
+	return c.syncService(service, false, false)
 }
 
 func (c *client) RemoveDestination(s Service, d Destination) error {
@@ -608,11 +599,7 @@ func (c *client) RemoveDestination(s Service, d Destination) error {
 
 	c.maps.removeCounters(s.vrpp(d.Address))
 
-	//service.recalc()
-	c.calcService(service)
-	c.clean()
-
-	return nil
+	return c.syncService(service, false, true)
 }
 
 // Creates a service if it does not exist, and populate the list of
@@ -628,41 +615,30 @@ func (c *client) SetService(s Service, ds ...Destination) error {
 		return c.createService(s, ds...)
 	}
 
-	err, add, del := service.set(s, ds...)
+	add, del, err := service.set(s, ds...)
 
 	if err != nil {
 		return err
-	}
-
-	for _, d := range add {
-		c.ping(d)
-		c.maps.createCounters(service.vrpp(d))
-		c.natmap.add(service.service.Address, d)
-	}
-
-	if len(add) != 0 {
-		c.natmap.index()
 	}
 
 	for _, d := range del {
 		c.maps.removeCounters(s.vrpp(d))
 	}
 
-	if len(del) != 0 {
-		c.clean()
+	for _, d := range add {
+		c.ping(d)
+		c.maps.createCounters(service.vrpp(d))
+		c.natmap.add(s.Address, d)
 	}
 
-	//service.recalc()
-	c.calcService(service)
-
-	return nil
+	return c.syncService(service, len(add) != 0, len(del) != 0)
 }
 
 // Given the virtual IP address of a service and the address of a real
 // server this will return the NAT address that can be used to query
 // the VIP address on the backend.
 func (c *client) NAT(vip netip.Addr, rip netip.Addr) netip.Addr {
-	return c.nat(vip, rip)
+	return c.netns.nat(c.natmap.get(vip, rip), vip.Is6())
 }
 
 func (c *client) ReadFlow() []byte {

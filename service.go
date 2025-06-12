@@ -65,7 +65,7 @@ func (s service) String() string {
 	return fmt.Sprintf("[%s %d %d - %d]", s.service.Address, s.service.Port, s.service.Protocol, len(s.dests))
 }
 
-func (s *service) set(service Service, ds ...Destination) (err error, add []netip.Addr, del []netip.Addr) {
+func (s *service) set(service Service, ds ...Destination) (add []netip.Addr, del []netip.Addr, err error) {
 
 	destinations := make(map[netip.Addr]Destination, len(ds))
 
