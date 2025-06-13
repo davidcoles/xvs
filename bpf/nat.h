@@ -14,20 +14,20 @@ struct vip_rip {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, addr_t); // nat
-    __type(value, struct vip_rip); // vip/rip    
-    __uint(max_entries, 4096);
+    __type(key, addr_t);
+    __type(value, struct vip_rip);
+    __uint(max_entries, MAX_SERVICES*MAX_BACKENDS);
 } nat_to_vip_rip SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, fivetuple_t);
     __type(value, struct addr_port_time);
     __uint(max_entries, 65556);
 } reply SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, fivetuple_t);
     __type(value, struct addr_port_time);
     __uint(max_entries, 1);
@@ -155,8 +155,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if ((data_end - (void *) ip6) + overhead > MTU)
 	return XDP_DROP;
 
-    if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 2)
-        ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 2;
+    if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
+        ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
     
     struct l4v6 o = { .saddr = ip6->ip6_src, .daddr = ip6->ip6_dst, .sport = eph, .dport = svc };
     struct l4v6 n = o;
@@ -309,7 +309,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     if ((data_end - (void *) ip) + overhead > MTU)
 	return XDP_DROP;
 
-    if (t.method == T_NONE && ip->ttl > 2)
+    if (t.method == T_NONE && ip->ttl > 1)
         ip4_set_ttl(ip, 2);
     
     /*
@@ -368,7 +368,10 @@ int xdp_request_v4(struct xdp_md *ctx)
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
 
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
-    bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
+    int r = bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
+
+    if(r != 0)
+	bpf_printk("bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY) %d", r);
     
     return is_ipv4_addr_p(&t.daddr) ?
 	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
@@ -527,8 +530,10 @@ int xdp_reply_v4(struct xdp_md *ctx)
 
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
 
-    if (!match)
+    if (!match) {
+	bpf_printk("!match");
 	return XDP_DROP;
+    }
     
     ip_decrease_ttl(ip); // forwarding, so decrement TTL
     
@@ -538,11 +543,15 @@ int xdp_reply_v4(struct xdp_md *ctx)
 
     __u64 time = bpf_ktime_get_ns();
     
-    if (time < match->time)
+    if (time < match->time) {
+	bpf_printk("time < match->time");
 	return XDP_DROP;
+    }
     
-    if ((time - match->time) > (5 * SECOND_NS))
+    if ((time - match->time) > (5 * SECOND_NS)) {
+	bpf_printk("(time - match->time) > (5 * SECOND_NS)");
 	return XDP_DROP;
+    }
     
     n.saddr = ip->saddr = match->nat.addr4.addr; // reply comes from the NAT addr
     n.daddr = ip->daddr = match->src.addr4.addr; // to the internal NETNS address

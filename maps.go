@@ -304,7 +304,7 @@ func (m *maps) init(bpf []byte) (err error) {
 		return err
 	}
 
-	if m.sessions, err = x.FindMap("vrpp_concurrent", int(unsafe.Sizeof(bpf_vrpp{})), 8); err != nil {
+	if m.sessions, err = x.FindMap("sessions", int(unsafe.Sizeof(bpf_vrpp{})), 8); err != nil {
 		return err
 	}
 

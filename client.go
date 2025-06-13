@@ -35,10 +35,6 @@ type threetuple struct {
 	protocol Protocol
 }
 
-//func (t threetuple) bpf() bpf_servicekey {
-//	return bpf_servicekey{addr: as16(t.address), port: t.port, proto: uint16(t.protocol)}
-//}
-
 type client struct {
 	config   Config
 	mutex    sync.Mutex
@@ -52,13 +48,6 @@ type client struct {
 	latency  uint64
 	test     bool
 }
-
-// func (c *client) nat(v, r netip.Addr) netip.Addr   { return c.netns.nat(c.natmap.get(v, r), v.Is6()) }
-// func (c *client) era() bool                        { return c.settings.era%2 > 0 }
-// func (c *client) ext(id uint16, v6 bool) netip.Addr { return c.netinfo.ext(id, v6) }
-// func (c *client) find(d Destination) backend { return c.netinfo.find(d.Address) }
-
-func (c *client) ping(ip netip.Addr) { c.icmp.ping(ip) }
 
 func (c *client) current() (r uint64) {
 	for _, s := range c.services {
@@ -132,7 +121,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 
 func (c *client) background() error {
 	reconfig := time.NewTicker(time.Minute)
-	sessions := time.NewTicker(time.Second * 5)
+	sessions := time.NewTicker(time.Second * 30)
 	icmp := time.NewTicker(time.Millisecond * 100)
 	ping := time.NewTicker(time.Second * 15)
 	init := time.NewTimer(time.Second * 20)
@@ -164,7 +153,7 @@ func (c *client) background() error {
 
 			for ip, _ := range hosts {
 				//fmt.Println("PING", ip)
-				c.ping(ip)
+				c.icmp.ping(ip)
 			}
 
 		case <-sessions.C:
@@ -439,7 +428,7 @@ func (c *client) createService(s Service, ds ...Destination) error {
 	}
 
 	for _, d := range add {
-		c.ping(d)
+		c.icmp.ping(d)
 		c.maps.createCounters(s.vrpp(d))
 		c.natmap.add(s.Address, d)
 	}
@@ -559,7 +548,7 @@ func (c *client) CreateDestination(s Service, d Destination) error {
 		return err
 	}
 
-	c.ping(d.Address)
+	c.icmp.ping(d.Address)
 	c.maps.createCounters(s.vrpp(d.Address))
 	c.natmap.add(s.Address, d.Address)
 
@@ -626,7 +615,7 @@ func (c *client) SetService(s Service, ds ...Destination) error {
 	}
 
 	for _, d := range add {
-		c.ping(d)
+		c.icmp.ping(d)
 		c.maps.createCounters(service.vrpp(d))
 		c.natmap.add(s.Address, d)
 	}

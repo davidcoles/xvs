@@ -29,6 +29,11 @@ const __u8 GUE_OVERHEAD = sizeof(struct udphdr) + sizeof(struct gue_hdr);
 
 
 static __always_inline
+int is_addr4(struct addr *a) {
+    return (!(a->addr4.pad1) && !(a->addr4.pad2) && !(a->addr4.pad3)) ? 1 : 0;
+}
+
+static __always_inline
 void *ipptr(void *data, void *data_end)
 {
     struct ethhdr *eth = data;
@@ -39,7 +44,8 @@ void *ipptr(void *data, void *data_end)
     struct iphdr *ip = (void *)(eth + 1);
 
     if (eth->h_proto == bpf_htons(ETH_P_8021Q)) {
-	ip = ip + sizeof(struct vlan_hdr); // don't do ip += ... otherwise we get a verifier issue
+	//ip = ip + sizeof(struct vlan_hdr); // don't do ip += ... otherwise we get a verifier issue
+	ip += sizeof(struct vlan_hdr); // not any more apparently!
     }
 
     if (ip + 1 > data_end)
@@ -71,11 +77,12 @@ void *ip6ptr(void *data, void *data_end)
 static __always_inline
 int nul6(struct in6_addr *a) 
 {
-    __u32 *p = (void*) a;
+    //__u32 *p = (void*) a;
+    __u64 *p = (void*) a;
     if (*(p++) != 0) return 0;
     if (*(p++) != 0) return 0;
-    if (*(p++) != 0) return 0;
-    if (*(p++) != 0) return 0;
+    //if (*(p++) != 0) return 0;
+    //if (*(p++) != 0) return 0;
     return 1;
 }
 
@@ -771,7 +778,7 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 	gue->protocol = protocol;
     }
     
-    if (! (t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
+    if (!(t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
 	udp->check = udp6_checksum((void *) p.ip, udp, p.data_end);
     
     return 0;
@@ -827,7 +834,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 	gue->protocol = protocol;
     }
     
-    if (! (t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
+    if (!(t->flags & F_TUNNEL_ENCAP_NO_CHECKSUMS))
 	udp->check = udp4_checksum((void *) p.ip, udp, p.data_end);
 
     return 0;
