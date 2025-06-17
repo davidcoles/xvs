@@ -158,11 +158,11 @@ func main() {
 		for n := uint(0); n < *remove; n++ {
 
 			info, _ := client.Info()
-			fmt.Println("Global", info.Latency, info.Stats, info.Metrics)
+			fmt.Println("Global", info.Latency, info.Stats, trim(info.Metrics))
 
 			vips, _ := client.VIPs()
 			for _, vip := range vips {
-				fmt.Println("VIP", vip.Address, vip.Metrics)
+				fmt.Println("VIP", vip.Address, trim(vip.Metrics))
 			}
 
 			services, _ := client.Services()
@@ -171,12 +171,12 @@ func main() {
 
 				s, _ := client.Service(service.Service)
 
-				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats, s.Metrics)
+				fmt.Println(s.Service.Address, s.Service.Port, s.Service.Protocol, s.Stats, trim(s.Metrics))
 
 				destinations, _ := client.Destinations(s.Service)
 
 				for _, d := range destinations {
-					fmt.Println("\t", d.Destination.Address, d.Stats, d.Metrics)
+					fmt.Println("\t", d.Destination.Address, d.Stats, trim(d.Metrics))
 				}
 
 			}
@@ -196,4 +196,13 @@ func main() {
 	}
 
 	fmt.Println("OK")
+}
+
+func trim(m map[string]uint64) map[string]uint64 {
+	for k, v := range m {
+		if v == 0 {
+			delete(m, k)
+		}
+	}
+	return m
 }

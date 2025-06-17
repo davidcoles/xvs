@@ -150,9 +150,7 @@ func (c *client) background() error {
 				hosts[r] = true
 			}
 			c.mutex.Unlock()
-
 			for ip, _ := range hosts {
-				//fmt.Println("PING", ip)
 				c.icmp.ping(ip)
 			}
 

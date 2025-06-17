@@ -155,7 +155,6 @@ func (c bpf_counter) metrics() map[string]uint64 {
 	m["too_big"] = c.too_big
 	m["adjust_failed"] = c.adjust_failed
 	m["current"] = c._current
-	trim0(m)
 	return m
 }
 
@@ -319,14 +318,5 @@ func (f bpf_global) metrics() map[string]uint64 {
 	m["icmp_frag_needed"] = f.icmp_frag_needed
 	m["userspace"] = f.userspace
 
-	trim0(m)
 	return m
-}
-
-func trim0(m map[string]uint64) {
-	for k, v := range m {
-		if v == 0 {
-			delete(m, k)
-		}
-	}
 }
