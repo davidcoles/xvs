@@ -20,7 +20,7 @@ package xvs
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -47,6 +47,7 @@ type client struct {
 	maps     maps
 	latency  uint64
 	test     bool
+	logger   *slog.Logger
 }
 
 func (c *client) current() (r uint64) {
@@ -62,7 +63,7 @@ func newClient(interfaces ...string) (*client, error) {
 
 func newClientWithOptions(options Options, interfaces ...string) (_ *client, err error) {
 
-	c := &client{services: map[threetuple]*service{}, natmap: natmap{}, test: options.Test}
+	c := &client{services: map[threetuple]*service{}, natmap: natmap{}, logger: options.Logger}
 
 	var nics []uint32
 
@@ -328,7 +329,9 @@ func (c *client) clean() {
 
 	c.maps.clean(serv, vips, vrpp, nats, c.test)
 
-	c.debug("Clean-up took", time.Now().Sub(mark))
+	if c.logger != nil {
+		c.logger.Info("Clean-up took", "duration", time.Now().Sub(mark))
+	}
 }
 
 func (c *client) Info() (Info, error) {
@@ -436,12 +439,6 @@ func (c *client) createService(s Service, ds ...Destination) error {
 	return c.syncService(service, len(add) != 0, false)
 }
 
-func (c *client) debug(info ...any) {
-	if c.test {
-		log.Println(info...)
-	}
-}
-
 func (c *client) syncService(s *service, index, clean bool) error {
 
 	if index {
@@ -452,7 +449,7 @@ func (c *client) syncService(s *service, index, clean bool) error {
 		return c.netns.nat(c.natmap.get(v, r), v.Is6())
 	}
 
-	fwd, nat := s.recalc(func(info ...any) { c.debug(info...) }, &(c.netinfo), natfn)
+	fwd, nat := s.recalc(c.logger, &(c.netinfo), natfn)
 
 	c.maps.setService(s.key(), fwd)
 
@@ -636,18 +633,16 @@ try:
 		return nil
 	}
 
-	kern := ktime()
+	kern := ktime() // no nanosecond component currently
 	when := *((*uint64)(uP(&entry[ft_size])))
 
 	if when < kern {
 		// expected
 		if when+uint64(2*time.Second) < kern {
-			print("-")
 			goto try
 		}
 	} else {
 		if kern+uint64(2*time.Second) < when {
-			print("+")
 			goto try
 		}
 	}

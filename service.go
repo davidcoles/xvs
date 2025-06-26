@@ -20,6 +20,7 @@ package xvs
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sort"
 	"time"
@@ -168,7 +169,7 @@ func (s *service) local() (r []netip.Addr) {
 	return
 }
 
-func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
+func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
 	//tunn := make(map[netip.Addr]bpf_tunnel, len(s.dests))
@@ -187,15 +188,50 @@ func (s *service) recalc(debug func(...any), netinfo *netinfo, nat func(netip.Ad
 			macs[k] = t.h_dest
 		}
 
-		debug("FWD", d, t)
+		//debug("FWD", d, t)
+
+		if logger != nil {
+			//logger.Info("FWD", "service", s.service, "destination", d,
+			//	"method", t.method, "vlanid", t.vlanid, "interface", t._interface,
+			//	"h_source", t.h_source, "h_dest", t.h_dest, "saddr", t.saddr,
+			//	"daddr", t.daddr)
+			log := []any{"service", s.service.slog(), "destination", d.slog()}
+			log = append(log, t.log()...)
+			logger.Info("FWD", log...)
+		}
 	}
 
 	s.mac = macs
 
-	return s.forwarding(debug, reals), s.nat(debug, netinfo, nat, reals)
+	return s.forwarding(logger, reals), s.nat(logger, netinfo, nat, reals)
+	//return s.forwarding(debug, reals), s.nat(debug, netinfo, nat, reals)
 }
 
-func (s *service) nat(debug func(...any), netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip.Addr, reals map[netip.Addr]dest) map[addr16]bpf_vip_rip {
+func (s *Service) slog() map[string]any {
+	return map[string]any{
+		"address":  s.Address,
+		"port":     s.Port,
+		"protocol": s.Protocol.string(),
+	}
+}
+
+func (d *Destination) slog() map[string]any {
+	return map[string]any{
+		"address": d.Address,
+	}
+}
+
+func (p Protocol) string() string {
+	switch p {
+	case TCP:
+		return "tcp"
+	case UDP:
+		return "udp"
+	}
+	return fmt.Sprintf("%d", p)
+}
+
+func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip.Addr, reals map[netip.Addr]dest) map[addr16]bpf_vip_rip {
 	vip := s.service.Address
 	ret := map[addr16]bpf_vip_rip{}
 
@@ -208,7 +244,14 @@ func (s *service) nat(debug func(...any), netinfo *netinfo, natfn func(netip.Add
 			tun.vlanid = 0 // request will be dropped
 		}
 
-		debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
+		//debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
+		if logger != nil {
+			t := tun
+			logger.Info("NAT", "vip", vip, "rip", k, "nat", nat, "ext", ext,
+				"method", t.method, "vlanid", t.vlanid, "interface", t._interface,
+				"h_source", t.h_source, "h_dest", t.h_dest, "saddr", t.saddr,
+				"daddr", t.daddr)
+		}
 
 		ret[as16(nat)] = bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
 	}
@@ -216,8 +259,8 @@ func (s *service) nat(debug func(...any), netinfo *netinfo, natfn func(netip.Add
 	return ret
 }
 
-func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd bpf_service) {
-	//func (s *service) forwarding(debug func(...any), reals map[netip.Addr]bpf_tunnel) (fwd bpf_service) {
+// func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd bpf_service) {
+func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 
@@ -255,7 +298,11 @@ func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd
 		duration = time.Now().Sub(now)
 	}
 
-	debug("MAG", s.service, fwd.hash[0:32], duration)
+	//debug("MAG", s.service, fwd.hash[0:32], duration)
+	if logger != nil {
+		hash := fmt.Sprint(fwd.hash[0:32])
+		logger.Info("MAG", "service", s.service, "hash", hash, "duration", duration)
+	}
 
 	return
 }

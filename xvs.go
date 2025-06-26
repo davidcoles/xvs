@@ -20,6 +20,7 @@ package xvs
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 )
 
@@ -41,7 +42,8 @@ type Options struct {
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
 	Routes map[netip.Prefix]uint16
-	Test   bool
+	//Test   bool
+	Logger *slog.Logger
 }
 
 func (o *Options) config() *Config {

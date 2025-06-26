@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +84,14 @@ func main() {
 		}
 	}
 
-	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6, Test: *test}
+	//logger := slog.Default()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	if !*test {
+		logger = nil
+	}
+
+	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6, Logger: logger}
 
 	fmt.Println("Starting ...")
 

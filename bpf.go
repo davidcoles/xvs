@@ -198,6 +198,17 @@ func (t *bpf_tunnel) local() bool {
 	return t.hints&notLocal == 0
 }
 
+func (t *bpf_tunnel) log() []any {
+	return []any{
+		"method", t.method,
+		"vlanid", t.vlanid,
+		"interface", t._interface,
+		"h_source", t.h_source,
+		"h_dest", t.h_dest,
+		"saddr", t.saddr,
+		"daddr", t.daddr}
+}
+
 type bpf_vlaninfo struct {
 	ip4 addr16
 	ip6 addr16
