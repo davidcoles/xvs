@@ -24,30 +24,36 @@ import (
 	"sync"
 )
 
-var mutex6 sync.RWMutex
+var natmapMutex sync.RWMutex
 
-type natmap map[[2]netip.Addr]uint16
+type natmap map[[2]netip.Addr]uint32
 
-func (f natmap) add(v, r netip.Addr) uint16 {
-	mutex6.Lock()
-	defer mutex6.Unlock()
+func (f natmap) add(v, r netip.Addr) uint32 {
+	natmapMutex.Lock()
+	defer natmapMutex.Unlock()
 	k := [2]netip.Addr{v, r}
 	n := f[k]
 	f[k] = n // existing value if exists, 0 otherwise
 	return n
 }
 
-func (f natmap) get(v, r netip.Addr) uint16 {
-	mutex6.RLock()
-	defer mutex6.RUnlock()
+func (f natmap) del(v, r netip.Addr) {
+	natmapMutex.Lock()
+	defer natmapMutex.Unlock()
+	delete(f, [2]netip.Addr{v, r})
+}
+
+func (f natmap) get(v, r netip.Addr) uint32 {
+	natmapMutex.RLock()
+	defer natmapMutex.RUnlock()
 	k := [2]netip.Addr{v, r}
 	return f[k]
 }
 
-func (f natmap) all() map[[2]netip.Addr]uint16 {
-	mutex6.RLock()
-	defer mutex6.RUnlock()
-	m := map[[2]netip.Addr]uint16{}
+func (f natmap) all() map[[2]netip.Addr]uint32 {
+	natmapMutex.RLock()
+	defer natmapMutex.RUnlock()
+	m := map[[2]netip.Addr]uint32{}
 	for k, v := range f {
 		m[k] = v
 	}
@@ -55,21 +61,28 @@ func (f natmap) all() map[[2]netip.Addr]uint16 {
 }
 
 func (f natmap) index() (b bool, e error) {
-	mutex6.Lock()
-	defer mutex6.Unlock()
-	m := map[uint16]bool{}
-	var n uint16
+	natmapMutex.Lock()
+	defer natmapMutex.Unlock()
+	m := map[uint32]bool{}
+	var n uint32
 	for _, v := range f {
 		m[v] = true
 	}
 
 	for k, v := range f {
 		for v == 0 {
-			b = true
-			if n >= 65530 {
+			/*
+				b = true
+				if n >= 65530 {
+					return b, errors.New("Too many hosts")
+				}
+				n++
+			*/
+
+			n++
+			if n >= 16777210 {
 				return b, errors.New("Too many hosts")
 			}
-			n++
 
 			if _, exists := m[n]; !exists {
 				v = n
@@ -81,8 +94,8 @@ func (f natmap) index() (b bool, e error) {
 	return b, e
 }
 func (f natmap) rips() map[netip.Addr]bool {
-	mutex6.RLock()
-	defer mutex6.RUnlock()
+	natmapMutex.RLock()
+	defer natmapMutex.RUnlock()
 	rips := map[netip.Addr]bool{}
 	for k, _ := range f {
 		r := k[1]
@@ -92,8 +105,8 @@ func (f natmap) rips() map[netip.Addr]bool {
 }
 
 func (f natmap) clean(m map[[2]netip.Addr]bool) (c bool) {
-	mutex6.Lock()
-	defer mutex6.Unlock()
+	natmapMutex.Lock()
+	defer natmapMutex.Unlock()
 	for k, _ := range f {
 		if _, exists := m[k]; !exists {
 			c = true

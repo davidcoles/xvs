@@ -42,7 +42,6 @@ type Options struct {
 	VLANs4 map[uint16]netip.Prefix
 	VLANs6 map[uint16]netip.Prefix
 	Routes map[netip.Prefix]uint16
-	//Test   bool
 	Logger *slog.Logger
 }
 
@@ -70,7 +69,7 @@ type Client interface {
 	// SetService combines the functionality of CreateService,
 	// UpdateService, CreateDestination, UpdateDestination and
 	// RemoveDestination. If the service does not exist it will be
-	// created with the given paramaters and destinaitons, or updated
+	// created with the given parameters and destinations, or updated
 	// to match them if extant.
 	SetService(Service, ...Destination) error
 

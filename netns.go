@@ -44,14 +44,14 @@ type netns struct {
 	i3 nic
 }
 
-func (n *netns) nat(idx uint16, wantIPv6 bool) (r netip.Addr) {
-	if idx == 0 {
+func (n *netns) nat(idx uint32, wantIPv6 bool) (r netip.Addr) {
+	if idx == 0 || idx > 16777210 {
 		return
 	}
 
 	nat := n.i2.ip6.As16()
-	nat[13] = 0 // we could extend the number of supported tuples now
-	nat[14] = byte(idx >> 8)
+	nat[13] = byte((idx >> 16) & 0xff)
+	nat[14] = byte((idx >> 8) & 0xff)
 	nat[15] = byte(idx & 0xff)
 
 	if wantIPv6 {
@@ -84,7 +84,7 @@ func (n *netns) init(x *xdp.XDP) error {
 	n.i3.ip6 = n.i2.ip6.Next()
 
 	if err := n.create_pair(&n.i0, &n.i1); err != nil {
-		return fmt.Errorf("Error creating netns2: %s", err.Error())
+		return fmt.Errorf("Error creating netns: %s", err.Error())
 	}
 
 	if err := x.LoadBpfSection("xdp_pass", false, uint32(n.i0.idx)); err != nil {
