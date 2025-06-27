@@ -47,13 +47,6 @@ func (s *service) current() (r uint64) {
 	return
 }
 
-func (s *service) concurrent() (c uint64) {
-	for d, _ := range s.dests {
-		c += s.sessions[d]
-	}
-	return
-}
-
 func (s *Service) key() threetuple {
 	return threetuple{address: s.Address, port: s.Port, protocol: s.Protocol}
 }
@@ -172,7 +165,6 @@ func (s *service) local() (r []netip.Addr) {
 func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
-	//tunn := make(map[netip.Addr]bpf_tunnel, len(s.dests))
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
@@ -180,21 +172,11 @@ func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.A
 
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
-		//if !d.Disable && t.vlanid != 0 {
-		//	tunn[k] = t
-		//}
-
 		if t.local() {
 			macs[k] = t.h_dest
 		}
 
-		//debug("FWD", d, t)
-
 		if logger != nil {
-			//logger.Info("FWD", "service", s.service, "destination", d,
-			//	"method", t.method, "vlanid", t.vlanid, "interface", t._interface,
-			//	"h_source", t.h_source, "h_dest", t.h_dest, "saddr", t.saddr,
-			//	"daddr", t.daddr)
 			log := []any{"service", s.service.slog(), "destination", d.slog()}
 			log = append(log, t.log()...)
 			logger.Info("FWD", log...)
@@ -204,7 +186,6 @@ func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.A
 	s.mac = macs
 
 	return s.forwarding(logger, reals), s.nat(logger, netinfo, nat, reals)
-	//return s.forwarding(debug, reals), s.nat(debug, netinfo, nat, reals)
 }
 
 func (s *Service) slog() map[string]any {
@@ -244,7 +225,6 @@ func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Ad
 			tun.vlanid = 0 // request will be dropped
 		}
 
-		//debug(fmt.Sprintf("NAT %s->%s => %s %s %s->%s", vip, k, nat, tun, ext, vip))
 		if logger != nil {
 			t := tun
 			logger.Info("NAT", "vip", vip, "rip", k, "nat", nat, "ext", ext,
@@ -259,7 +239,6 @@ func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Ad
 	return ret
 }
 
-// func (s *service) forwarding(debug func(...any), reals map[netip.Addr]dest) (fwd bpf_service) {
 func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
@@ -284,7 +263,6 @@ func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fw
 		for i, a := range addrs {
 			dests[i] = reals[a].tunnel
 			nodes[i] = []byte(a.String())
-			//nodes[i] = []byte(reals[a].daddr.String())
 		}
 
 		for i, v := range dests {
@@ -298,7 +276,6 @@ func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fw
 		duration = time.Now().Sub(now)
 	}
 
-	//debug("MAG", s.service, fwd.hash[0:32], duration)
 	if logger != nil {
 		hash := fmt.Sprint(fwd.hash[0:32])
 		logger.Info("MAG", "service", s.service, "hash", hash, "duration", duration)

@@ -44,41 +44,30 @@ type netns struct {
 	i3 nic
 }
 
-func (n *netns) nat4(i uint16) (nat [16]byte) {
-	nat = n.nat6(i)
-	nat[0] = 0
-	nat[1] = 0
-	return
-}
-func (n *netns) nat6(i uint16) (nat [16]byte) {
-	nat = n.i2.ip6.As16()
-	nat[13] = 0
-	nat[14] = byte(i >> 8)
-	nat[15] = byte(i & 0xff)
-	return
-}
-
-func (n *netns) nat(idx uint16, ipv6 bool) (r netip.Addr) {
+func (n *netns) nat(idx uint16, wantIPv6 bool) (r netip.Addr) {
 	if idx == 0 {
 		return
 	}
-	if ipv6 {
-		ip := n.nat6(idx)
-		return netip.AddrFrom16(ip)
+
+	nat := n.i2.ip6.As16()
+	nat[13] = 0 // we could extend the number of supported tuples now
+	nat[14] = byte(idx >> 8)
+	nat[15] = byte(idx & 0xff)
+
+	if wantIPv6 {
+		return netip.AddrFrom16(nat)
 	}
 
 	var ip4 [4]byte
-	ip := n.nat4(idx)
-	copy(ip4[:], ip[12:])
+	copy(ip4[:], nat[12:])
 	return netip.AddrFrom4(ip4)
 }
 
-// func (n *netns) veth() uint32     { return uint32(n.a.idx) }
-// func (n *netns) vetha() [6]byte   { return n.a.mac }
-// func (n *netns) vethb() [6]byte   { return n.b.mac }
+func (n *netns) nic() uint32      { return uint32(n.i0.idx) }
+func (n *netns) src() [6]byte     { return n.i0.mac }
+func (n *netns) dst() [6]byte     { return n.i1.mac }
 func (n *netns) ipv4() netip.Addr { return n.i2.ip4 }
 func (n *netns) ipv6() netip.Addr { return n.i2.ip6 }
-
 func (n *netns) init(x *xdp.XDP) error {
 
 	namespace := "xvs"
@@ -130,11 +119,6 @@ func (n *netns) init(x *xdp.XDP) error {
 	return nil
 }
 
-func (n *netns) nic() uint32  { return uint32(n.i0.idx) }
-func (n *netns) src() [6]byte { return n.i0.mac }
-func (n *netns) dst() [6]byte { return n.i1.mac }
-
-// func (n *netns) create_pair(if1, if2 string) (a nic, b nic, err error) {
 func (n *netns) create_pair(a, b *nic) (err error) {
 	script := `
 ip link del ` + a.nic + ` >/dev/null 2>&1 || true

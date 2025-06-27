@@ -74,6 +74,7 @@ func (a addr16) String() string {
 	return netip.AddrFrom4(a4).String()
 }
 
+/*
 func from16(a [16]byte) netip.Addr {
 	var is6 bool = false
 	for n := 0; n < 12; n++ {
@@ -92,6 +93,7 @@ func from16(a [16]byte) netip.Addr {
 
 	return netip.AddrFrom4(a4)
 }
+*/
 
 type bpf_vrpp struct {
 	vaddr    addr16 // virtual service IP
@@ -279,10 +281,10 @@ type bpf_global struct {
 	userspace          uint64
 }
 
-func (p bpf_global) String() string {
-	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d syn:%d ack:%d",
-		p.malformed, p.not_ip, p.not_a_vip, p.too_big, p.packets, p.flows, p.syn, p.ack)
-}
+//func (p bpf_global) String() string {
+//	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d syn:%d ack:%d",
+//		p.malformed, p.not_ip, p.not_a_vip, p.too_big, p.packets, p.flows, p.syn, p.ack)
+//}
 
 func (f bpf_global) stats() (s Stats) {
 	s.Packets = f.packets
