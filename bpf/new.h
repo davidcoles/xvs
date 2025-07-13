@@ -655,7 +655,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
 {
     __be32 saddr = t->saddr.addr4.addr;
     __be32 daddr = t->daddr.addr4.addr;
-    
+
     if (!saddr || !daddr)
 	return -1;
     
@@ -685,7 +685,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     // some final sanity checks on ethernet addresses
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
-
+    
     // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
     return orig_len;
 }
@@ -750,6 +750,9 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 static __always_inline
 int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
+    if (!t->sport || !t->dport)
+	return -1;
+    
     struct pointers p = {};
     int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
     int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, overhead);
@@ -806,6 +809,9 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 static __always_inline
 int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 {
+    if (!t->sport || !t->dport)
+	return -1;
+
     struct pointers p = {};
     int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
     int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, overhead);

@@ -125,17 +125,11 @@ func main() {
 		}
 	}
 
-	var sflags xvs.Flags
-
-	if *sticky {
-		sflags |= xvs.Sticky
-	}
-
 	for _, vip := range vips {
 
 		for _, port := range ports {
 
-			service := xvs.Service{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Flags: sflags}
+			service := xvs.Service{Address: netip.MustParseAddr(vip), Port: port, Protocol: xvs.TCP, Sticky: *sticky}
 
 			if err := client.CreateService(service); err != nil {
 				log.Fatal(service, err)

@@ -96,7 +96,8 @@ type Service struct {
 	Address  netip.Addr
 	Port     uint16
 	Protocol Protocol
-	Flags    Flags
+	Sticky   bool
+	//Flags    Flags
 }
 
 type Stats struct {

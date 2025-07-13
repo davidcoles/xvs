@@ -249,7 +249,15 @@ func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fw
 		}
 	}
 
-	fwd.dest[0].flags = uint8(s.service.Flags)
+	var flags Flags
+
+	if s.service.Sticky {
+		flags |= Sticky
+	}
+
+	fwd.dest[0].flags = uint8(flags)
+
+	//fwd.dest[0].flags = uint8(s.service.Flags)
 
 	var duration time.Duration
 

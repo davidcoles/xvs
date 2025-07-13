@@ -637,6 +637,13 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	
 	if (!index)
 	    return FWD_ERROR(metadata, no_backend);
+
+	switch (t->method) {
+	case T_FOU:
+	case T_GUE:
+	    if (!t->dport)
+		return FWD_ERROR(metadata, no_backend); // FIXME - new error code
+	}
 	
 	*t = service->dest[index];
 	t->sport = t->sport ? t->sport : 0x8000 | (hash4 & 0x7fff);
@@ -898,7 +905,7 @@ int too_big(struct xdp_md *ctx, fivetuple_t *ft, int req_mtu, int vip_is_ipv6) {
 static __always_inline
 enum fwd_action FWD(metadata_t *m, int r)
 {
-    if (r == 0)
+    if (r >= 0)
 	return FWD_OK;
 
     // can do more detailed error reporting here if r is set to something other than -1
