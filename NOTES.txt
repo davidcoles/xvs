@@ -1,3 +1,6 @@
+vmxnet3 diver in native mode does not set data_end to the end of the packet, but the end of a buffer.
+consequently the checks for overhead in tunnelling fail and packets are rejexted - use the IP declared packet length instead
+
 // all backends in data plane have full source IP/HW addresses in destinfo - no need to look up seperate VLAN details
 // On a single inferface then TX always
 // On a single/bond interface with VLAN header then update VLAN header (if necc) and TX always

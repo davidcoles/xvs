@@ -48,10 +48,26 @@ const (
 	FOU  TunnelType = bpf.T_FOU
 	GUE  TunnelType = bpf.T_GUE
 
-	Sticky Flags = bpf.F_STICKY
-
-	TunnelEncapNoChecksums TunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
+	sticky                 flags       = bpf.F_STICKY
+	tunnelEncapNoChecksums tunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
 )
+
+func (t TunnelType) string() string {
+	switch t {
+	case NONE:
+		return "none"
+	case IPIP:
+		return "ipip"
+	case GRE:
+		return "gre"
+	case FOU:
+		return "fou"
+	case GUE:
+		return "gre"
+	}
+
+	return fmt.Sprintf("%d", t)
+}
 
 func ktime() uint64 { return xdp.KtimeGet() * uint64(time.Second) }
 

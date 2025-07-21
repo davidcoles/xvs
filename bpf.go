@@ -55,6 +55,10 @@ func (m mac) String() string {
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 }
 
+func (m mac) rfc7042() string {
+	return fmt.Sprintf("%02x-%02x-%02x-%02x-%02x-%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
 func (a addr16) String() string {
 	var is6 bool = false
 	for n := 0; n < 12; n++ {
@@ -130,16 +134,18 @@ func (c *bpf_counter) add(x bpf_counter) {
 }
 
 func (c bpf_counter) stats() (s Stats) {
-	s.Packets = c.packets
-	s.Octets = c.octets
-	s.Flows = c.flows
-	s.Errors = c.errors
-	s.Current = c._current
+	/*
+		s.Packets = c.packets
+		s.Octets = c.octets
+		s.Flows = c.flows
+		s.Errors = c.errors
+		s.Current = c._current
+	*/
 
-	//s.SYN = c.syn
-	//s.ACK = c.ack
-	//s.FIN = c.fin
-	//s.RST = c.rst
+	s.Connections = c.flows
+	s.IncomingPackets = c.packets
+	s.IncomingBytes = c.octets
+
 	return
 }
 
@@ -200,15 +206,30 @@ func (t *bpf_tunnel) local() bool {
 	return t.hints&notLocal == 0
 }
 
-func (t *bpf_tunnel) log() []any {
-	return []any{
-		"method", t.method,
-		"vlanid", t.vlanid,
-		"interface", t._interface,
-		"h_source", t.h_source,
-		"h_dest", t.h_dest,
-		"saddr", t.saddr,
-		"daddr", t.daddr}
+func (t *bpf_tunnel) slog() (l []any) {
+	l = []any{
+		"vlan.id", t.vlanid,
+		"interface.id", t._interface,
+		"destination.ip", t.daddr.String(),
+		"destination.mac", t.h_dest.rfc7042(),
+		"source.ip", t.saddr.String(),
+		"source.mac", t.h_source.rfc7042(),
+	}
+
+	if TunnelType(t.method) != NONE {
+		l = append(l, "tunnel.type", TunnelType(t.method).string())
+
+		switch TunnelType(t.method) {
+		case IPIP:
+		case GRE:
+		default:
+			if t.dport != 0 {
+				l = append(l, "tunnel.port", t.dport)
+			}
+		}
+	}
+
+	return
 }
 
 type bpf_vlaninfo struct {
@@ -287,11 +308,18 @@ type bpf_global struct {
 //}
 
 func (f bpf_global) stats() (s Stats) {
-	s.Packets = f.packets
-	s.Octets = f.octets
-	s.Flows = f.flows
-	s.Current = f._current
-	s.Errors = f.errors
+	/*
+		s.Packets = f.packets
+		s.Octets = f.octets
+		s.Flows = f.flows
+		s.Current = f._current
+		s.Errors = f.errors
+	*/
+
+	s.Connections = f.flows
+	s.IncomingPackets = f.packets
+	s.IncomingBytes = f.octets
+
 	return
 }
 

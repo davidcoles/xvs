@@ -964,7 +964,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
 
-    if ((data_end - next_header) + overhead > metadata->mtu) {
+    if (result != FWD_LAYER2_DSR && (data_end - next_header) + overhead > metadata->mtu) {
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);

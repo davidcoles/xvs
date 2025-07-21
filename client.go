@@ -79,7 +79,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	if err = c.maps.init(options.BPF); err != nil {
+	if err = c.maps.init(options.BPFProgram); err != nil {
 		return nil, err
 	}
 
@@ -89,7 +89,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 
 	c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
 
-	if options.Bond {
+	if options.Bonding {
 		c.settings.multi = 0 // if untagged packet recieved then TX it rather than redirect
 	} else {
 		c.settings.multi = uint8(len(interfaces))
@@ -101,15 +101,21 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 
 	for _, nic := range nics {
 		c.maps.xdp.LinkDetach(nic)
+		if options.InterfaceInitDelay > 0 {
+			time.Sleep(time.Duration(options.InterfaceInitDelay) * time.Second)
+		}
 	}
 
-	if err = c.maps.initialiseFlows(options.Flows); err != nil {
+	if err = c.maps.initialiseFlows(options.FlowsPerCPU); err != nil {
 		return nil, err
 	}
 
 	for _, nic := range nics {
-		if err = c.maps.xdp.LoadBpfSection("xdp_forward_func", options.Native, nic); err != nil {
+		if err = c.maps.xdp.LoadBpfSection("xdp_forward_func", options.DriverMode, nic); err != nil {
 			return nil, err
+		}
+		if options.InterfaceInitDelay > 0 {
+			time.Sleep(time.Duration(options.InterfaceInitDelay) * time.Second)
 		}
 	}
 
@@ -287,7 +293,7 @@ func (c *client) icmpQueue() {
 
 func (c *client) configure() {
 
-	c.netinfo.config(c.config.VLANs4, c.config.VLANs6, c.config.Routes)
+	c.netinfo.config(c.config.IPv4VLANs, c.config.IPv6VLANs, c.config.Routes)
 
 	for i := uint32(1); i < 4095; i++ {
 		vi, v4, v6 := c.netinfo.vlaninfo(uint16(i))

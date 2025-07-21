@@ -531,7 +531,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
 
     if (!match) {
-	bpf_printk("!match");
 	return XDP_DROP;
     }
     
