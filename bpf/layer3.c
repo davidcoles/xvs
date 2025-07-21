@@ -48,7 +48,8 @@ const __u64 TIMEOUT = 60; // seconds
 enum fwd_action {
     FWD_OK = 0,
     FWD_TX,
-    FWD_PROBE_REPLY,
+    FWD_PROBE_REPLY4,
+    FWD_PROBE_REPLY6,
     FWD_PASS,
     FWD_DROP,
 
@@ -693,6 +694,8 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR(metadata, malformed);
+
+    metadata->octets = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
     
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
@@ -705,7 +708,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     
     if (!metadata->vip) {
     	if (bpf_map_lookup_elem(&vip_metrics, &saddr))
-	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+	    return FWD_PROBE_REPLY6; // source was a VIP - send to netns via veth interface
 	
 	metadata->global->not_a_vip++;
 	return FWD_PASS; // <- NOT AN ERROR
@@ -795,6 +798,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
 	return FWD_ERROR(metadata, malformed);
 
+    metadata->octets = bpf_ntohs(ip->tot_len);
+    
     struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
     
@@ -805,8 +810,9 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
     
     if (!metadata->vip) {
-	if (bpf_map_lookup_elem(&vip_metrics, &saddr))
-	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+	if (bpf_map_lookup_elem(&vip_metrics, &saddr)) {
+	    return FWD_PROBE_REPLY4; // source was a VIP - send to netns via veth interface
+	}
 	
 	metadata->global->not_a_vip++;
 	return FWD_PASS; // <- NOT AN ERROR
@@ -964,7 +970,14 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
 
-    if (result != FWD_LAYER2_DSR && (data_end - next_header) + overhead > metadata->mtu) {
+    //if ((data_end - next_header) + overhead > metadata->mtu) {
+
+    // vmxnet3 in driver mode presents a buffer that can contain an
+    // MTU sized packet, so (data_end - next_header) is not the same
+    // as the size of the packet. better to use the size of the packet
+    // from the packet headers
+
+    if (metadata->octets + overhead > metadata->mtu) {	
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);
@@ -988,6 +1001,12 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 
 
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 2);
+} jmp_table1 SEC(".maps");
 
 SEC("xdp")
 int xdp_forward_func(struct xdp_md *ctx)
@@ -1062,7 +1081,7 @@ int xdp_forward_func(struct xdp_md *ctx)
         return XDP_PASS;
 	
     case FWD_OK:
-
+	
 	if (metadata.backend)
 	    COUNTERS(metadata.backend, metadata);
 	
@@ -1082,7 +1101,15 @@ int xdp_forward_func(struct xdp_md *ctx)
 	    bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
-    case FWD_PROBE_REPLY:
+    case FWD_PROBE_REPLY6:
+	bpf_tail_call(ctx, &jmp_table1, 1);
+	return XDP_DROP;
+	
+    case FWD_PROBE_REPLY4:
+	bpf_tail_call(ctx, &jmp_table1, 0);
+	return XDP_DROP;
+
+	/*
 	if (!s->veth || nulmac(s->vetha) || nulmac(s->vethb))
 	    return XDP_DROP;
 	
@@ -1093,6 +1120,7 @@ int xdp_forward_func(struct xdp_md *ctx)
 	    return XDP_DROP;
 
 	return bpf_redirect(s->veth, 0);
+	*/
 
 	/**********************************************************************/
 
@@ -1106,8 +1134,10 @@ int xdp_forward_func(struct xdp_md *ctx)
     }
     
     return XDP_PASS;
-}
 
+    //fwd_probe_reply:
+    //return xdp_reply_(ctx, eth, ipv6);
+}
 
 char _license[] SEC("license") = "GPL";
 

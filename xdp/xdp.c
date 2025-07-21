@@ -205,3 +205,43 @@ struct sockaddr_ll {
         unsigned char   sll_addr[8]; //
 };
 */
+
+int load_tail_call(void *o, char *name, int map, int index) {
+    struct bpf_object *obj = o;
+    struct bpf_program *bpf_prog;
+    int prog_fd = -1;
+
+    bpf_prog = bpf_object__find_program_by_name(obj, name);
+    if (!bpf_prog) {
+        fprintf(stderr, "ERR: finding progsec: %s\n", name);
+        return -1;
+    }
+
+    prog_fd = bpf_program__fd(bpf_prog);
+    if (prog_fd <= 0) {
+        fprintf(stderr, "ERR: bpf_program__fd failed\n");
+        return -1;
+    }
+
+    return bpf_map_update_elem(map, &index, &prog_fd, BPF_ANY);
+}
+
+int program_fd(void *o, char *name, int map, int index) {
+    struct bpf_object *obj = o;
+    struct bpf_program *bpf_prog;
+    int prog_fd = -1;
+
+    bpf_prog = bpf_object__find_program_by_name(obj, name);
+    if (!bpf_prog) {
+        fprintf(stderr, "ERR: finding progsec: %s\n", name);
+        return -1;
+    }
+
+    prog_fd = bpf_program__fd(bpf_prog);
+    if (prog_fd <= 0) {
+        fprintf(stderr, "ERR: bpf_program__fd failed\n");
+        return -1;
+    }
+
+    return bpf_map_update_elem(map, &index, &prog_fd, BPF_ANY);
+}

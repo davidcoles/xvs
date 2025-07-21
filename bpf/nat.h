@@ -142,6 +142,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     }
     
     int overhead = 0;
+    int packet_length = sizeof(struct ip6_hdr) + bpf_ntohs(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct ip6_hdr) + GRE_OVERHEAD; break;
@@ -152,7 +153,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     default: return XDP_DROP;
     }
 
-    if ((data_end - (void *) ip6) + overhead > MTU)
+    //if ((data_end - (void *) ip6) + overhead > MTU) // vmxnet3 issue
+    if (packet_length + overhead > MTU)	
 	return XDP_DROP;
 
     if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
@@ -296,6 +298,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
 
     int overhead = 0;
+    int packet_length = bpf_ntohs(ip->tot_len);
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
@@ -306,8 +309,12 @@ int xdp_request_v4(struct xdp_md *ctx)
     default: return XDP_DROP;
     }
 
-    if ((data_end - (void *) ip) + overhead > MTU)
-	return XDP_DROP;
+    //if ((data_end - (void *) ip) + overhead > MTU) // vmxnet3 issue
+    if (packet_length + overhead > MTU)	{
+	bpf_printk("packet_length %d %d %d", packet_length, overhead, MTU);
+    }
+    //	return XDP_DROP;
+
 
     if (t.method == T_NONE && ip->ttl > 1)
         ip4_set_ttl(ip, 2);
@@ -382,17 +389,32 @@ static __always_inline
 int xdp_reply_v6(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-    
-    struct ethhdr *eth = data;
-    
+    struct ethhdr *eth = (void *)(long)ctx->data;
+
     if (eth + 1 > data_end)
         return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IPV6))
-       	return XDP_PASS;
-    
+
+    // DO NOT pop VLAN headers if present
     struct ip6_hdr *ip6 = (void *)(eth + 1);
+    struct vlan_hdr *vlan = NULL;
+    __be16 next_proto = eth->h_proto;
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {
+        vlan = (void *)(eth + 1);
+        if (vlan + 1 > data_end) {
+            return XDP_DROP;
+        }
+        next_proto = vlan->h_vlan_encapsulated_proto;
+        ip6 = (void*)(vlan + 1);
+    }
+
+    if (next_proto != bpf_htons(ETH_P_IPV6))
+        return XDP_DROP;
+
+
+    //if (eth->h_proto != bpf_htons(ETH_P_IPV6))
+    //	return XDP_PASS;
+    
+    //struct ip6_hdr *ip6 = (void *)(eth + 1);
     
     if (ip6 + 1 > data_end)
         return XDP_DROP;
@@ -478,12 +500,28 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     if (eth + 1 > data_end)
         return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-	return XDP_DROP;
-    
+
+    // DO NOT pop VLAN headers if present
     struct iphdr *ip = (void *)(eth + 1);
+    struct vlan_hdr *vlan = NULL;
+    __be16 next_proto = eth->h_proto;
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {
+	vlan = (void *)(eth + 1);
+        if (vlan + 1 > data_end) {
+            return XDP_DROP;
+        }
+        next_proto = vlan->h_vlan_encapsulated_proto;
+        ip = (void*)(vlan + 1);
+    }
+
+    if (next_proto != bpf_htons(ETH_P_IP))
+	return XDP_DROP;
+
+    //if (eth->h_proto != bpf_htons(ETH_P_IP))
+    //	return XDP_DROP;
     
+    //struct iphdr *ip = (void *)(eth + 1); 
+
     if (ip + 1 > data_end)
 	return XDP_DROP;
         
@@ -565,7 +603,7 @@ int xdp_reply_v4(struct xdp_md *ctx)
 	udp->check = l4_csum_diff(&n, &o, udp->check);
 	break;
     }
-    
+
     return XDP_PASS;
 }
 
@@ -675,4 +713,18 @@ SEC("xdp")
 int xdp_pass(struct xdp_md *ctx)
 {
     return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_reply_v4_(struct xdp_md *ctx)
+{
+    //bpf_printk("xdp_reply_v4_");
+    return xdp_reply_v4(ctx);
+}
+
+SEC("xdp")
+int xdp_reply_v6_(struct xdp_md *ctx)
+{
+    //bpf_printk("xdp_reply_v6_");
+    return xdp_reply_v6(ctx);
 }

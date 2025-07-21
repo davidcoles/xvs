@@ -175,3 +175,22 @@ func (x *XDP) SendRawPacket(iface int, h_dest, h_source [6]byte, packet []byte) 
 
 	return C.send_raw_packet(x.s, C.int(iface), (*C.char)(unsafe.Pointer(&pkt)), C.int(len(packet)+14)) == 0
 }
+
+type foo = *C.struct_bpf_object
+
+func (x *XDP) ProgramFD(section string) (int32, error) {
+
+	bpf_prog := C.bpf_object__find_program_by_name(foo(x.p), C.CString(section))
+
+	if bpf_prog == nil {
+		return 0, fmt.Errorf("Couldn't find BPF program '%s'", section)
+	}
+
+	prog_fd := int32(C.bpf_program__fd(bpf_prog))
+
+	if prog_fd < 0 {
+		return 0, fmt.Errorf("Couldn't find file descriptor for BPF program '%s': %d", section, prog_fd)
+	}
+
+	return prog_fd, nil
+}

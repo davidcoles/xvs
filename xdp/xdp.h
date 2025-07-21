@@ -25,3 +25,4 @@ int create_lru_hash(int, int, const char *, int, int, int);
 int max_entries(int);
 int raw_socket();
 int send_raw_packet(int, int, char *, int);
+int load_tail_call(void *, char *, int, int);

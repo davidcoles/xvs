@@ -106,6 +106,14 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		}
 	}
 
+	if err = c.maps.tailCall("xdp_reply_v4_", 0); err != nil {
+		return nil, err
+	}
+
+	if err = c.maps.tailCall("xdp_reply_v6_", 1); err != nil {
+		return nil, err
+	}
+
 	if err = c.maps.initialiseFlows(options.FlowsPerCPU); err != nil {
 		return nil, err
 	}
