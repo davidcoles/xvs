@@ -396,11 +396,34 @@ int xdp_mirror_func(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
 
+    addr_t nat = {};
+    
     if (eth + 1 > data_end)
         return XDP_DROP;
 
     struct iphdr *ip = (void *)(eth + 1);
     struct ip6_hdr *ip6 = (void *)(eth + 1);
+
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	if (ip + 1 > data_end)
+            return XDP_DROP;
+	nat.addr4.addr = ip->daddr;
+	break;
+    case bpf_htons(ETH_P_IPV6):
+	if (ip6 + 1 > data_end)
+            return XDP_DROP;
+	nat.addr6 = ip6->ip6_dst;
+	break;
+    default:
+	return XDP_PASS;
+    }
+
+    if (!bpf_map_lookup_elem(&nat_to_vip_rip, &nat))
+	return XDP_PASS; 
+
+    reverse_ethhdr(eth);
+    return XDP_TX;
     
     switch(eth->h_proto) {
     case bpf_htons(ETH_P_IP):
