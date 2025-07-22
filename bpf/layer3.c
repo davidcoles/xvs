@@ -750,8 +750,6 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
         if (icmp + 1 > data_end)
 	    return FWD_ERROR(metadata, icmp_header);
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
-	    goto fake_icmp;
-	    //bpf_printk("ICMPv6");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
 	    struct icmp6_hdr old = *icmp;
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
@@ -763,7 +761,6 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	}
 	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
 	    //bpf_printk("ICMPv6 ICMP6_PACKET_TOO_BIG");
-	fake_icmp:
 	    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
 		return FWD_ERROR(metadata, internal);
 	    
@@ -863,8 +860,6 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	if (icmp + 1 > data_end)
     	    return FWD_ERROR(metadata, icmp_header);
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
-	    //bpf_printk("ICMPv4");
-	    goto fake_icmp;
 	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
 	    struct icmphdr old = *icmp;
 	    icmp->type = ICMP_ECHOREPLY;
@@ -876,7 +871,6 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	}
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    //bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
-	fake_icmp:
 	    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
 		return FWD_ERROR(metadata, internal);
 	    

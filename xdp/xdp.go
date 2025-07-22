@@ -175,26 +175,7 @@ func (m Map) MaxEntries() int {
 	return int(C.max_entries(C.int(m)))
 }
 
-func (x *XDP) SendRawPacket(iface int, h_dest, h_source [6]byte, packet []byte, ipv6 bool) int {
-	// ethernet frame: dst[6], source[6], transport_protocol[2] #define ETH_P_IP 0x0800
-	var pkt [14 + 2048]byte
-
-	if ipv6 {
-		pkt[12] = 0x86
-		pkt[13] = 0xdd
-	} else {
-		pkt[12] = 0x08
-		pkt[13] = 0x00
-	}
-
-	copy(pkt[0:], h_dest[:])
-	copy(pkt[6:], h_source[:])
-	copy(pkt[14:], packet[:])
-
-	return int(C.send_raw_packet(x.s, C.int(iface), unsafe.Pointer(&pkt), C.int(len(packet)+14)))
-}
-
-func (x *XDP) SendRawPacket_(iface int, packet []byte) int {
+func (x *XDP) SendRawPacket(iface int, packet []byte) int {
 	return int(C.send_raw_packet(x.s, C.int(iface), unsafe.Pointer(&packet[0]), C.int(len(packet))))
 }
 

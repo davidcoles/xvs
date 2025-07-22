@@ -940,14 +940,10 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
     // userspace sends to all backends for that service
 
-    __u16 port = 80;
-    
     const __u16 TCP = 0;
     const __u16 UDP = 1;
 
     __u16 protocol = TCP;
-
-    goto fake;
 
     // extract information about the flow to which this ICMP refers
     struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct icmphdr);
@@ -981,7 +977,7 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     if (inner_udp + 1 > data_end)
 	return -1;
     
-    port = bpf_ntohs(inner_udp->source);
+    __u16 port = bpf_ntohs(inner_udp->source);
 
     // 16 bits of metadata (inc packet length)
     // 16 bits of port (host byte order)
@@ -994,8 +990,7 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     // 1 bit protocol; 0 - TCP, 1 - UDP
     // 3 bits reason codes
     //   000 - fragmentation needed
- fake:
-    bpf_printk("fake");
+
     __u16 reason = 0; // fragmentation needed
     __u16 family = 0; // IPv4
     __u16 n = 0;
@@ -1039,10 +1034,6 @@ int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, v
 
     __u16 protocol = TCP;
 
-    __u16 port = 80;
-
-    goto fake;
-
     // extract information about the flow to which this ICMP refers
     struct ip6_hdr *inner_ip = ((void *) icmp) + sizeof(struct icmp6_hdr);
 
@@ -1075,7 +1066,7 @@ int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, v
     if (inner_udp + 1 > data_end)
 	return -1;
     
-    port = bpf_ntohs(inner_udp->source);
+    __u16 port = bpf_ntohs(inner_udp->source);
 
     // 16 bits of metadata (inc packet length)
     // 16 bits of port (host byte order)
@@ -1089,8 +1080,6 @@ int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, v
     // 3 bits reason codes
     //   000 - fragmentation needed
 
- fake:
-    bpf_printk("fake6");
     __u16 reason = 0; // fragmentation needed
     __u16 family = 1; // IPv6
     __u16 n = 0;

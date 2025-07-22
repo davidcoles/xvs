@@ -158,7 +158,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     //if ((data_end - (void *) ip6) + overhead > MTU) // vmxnet3 issue
     if (packet_length + overhead > MTU)	
-	return XDP_DROP;
+	return XDP_DROP; // handle btter
 
     if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
         ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -315,10 +315,8 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
 
     //if ((data_end - (void *) ip) + overhead > MTU) // vmxnet3 issue
-    if (packet_length + overhead > MTU)	{
-	bpf_printk("packet_length %d %d %d", packet_length, overhead, MTU);
-    }
-    //	return XDP_DROP;
+    if (packet_length + overhead > MTU)
+	return XDP_DROP; // handle better
 
 
     if (t.method == T_NONE && ip->ttl > 1)
@@ -380,11 +378,15 @@ int xdp_request_v4(struct xdp_md *ctx)
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
 
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
+    bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY); // store failure in merics?
+
+    /*
     int r = bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
 
     if(r != 0)
 	bpf_printk("bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY) %d", r);
-    
+    */
+
     return is_ipv4_addr_p(&t.daddr) ?
 	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
@@ -413,8 +415,6 @@ int xdp_mirror_func(struct xdp_md *ctx)
 	nat.addr4.addr = ip->daddr;
 	break;
     case bpf_htons(ETH_P_IPV6):	
-	bpf_printk("ETH_P_IPV6 %x:%x:%x", eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
-	bpf_printk("       src %x:%x:%x", eth->h_source[3], eth->h_source[4], eth->h_source[5]);
 	if (ip6 + 1 > data_end)
             return XDP_DROP;
 	nat.addr6 = ip6->ip6_dst;
@@ -705,12 +705,12 @@ int xdp_reply_v4(struct xdp_md *ctx)
     __u64 time = bpf_ktime_get_ns();
     
     if (time < match->time) {
-	bpf_printk("time < match->time");
+	//bpf_printk("time < match->time");
 	return XDP_DROP;
     }
     
     if ((time - match->time) > (5 * SECOND_NS)) {
-	bpf_printk("(time - match->time) > (5 * SECOND_NS)");
+	//bpf_printk("(time - match->time) > (5 * SECOND_NS)");
 	return XDP_DROP;
     }
     
