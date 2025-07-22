@@ -129,6 +129,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	if (icmp + 1 > data_end)
 	    return XDP_DROP;
 	switch (icmp->icmp6_type) {
+	case ICMP6_ECHO_REQUEST: // debug
 	case ICMP6_PACKET_TOO_BIG:
 	    ip6->ip6_dst = vip.addr6; // switch VIP back in
 	    reply_map = &reply_dummy; // don't store in the reply map
@@ -288,9 +289,11 @@ int xdp_request_v4(struct xdp_md *ctx)
 	    return XDP_DROP;
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    ip->daddr = vip.addr4.addr; // switch VIP back in
-	    //__u8 *d = (void *) &(ip->daddr);
-	    //bpf_printk("DST %d.%d.%d", d[1], d[2], d[3]);
 	    break;
+	}
+	if (icmp->type == ICMP_ECHO && icmp->code == 0) { // debug
+	  ip->daddr = vip.addr4.addr; // switch VIP back in
+	  break;
 	}
 	return XDP_DROP;
     default:
@@ -385,7 +388,101 @@ int xdp_request_v4(struct xdp_md *ctx)
 	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
-static __always_inline
+
+
+SEC("xdp")
+int xdp_mirror_func(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	if (ip + 1 > data_end)
+	    return XDP_DROP;
+	
+	struct icmphdr *icmp4 = (void *)(ip + 1);
+	
+	switch(ip->protocol) {
+	case IPPROTO_ICMP:
+	    if (icmp4 + 1 > data_end)
+	    	return XDP_DROP;
+	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED) &&
+		!(icmp4->type == ICMP_ECHO && icmp4->code == 0)) //debug
+	    	return XDP_PASS;
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+	
+    case bpf_htons(ETH_P_IPV6):
+	if (ip6 + 1 > data_end)
+	    return XDP_DROP;
+	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
+	
+	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+	case IPPROTO_ICMPV6:
+
+	    if (icmp6 + 1 > data_end)
+	    	return XDP_DROP;
+	    switch (icmp6->icmp6_type) {
+	    case ND_NEIGHBOR_SOLICIT:
+	    case ND_NEIGHBOR_ADVERT:
+		return XDP_PASS;
+	    case ICMP6_PACKET_TOO_BIG:
+		break;
+	    case ICMP6_ECHO_REQUEST: // debug
+		break;
+	    default:
+		return XDP_DROP;
+	    }
+
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+    }
+    
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_request_func(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+    
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	return xdp_request_v4(ctx);
+    case bpf_htons(ETH_P_IPV6):
+        return xdp_request_v6(ctx);
+    }
+
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_pass(struct xdp_md *ctx)
+{
+    return XDP_PASS;
+}
+
+
+SEC("xdp")
 int xdp_reply_v6(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -492,7 +589,7 @@ int xdp_reply_v6(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
-static __always_inline
+SEC("xdp")
 int xdp_reply_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -605,126 +702,4 @@ int xdp_reply_v4(struct xdp_md *ctx)
     }
 
     return XDP_PASS;
-}
-
-
-SEC("xdp")
-int xdp_mirror_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    struct ip6_hdr *ip6 = (void *)(eth + 1);
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	if (ip + 1 > data_end)
-	    return XDP_DROP;
-	
-	struct icmphdr *icmp4 = (void *)(ip + 1);
-	
-	switch(ip->protocol) {
-	case IPPROTO_ICMP:
-	    if (icmp4 + 1 > data_end)
-	    	return XDP_DROP;
-	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED))
-		return XDP_PASS;
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-	
-    case bpf_htons(ETH_P_IPV6):
-	if (ip6 + 1 > data_end)
-	    return XDP_DROP;
-
-	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
-	
-	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
-	case IPPROTO_ICMPV6:
-	    if (icmp6 + 1 > data_end)
-	    	return XDP_DROP;
-	    switch (icmp6->icmp6_type) {
-	    case ND_NEIGHBOR_SOLICIT:
-	    case ND_NEIGHBOR_ADVERT:
-		return XDP_PASS;
-	    case ICMP6_PACKET_TOO_BIG:
-		break;
-	    default:
-		return XDP_DROP;
-	    }
-        case ICMP6_PACKET_TOO_BIG:
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-    }
-    
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_reply_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return xdp_reply_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-        return xdp_reply_v6(ctx);
-    }
-
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_request_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return xdp_request_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-        return xdp_request_v6(ctx);
-    }
-
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_pass(struct xdp_md *ctx)
-{
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_reply_v4_(struct xdp_md *ctx)
-{
-    //bpf_printk("xdp_reply_v4_");
-    return xdp_reply_v4(ctx);
-}
-
-SEC("xdp")
-int xdp_reply_v6_(struct xdp_md *ctx)
-{
-    //bpf_printk("xdp_reply_v6_");
-    return xdp_reply_v6(ctx);
 }

@@ -940,10 +940,14 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     // queue to userspace (this acts a rate-limiter for ICMP - size of queue & frequency of polling)
     // userspace sends to all backends for that service
 
+    __u16 port = 80;
+    
     const __u16 TCP = 0;
     const __u16 UDP = 1;
 
     __u16 protocol = TCP;
+
+    goto fake;
 
     // extract information about the flow to which this ICMP refers
     struct iphdr *inner_ip = ((void *) icmp) + sizeof(struct icmphdr);
@@ -977,7 +981,7 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     if (inner_udp + 1 > data_end)
 	return -1;
     
-    __u16 port = bpf_ntohs(inner_udp->source);
+    port = bpf_ntohs(inner_udp->source);
 
     // 16 bits of metadata (inc packet length)
     // 16 bits of port (host byte order)
@@ -990,12 +994,19 @@ int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *
     // 1 bit protocol; 0 - TCP, 1 - UDP
     // 3 bits reason codes
     //   000 - fragmentation needed
-    
+ fake:
+    bpf_printk("fake");
     __u16 reason = 0; // fragmentation needed
     __u16 family = 0; // IPv4
     __u16 n = 0;
+
+    int len = bpf_ntohs(ip->tot_len);
+
+    if (size-8 < len)
+	len = size-8;
     
-    for (n = 0; n < (size-8); n++) { // 8 bytes of header
+    //for (n = 0; n < (size-8); n++) { // 8 bytes of header
+    for (n = 0; n < len; n++) { // 8 bytes of header	
 	if (((void *) ip) + n >= data_end)
 	    break;
 	((__u8 *) buffer)[8+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer
@@ -1027,6 +1038,10 @@ int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, v
     const __u16 UDP = 1;
 
     __u16 protocol = TCP;
+
+    __u16 port = 80;
+
+    goto fake;
 
     // extract information about the flow to which this ICMP refers
     struct ip6_hdr *inner_ip = ((void *) icmp) + sizeof(struct icmp6_hdr);
@@ -1060,7 +1075,7 @@ int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, v
     if (inner_udp + 1 > data_end)
 	return -1;
     
-    __u16 port = bpf_ntohs(inner_udp->source);
+    port = bpf_ntohs(inner_udp->source);
 
     // 16 bits of metadata (inc packet length)
     // 16 bits of port (host byte order)
@@ -1073,12 +1088,20 @@ int icmp_dest_unreach_frag_needed6(struct ip6_hdr *ip, struct icmp6_hdr *icmp, v
     // 1 bit protocol; 0 - TCP, 1 - UDP
     // 3 bits reason codes
     //   000 - fragmentation needed
-    
+
+ fake:
+    bpf_printk("fake6");
     __u16 reason = 0; // fragmentation needed
-    __u16 family = 0; // IPv4
+    __u16 family = 1; // IPv6
     __u16 n = 0;
     
-    for (n = 0; n < (size-20); n++) { // 20 bytes of header
+    int len = sizeof(struct ip6_hdr) + bpf_htons(ip->ip6_ctlun.ip6_un1.ip6_un1_plen);
+
+    if (size-20 < len)
+	len = size-20;
+
+    //for (n = 0; n < (size-20); n++) { // 20 bytes of header
+    for (n = 0; n < len; n++) { // 20 bytes of header
 	if (((void *) ip) + n >= data_end)
 	    break;
 	((__u8 *) buffer)[20+n] = ((__u8 *) ip)[n]; // copy original IP packet to buffer

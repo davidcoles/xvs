@@ -87,7 +87,8 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
+	//c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
+	c.settings = bpf_settings{active: 1}
 
 	if options.Bonding {
 		c.settings.multi = 0 // if untagged packet recieved then TX it rather than redirect
@@ -106,11 +107,11 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		}
 	}
 
-	if err = c.maps.tailCall("xdp_reply_v4_", 0); err != nil {
+	if err = c.maps.tailCall("xdp_reply_v4", 0); err != nil {
 		return nil, err
 	}
 
-	if err = c.maps.tailCall("xdp_reply_v6_", 1); err != nil {
+	if err = c.maps.tailCall("xdp_reply_v6", 1); err != nil {
 		return nil, err
 	}
 
@@ -294,7 +295,11 @@ func (c *client) icmpQueue() {
 				continue
 			}
 
-			c.maps.xdp.SendRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet)
+			fmt.Println("FAKE", len(packet), c.netns.i2.mac, c.netns.i3.mac, c.netns.i2.idx)
+			//c.maps.xdp.SendbRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet)
+			fmt.Println("icmpQueue", family, addr, port, protocol, nat)
+
+			c.maps.xdp.SendRawPacket(c.netns.nic(), c.netns.dst(), c.netns.src(), packet)
 		}
 	}
 }

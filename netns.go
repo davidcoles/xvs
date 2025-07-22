@@ -63,9 +63,16 @@ func (n *netns) nat(idx uint32, wantIPv6 bool) (r netip.Addr) {
 	return netip.AddrFrom4(ip4)
 }
 
-func (n *netns) nic() uint32      { return uint32(n.i0.idx) }
-func (n *netns) src() [6]byte     { return n.i0.mac }
-func (n *netns) dst() [6]byte     { return n.i1.mac }
+//c.maps.xdp.SendRawPacket(c.netns.i2.idx, c.netns.i3.mac, c.netns.i2.mac, packet)
+
+//func (n *netns) nic() uint32     { return uint32(n.i0.idx) }
+//func (n *netns) src() [6]byte    { return n.i0.mac }
+//func (n *netns) dst() [6]byte    { return n.i1.mac }
+
+func (n *netns) nic() int     { return n.i2.idx }
+func (n *netns) src() [6]byte { return n.i2.mac }
+func (n *netns) dst() [6]byte { return n.i3.mac }
+
 func (n *netns) ipv4() netip.Addr { return n.i2.ip4 }
 func (n *netns) ipv6() netip.Addr { return n.i2.ip6 }
 func (n *netns) init(x *xdp.XDP) error {
@@ -91,7 +98,8 @@ func (n *netns) init(x *xdp.XDP) error {
 		return err
 	}
 
-	if err := x.LoadBpfSection("xdp_reply_func", true, uint32(n.i1.idx)); err != nil {
+	//if err := x.LoadBpfSection("xdp_reply_func", true, uint32(n.i1.idx)); err != nil {
+	if err := x.LoadBpfSection("xdp_pass", true, uint32(n.i1.idx)); err != nil {
 		return err
 	}
 
