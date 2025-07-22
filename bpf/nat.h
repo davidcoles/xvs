@@ -413,7 +413,8 @@ int xdp_mirror_func(struct xdp_md *ctx)
 	nat.addr4.addr = ip->daddr;
 	break;
     case bpf_htons(ETH_P_IPV6):	
-	bpf_printk("ETH_P_IPV6");
+	bpf_printk("ETH_P_IPV6 %x:%x:%x", eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
+	bpf_printk("       src %x:%x:%x", eth->h_source[3], eth->h_source[4], eth->h_source[5]);
 	if (ip6 + 1 > data_end)
             return XDP_DROP;
 	nat.addr6 = ip6->ip6_dst;
