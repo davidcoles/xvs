@@ -38,8 +38,8 @@ type nic struct {
 
 type netns struct {
 	ns string
-	i0 nic
-	i1 nic
+	//i0 nic
+	//i1 nic
 	i2 nic
 	i3 nic
 }
@@ -63,8 +63,6 @@ func (n *netns) nat(idx uint32, wantIPv6 bool) (r netip.Addr) {
 	return netip.AddrFrom4(ip4)
 }
 
-//c.maps.xdp.SendRawPacket(c.netns.i2.idx, c.netns.i3.mac, c.netns.i2.mac, packet)
-
 //func (n *netns) nic() uint32     { return uint32(n.i0.idx) }
 //func (n *netns) src() [6]byte    { return n.i0.mac }
 //func (n *netns) dst() [6]byte    { return n.i1.mac }
@@ -80,33 +78,37 @@ func (n *netns) init(x *xdp.XDP) error {
 	namespace := "xvs"
 
 	n.ns = namespace
-	n.i0.nic = namespace + "0"
-	n.i1.nic = namespace + "1"
-	n.i2.nic = namespace + "2"
-	n.i3.nic = namespace + "3"
+	//n.i0.nic = namespace + "0"
+	//n.i1.nic = namespace + "1"
+	//n.i2.nic = namespace + "2"
+	//n.i3.nic = namespace + "3"
+	n.i2.nic = namespace
+	n.i3.nic = namespace + "_"
 
 	n.i2.ip4 = netip.MustParseAddr("255.255.255.253")
 	n.i2.ip6 = netip.MustParseAddr("fefe::ffff:fffd")
 	n.i3.ip4 = n.i2.ip4.Next()
 	n.i3.ip6 = n.i2.ip6.Next()
 
-	if err := n.create_pair(&n.i0, &n.i1); err != nil {
-		return fmt.Errorf("Error creating netns: %s", err.Error())
-	}
+	/*
+		if err := n.create_pair(&n.i0, &n.i1); err != nil {
+			return fmt.Errorf("Error creating netns: %s", err.Error())
+		}
 
-	if err := x.LoadBpfSection("xdp_pass", false, uint32(n.i0.idx)); err != nil {
-		return err
-	}
+		if err := x.LoadBpfSection("xdp_pass", false, uint32(n.i0.idx)); err != nil {
+			return err
+		}
 
-	//if err := x.LoadBpfSection("xdp_reply_func", true, uint32(n.i1.idx)); err != nil {
-	if err := x.LoadBpfSection("xdp_pass", true, uint32(n.i1.idx)); err != nil {
-		return err
-	}
+		//if err := x.LoadBpfSection("xdp_reply_func", true, uint32(n.i1.idx)); err != nil {
+		if err := x.LoadBpfSection("xdp_pass", true, uint32(n.i1.idx)); err != nil {
+			return err
+		}
 
-	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.i0.nic+" up").Output()
-	exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.i1.nic+" up").Output()
-	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf.all.rp_filter=0").Output()
-	exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.i1.nic+".rp_filter=0").Output()
+		exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.i0.nic+" up").Output()
+		exec.Command("/bin/sh", "-e", "-c", "ip l set "+n.i1.nic+" up").Output()
+		exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf.all.rp_filter=0").Output()
+		exec.Command("/bin/sh", "-e", "-c", "sysctl -w net.ipv4.conf."+n.i1.nic+".rp_filter=0").Output()
+	*/
 
 	if err := n.create_pair(&n.i2, &n.i3); err != nil {
 		return fmt.Errorf("Error creating netns: %s", err.Error())
