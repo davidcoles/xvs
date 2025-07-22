@@ -295,11 +295,30 @@ func (c *client) icmpQueue() {
 				continue
 			}
 
-			fmt.Println("FAKE", len(packet), c.netns.i2.mac, c.netns.i3.mac, c.netns.i2.idx)
-			//c.maps.xdp.SendbRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet)
-			fmt.Println("icmpQueue", family, addr, port, protocol, nat)
+			raw := make([]byte, 14+len(packet))
 
-			c.maps.xdp.SendRawPacket(c.netns.nic(), c.netns.dst(), c.netns.src(), packet)
+			//h_dest := c.netns.i2.mac
+			//h_source := c.netns.i3.mac
+
+			//copy(raw[0:], h_dest[:])
+			//copy(raw[6:], h_source[:])
+
+			if family == IPv4 {
+				raw[12] = 0x08
+				raw[13] = 0x00
+			} else {
+				raw[12] = 0x86
+				raw[13] = 0xdd
+			}
+
+			copy(raw[14:], packet[:])
+
+			//fmt.Println(c.settings.vethb, h_dest)
+
+			fmt.Println("FAKE", len(packet), c.netns.i2.mac, c.netns.i3.mac, c.netns.i2.idx)
+			r := c.maps.xdp.SendRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet, family == 1)
+			//r := c.maps.xdp.SendRawPacket_(int(c.settings.veth), raw)
+			fmt.Println("icmpQueue", family, addr, port, protocol, nat, r)
 		}
 	}
 }
