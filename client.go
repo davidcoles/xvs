@@ -313,13 +313,15 @@ func (c *client) icmpQueue() {
 
 			copy(raw[14:], packet[:])
 
+			iface := c.netns.i2.idx
+
 			//fmt.Println(c.settings.vethb, h_dest)
 
 			fmt.Println("FAKE", len(packet), c.netns.i2.mac, c.netns.i3.mac, c.netns.i2.idx)
 			//r := c.maps.xdp.SendRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet, family == 1)
 			//r := c.maps.xdp.SendRawPacket(int(c.settings.veth), c.netns.i3.mac, c.netns.i2.mac, packet, family == 1)
-			r := c.maps.xdp.SendRawPacket_(int(c.settings.veth), raw)
-			fmt.Println("icmpQueue", family, addr, port, protocol, nat, r)
+			r := c.maps.xdp.SendRawPacket_(int(iface), raw)
+			fmt.Println("icmpQueue", iface, family, addr, port, protocol, nat, r)
 		}
 	}
 }

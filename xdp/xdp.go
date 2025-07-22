@@ -83,6 +83,19 @@ func LoadBpfFile(bindata []byte) (*XDP, error) {
 	return &x, nil
 }
 
+func (x *XDP) RawSocket(iface string) error {
+	/*
+		s := C.raw_socket()
+
+		if s == -1 {
+			return errors.New("Unable to create raw socket")
+		}
+
+		x.s = s
+	*/
+	return nil
+}
+
 func (x *XDP) LinkDetach(iface uint32) {
 	C.xdp_link_detach(C.int(iface))
 }
@@ -178,11 +191,11 @@ func (x *XDP) SendRawPacket(iface int, h_dest, h_source [6]byte, packet []byte, 
 	copy(pkt[6:], h_source[:])
 	copy(pkt[14:], packet[:])
 
-	return int(C.send_raw_packet(x.s, C.int(iface), (*C.char)(unsafe.Pointer(&pkt)), C.int(len(packet)+14)))
+	return int(C.send_raw_packet(x.s, C.int(iface), unsafe.Pointer(&pkt), C.int(len(packet)+14)))
 }
 
 func (x *XDP) SendRawPacket_(iface int, packet []byte) int {
-	return int(C.send_raw_packet(x.s, C.int(iface), (*C.char)(unsafe.Pointer(&packet[0])), C.int(len(packet))))
+	return int(C.send_raw_packet(x.s, C.int(iface), unsafe.Pointer(&packet[0]), C.int(len(packet))))
 }
 
 type foo = *C.struct_bpf_object
