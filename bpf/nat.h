@@ -65,6 +65,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     struct udphdr *udp = (void *) (ip6 + 1);
     struct icmp6_hdr *icmp = (void *) (ip6 + 1);
 
+    /*
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
 	if (icmp + 1 > data_end)
 	    return XDP_DROP;
@@ -80,18 +81,19 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	}
     }
 
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
-    	return XDP_DROP;
-    
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-
-    
+    */
+        
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
     
     if (!vip_rip)
         return XDP_PASS;
+
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
+    	return XDP_DROP;
+    
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;    
 
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
@@ -177,7 +179,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
 	break;
     case IPPROTO_ICMPV6:
-	// FIXME needs testing
+	// FIXME needs testing - does not work
 	icmp->icmp6_cksum = l4v6_checksum_diff(~(icmp->icmp6_cksum), &n, &o);
 	break;
     }
@@ -238,12 +240,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
-
-    if (ip->ttl <= 1)
-	return XDP_DROP;
-
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-
     
     addr_t src = { .addr4.addr = ip->saddr };
     addr_t nat = { .addr4.addr = ip->daddr };
@@ -252,6 +248,12 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (!vip_rip)
     	return XDP_PASS;
     
+
+    if (ip->ttl <= 1)
+	return XDP_DROP;
+
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+
     __u8 proto = ip->protocol;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
@@ -410,7 +412,8 @@ int xdp_mirror_func(struct xdp_md *ctx)
             return XDP_DROP;
 	nat.addr4.addr = ip->daddr;
 	break;
-    case bpf_htons(ETH_P_IPV6):
+    case bpf_htons(ETH_P_IPV6):	
+	bpf_printk("ETH_P_IPV6");
 	if (ip6 + 1 > data_end)
             return XDP_DROP;
 	nat.addr6 = ip6->ip6_dst;
