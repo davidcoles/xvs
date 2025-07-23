@@ -13,7 +13,7 @@ VIPs only.
 ```
 modprobe ipip
 ip l set dev tunl0 up
-tcpdump tunl0
+sleep 1
 sysctl -w net.ipv4.conf.tunl0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ```
@@ -31,6 +31,7 @@ ip l set dev sit0 up
 modprobe ip6_tunnel
 ip -6 tunnel change ip6tnl0 mode ip4ip6
 ip l set dev ip6tnl0 up
+sleep 1
 sysctl -w net.ipv4.conf.ip6tnl0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ```
@@ -134,6 +135,7 @@ ip fou add port 8888 gue
 #!/bin/sh
 ip fou add port 9999 ipproto 4
 ip link set dev tunl0 up
+sleep 1
 sysctl -w net.ipv4.conf.tunl0.rp_filter=0
 sysctl -w net.ipv4.conf.all.rp_filter=0
 ```

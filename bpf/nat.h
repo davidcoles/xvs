@@ -133,6 +133,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	switch (icmp->icmp6_type) {
 	case ICMP6_ECHO_REQUEST: // debug
 	case ICMP6_PACKET_TOO_BIG:
+	    //bpf_printk("ICMP6_PACKET_TOO_BIG");
 	    ip6->ip6_dst = vip.addr6; // switch VIP back in
 	    reply_map = &reply_dummy; // don't store in the reply map
 	    break;
@@ -291,6 +292,7 @@ int xdp_request_v4(struct xdp_md *ctx)
 	    return XDP_DROP;
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    ip->daddr = vip.addr4.addr; // switch VIP back in
+	    //bpf_printk("ICMP_DEST_UNREACH");
 	    break;
 	}
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) { // debug
@@ -324,7 +326,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     /*
     if ((data_end - (void *) ip) + overhead > mtu) {
-	bpf_printk("IPv4 FRAG_NEEDED\n");
+        //bpf_printk("IPv4 FRAG_NEEDED\n");
 	__be32 internal = vlaninfo->source_ipv4;
 	return send_frag_needed4(ctx, internal, mtu - overhead);
     }
@@ -380,12 +382,10 @@ int xdp_request_v4(struct xdp_md *ctx)
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
     bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY); // store failure in merics?
 
-    /*
-    int r = bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
+    //int r = bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
+    //if(r != 0)
+    //	bpf_printk("bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY) %d", r);
 
-    if(r != 0)
-	bpf_printk("bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY) %d", r);
-    */
 
     return is_ipv4_addr_p(&t.daddr) ?
 	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :

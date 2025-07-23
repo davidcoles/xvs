@@ -201,3 +201,5 @@ working/needing testing
 * propagate too_big from systems on the net - add callback to handel?
 * ping local hosts/routers on addition and perioically
 * rationalise netinfo
+
+https://archive.nanog.org/meetings/nanog51/presentations/Monday/NANOG51.Talk45.nanog51-Schaumann.pdf
