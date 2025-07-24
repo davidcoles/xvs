@@ -404,7 +404,7 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
     if (!IS_DF(p->ip->frag_off))
 	return -1;
     
-    int iplen = data_end - (void *)(p->ip);
+    int iplen = data_end - (void *)(p->ip); // FIXME
 
     // if a packet was smaller than "max" bytes then it should not have been too big - drop
     if (iplen < max)
@@ -439,7 +439,7 @@ int frag_needed_trim6(struct xdp_md *ctx, struct pointers *p)
     if (p->ip6 + 1 > data_end)
 	return -1;
     
-    int iplen = data_end - (void *)(p->ip6);
+    int iplen = data_end - (void *)(p->ip6); // FIXME
 
     // if a packet was smaller than "max" bytes then it should not have been too big - drop
     if (iplen < max)
@@ -515,7 +515,7 @@ __u16 icmp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
 	csum += *(p++);
     }
 
-    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op
+    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op // FIXME
     csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // upper bits also a no-op
     csum = internet_checksum(l4, data_end, csum);
 
@@ -598,7 +598,7 @@ int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead)
 	return -1;
 
     void *data_end = (void *)(long)ctx->data_end;
-    int orig_len = data_end - (void *) p->ip;
+    int orig_len = data_end - (void *) p->ip; // FIXME
     
     // Insert space for new headers before the start of the packet
     if (bpf_xdp_adjust_head(ctx, 0 - overhead))
@@ -640,7 +640,7 @@ __u16 udp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
 	csum += *(p++);
     }
 
-    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op
+    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op // FIXME
     csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // also a no-op
     csum = internet_checksum(l4, data_end, csum);
 

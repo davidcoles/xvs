@@ -923,6 +923,7 @@ enum fwd_action FWD(metadata_t *m, int r)
 static __always_inline
 enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
+    //void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     __u8 ipv6 = 0, gue_protocol = 0; // plain fou by default
     enum fwd_action result = FWD_DROP;
@@ -966,6 +967,9 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
 
+    if ((data_end - next_header) != metadata->octets)
+	bpf_printk("PACKET LEN %d != %d", (data_end - next_header), metadata->octets);
+    
     //if ((data_end - next_header) + overhead > metadata->mtu) {
 
     // vmxnet3 in driver mode presents a buffer that can contain an
@@ -973,7 +977,8 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     // as the size of the packet. better to use the size of the packet
     // from the packet headers
 
-    if (metadata->octets + overhead > metadata->mtu) {	
+    //if (metadata->octets + overhead > metadata->mtu) {	
+    if ((data_end - next_header) + overhead > metadata->mtu) {	
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);
