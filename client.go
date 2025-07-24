@@ -286,17 +286,22 @@ func (c *client) icmpQueue() {
 			}
 
 			if nat.Is4() {
+				if family != IPv4 {
+					continue // shouldn't happen, but handle gracefully
+				}
 				as4 := nat.As4()
 				copy(packet[16:], as4[:]) // offset 16 is the destination address in IPv4
 			} else if nat.Is6() {
+				if family != IPv6 {
+					continue // shouldn't happen, but handle gracefully
+				}
 				as16 := nat.As16()
 				copy(packet[24:], as16[:]) // offset 24 is the destination address in IPv6
 			} else {
-				continue
+				continue // *REALLY* shouldn't happen, but handle gracefully
 			}
 
-			raw := make([]byte, 14+len(packet))
-
+			raw := make([]byte, 14+len(packet)) // prepend packet with ethernet header
 			iface := c.netns.i2.idx
 			h_dest := c.netns.i3.mac
 			h_source := c.netns.i2.mac

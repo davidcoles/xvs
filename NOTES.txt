@@ -198,8 +198,30 @@ import (
 
 working/needing testing
 * return too_big if packet won't fit in tunnel
-* propagate too_big from systems on the net - add callback to handel?
+* propagate too_big from systems on the net - add callback to handle?
 * ping local hosts/routers on addition and perioically
 * rationalise netinfo
 
 https://archive.nanog.org/meetings/nanog51/presentations/Monday/NANOG51.Talk45.nanog51-Schaumann.pdf
+
+
+
+IPv6/L3 features:
+
+Any/mixed combination of IPv4/IPv6 VIP/backend and tunnel-type
+
+IP-in-IP (all flavours)
+GRE
+FOU
+GUE
+
+ICMP ICMP6_PACKET_TOO_BIG or ICMP_DEST_UNREACH/ICMP_FRAG_NEEDED generation
+Deals with remote ICMP6_PACKET_TOO_BIG/ICMP_FRAG_NEEDED by relaying to all backends
+
+
+
+
+Possible additions:
+* healthprobe MTU too-big needs handling
+* Handle remote ICMP6_PACKET_TOO_BIG/ICMP_FRAG_NEEDED distribution in application (multicast?)
+* DSCP? *maybe
