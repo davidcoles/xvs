@@ -83,6 +83,19 @@ func LoadBpfFile(bindata []byte) (*XDP, error) {
 	return &x, nil
 }
 
+func (x *XDP) RawSocket(iface string) error {
+	/*
+		s := C.raw_socket()
+
+		if s == -1 {
+			return errors.New("Unable to create raw socket")
+		}
+
+		x.s = s
+	*/
+	return nil
+}
+
 func (x *XDP) LinkDetach(iface uint32) {
 	C.xdp_link_detach(C.int(iface))
 }
@@ -162,16 +175,25 @@ func (m Map) MaxEntries() int {
 	return int(C.max_entries(C.int(m)))
 }
 
-func (x *XDP) SendRawPacket(iface int, h_dest, h_source [6]byte, packet []byte) bool {
-	// ethernet frame: dst[6], source[6], transport_protocol[2] #define ETH_P_IP 0x0800
-	var pkt [14 + 2048]byte
+func (x *XDP) SendRawPacket(iface int, packet []byte) int {
+	return int(C.send_raw_packet(x.s, C.int(iface), unsafe.Pointer(&packet[0]), C.int(len(packet))))
+}
 
-	pkt[12] = 0x08
-	pkt[13] = 0x00
+type foo = *C.struct_bpf_object
 
-	copy(pkt[0:], h_dest[:])
-	copy(pkt[6:], h_source[:])
-	copy(pkt[14:], packet[:])
+func (x *XDP) ProgramFD(section string) (int32, error) {
 
-	return C.send_raw_packet(x.s, C.int(iface), (*C.char)(unsafe.Pointer(&pkt)), C.int(len(packet)+14)) == 0
+	bpf_prog := C.bpf_object__find_program_by_name(foo(x.p), C.CString(section))
+
+	if bpf_prog == nil {
+		return 0, fmt.Errorf("Couldn't find BPF program '%s'", section)
+	}
+
+	prog_fd := int32(C.bpf_program__fd(bpf_prog))
+
+	if prog_fd < 0 {
+		return 0, fmt.Errorf("Couldn't find file descriptor for BPF program '%s': %d", section, prog_fd)
+	}
+
+	return prog_fd, nil
 }

@@ -65,6 +65,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     struct udphdr *udp = (void *) (ip6 + 1);
     struct icmp6_hdr *icmp = (void *) (ip6 + 1);
 
+    /*
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
 	if (icmp + 1 > data_end)
 	    return XDP_DROP;
@@ -80,18 +81,19 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	}
     }
 
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
-    	return XDP_DROP;
-    
-    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;
-
-    
+    */
+        
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
     
     if (!vip_rip)
         return XDP_PASS;
+
+    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
+    	return XDP_DROP;
+    
+    (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim)--;    
 
     __u8 proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
     addr_t vip = vip_rip->vip;
@@ -129,7 +131,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	if (icmp + 1 > data_end)
 	    return XDP_DROP;
 	switch (icmp->icmp6_type) {
+	case ICMP6_ECHO_REQUEST: // debug
 	case ICMP6_PACKET_TOO_BIG:
+	    //bpf_printk("ICMP6_PACKET_TOO_BIG");
 	    ip6->ip6_dst = vip.addr6; // switch VIP back in
 	    reply_map = &reply_dummy; // don't store in the reply map
 	    break;
@@ -142,6 +146,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     }
     
     int overhead = 0;
+    int packet_length = sizeof(struct ip6_hdr) + bpf_ntohs(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct ip6_hdr) + GRE_OVERHEAD; break;
@@ -152,8 +157,9 @@ int xdp_request_v6(struct xdp_md *ctx) {
     default: return XDP_DROP;
     }
 
-    if ((data_end - (void *) ip6) + overhead > MTU)
-	return XDP_DROP;
+    //if ((data_end - (void *) ip6) + overhead > MTU) // vmxnet3 issue
+    if (packet_length + overhead > MTU)	
+	return XDP_DROP; // handle btter
 
     if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
         ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -174,7 +180,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 	udp->check = l4v6_checksum_diff(~(udp->check), &n, &o);
 	break;
     case IPPROTO_ICMPV6:
-	// FIXME needs testing
+	// FIXME needs testing - does not work
 	icmp->icmp6_cksum = l4v6_checksum_diff(~(icmp->icmp6_cksum), &n, &o);
 	break;
     }
@@ -235,12 +241,6 @@ int xdp_request_v4(struct xdp_md *ctx)
     // ignore evil bit and DF, drop if more fragments flag set, or fragent offset is not 0
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
-
-    if (ip->ttl <= 1)
-	return XDP_DROP;
-
-    ip_decrease_ttl(ip); // forwarding, so decrement TTL
-
     
     addr_t src = { .addr4.addr = ip->saddr };
     addr_t nat = { .addr4.addr = ip->daddr };
@@ -249,6 +249,12 @@ int xdp_request_v4(struct xdp_md *ctx)
     if (!vip_rip)
     	return XDP_PASS;
     
+
+    if (ip->ttl <= 1)
+	return XDP_DROP;
+
+    ip_decrease_ttl(ip); // forwarding, so decrement TTL
+
     __u8 proto = ip->protocol;
     addr_t vip = vip_rip->vip;
     addr_t ext = vip_rip->ext;
@@ -286,9 +292,12 @@ int xdp_request_v4(struct xdp_md *ctx)
 	    return XDP_DROP;
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    ip->daddr = vip.addr4.addr; // switch VIP back in
-	    //__u8 *d = (void *) &(ip->daddr);
-	    //bpf_printk("DST %d.%d.%d", d[1], d[2], d[3]);
+	    //bpf_printk("ICMP_DEST_UNREACH");
 	    break;
+	}
+	if (icmp->type == ICMP_ECHO && icmp->code == 0) { // debug
+	  ip->daddr = vip.addr4.addr; // switch VIP back in
+	  break;
 	}
 	return XDP_DROP;
     default:
@@ -296,6 +305,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
 
     int overhead = 0;
+    int packet_length = bpf_ntohs(ip->tot_len);
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;
@@ -306,15 +316,17 @@ int xdp_request_v4(struct xdp_md *ctx)
     default: return XDP_DROP;
     }
 
-    if ((data_end - (void *) ip) + overhead > MTU)
-	return XDP_DROP;
+    //if ((data_end - (void *) ip) + overhead > MTU) // vmxnet3 issue
+    if (packet_length + overhead > MTU)
+	return XDP_DROP; // handle better
+
 
     if (t.method == T_NONE && ip->ttl > 1)
         ip4_set_ttl(ip, 2);
     
     /*
     if ((data_end - (void *) ip) + overhead > mtu) {
-	bpf_printk("IPv4 FRAG_NEEDED\n");
+        //bpf_printk("IPv4 FRAG_NEEDED\n");
 	__be32 internal = vlaninfo->source_ipv4;
 	return send_frag_needed4(ctx, internal, mtu - overhead);
     }
@@ -368,31 +380,165 @@ int xdp_request_v4(struct xdp_md *ctx)
     struct addr_port_time map = { .port = eph, .time = bpf_ktime_get_ns(), .nat = nat, .src = src };
 
     // ICMP will use the dummy reply map - avoiding another conditional keeps the verifier happy
-    int r = bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
+    bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY); // store failure in merics?
 
-    if(r != 0)
-	bpf_printk("bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY) %d", r);
-    
+    //int r = bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY);
+    //if(r != 0)
+    //	bpf_printk("bpf_map_update_elem(reply_map, &rep, &map, BPF_ANY) %d", r);
+
+
     return is_ipv4_addr_p(&t.daddr) ?
 	bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 }
 
-static __always_inline
-int xdp_reply_v6(struct xdp_md *ctx)
+
+
+SEC("xdp")
+int xdp_mirror_func(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+
+    addr_t nat = {};
     
-    struct ethhdr *eth = data;
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    struct ip6_hdr *ip6 = (void *)(eth + 1);
+
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	if (ip + 1 > data_end)
+            return XDP_DROP;
+	nat.addr4.addr = ip->daddr;
+	break;
+    case bpf_htons(ETH_P_IPV6):	
+	if (ip6 + 1 > data_end)
+            return XDP_DROP;
+	nat.addr6 = ip6->ip6_dst;
+	break;
+    default:
+	return XDP_PASS;
+    }
+
+    if (!bpf_map_lookup_elem(&nat_to_vip_rip, &nat))
+	return XDP_PASS; 
+
+    reverse_ethhdr(eth);
+    return XDP_TX;
+    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	if (ip + 1 > data_end)
+	    return XDP_DROP;
+	
+	struct icmphdr *icmp4 = (void *)(ip + 1);
+	
+	switch(ip->protocol) {
+	case IPPROTO_ICMP:
+	    if (icmp4 + 1 > data_end)
+	    	return XDP_DROP;
+	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED) &&
+		!(icmp4->type == ICMP_ECHO && icmp4->code == 0)) //debug
+	    	return XDP_PASS;
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+	
+    case bpf_htons(ETH_P_IPV6):
+	if (ip6 + 1 > data_end)
+	    return XDP_DROP;
+	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
+	
+	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
+	case IPPROTO_ICMPV6:
+
+	    if (icmp6 + 1 > data_end)
+	    	return XDP_DROP;
+	    switch (icmp6->icmp6_type) {
+	    case ND_NEIGHBOR_SOLICIT:
+	    case ND_NEIGHBOR_ADVERT:
+		return XDP_PASS;
+	    case ICMP6_PACKET_TOO_BIG:
+		break;
+	    case ICMP6_ECHO_REQUEST: // debug
+		break;
+	    default:
+		return XDP_DROP;
+	    }
+
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+	    reverse_ethhdr(eth);
+	    return XDP_TX;
+	}
+	return XDP_PASS;
+    }
+    
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_request_func(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
     
     if (eth + 1 > data_end)
         return XDP_DROP;
     
-    if (eth->h_proto != bpf_htons(ETH_P_IPV6))
-       	return XDP_PASS;
-    
+    switch(eth->h_proto) {
+    case bpf_htons(ETH_P_IP):
+	return xdp_request_v4(ctx);
+    case bpf_htons(ETH_P_IPV6):
+        return xdp_request_v6(ctx);
+    }
+
+    return XDP_PASS;
+}
+
+SEC("xdp")
+int xdp_pass(struct xdp_md *ctx)
+{
+    return XDP_PASS;
+}
+
+
+SEC("xdp")
+int xdp_reply_v6(struct xdp_md *ctx)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = (void *)(long)ctx->data;
+
+    if (eth + 1 > data_end)
+        return XDP_DROP;
+
+    // DO NOT pop VLAN headers if present
     struct ip6_hdr *ip6 = (void *)(eth + 1);
+    struct vlan_hdr *vlan = NULL;
+    __be16 next_proto = eth->h_proto;
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {
+        vlan = (void *)(eth + 1);
+        if (vlan + 1 > data_end) {
+            return XDP_DROP;
+        }
+        next_proto = vlan->h_vlan_encapsulated_proto;
+        ip6 = (void*)(vlan + 1);
+    }
+
+    if (next_proto != bpf_htons(ETH_P_IPV6))
+        return XDP_DROP;
+
+
+    //if (eth->h_proto != bpf_htons(ETH_P_IPV6))
+    //	return XDP_PASS;
+    
+    //struct ip6_hdr *ip6 = (void *)(eth + 1);
     
     if (ip6 + 1 > data_end)
         return XDP_DROP;
@@ -470,7 +616,7 @@ int xdp_reply_v6(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
-static __always_inline
+SEC("xdp")
 int xdp_reply_v4(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -478,12 +624,28 @@ int xdp_reply_v4(struct xdp_md *ctx)
     
     if (eth + 1 > data_end)
         return XDP_DROP;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-	return XDP_DROP;
-    
+
+    // DO NOT pop VLAN headers if present
     struct iphdr *ip = (void *)(eth + 1);
+    struct vlan_hdr *vlan = NULL;
+    __be16 next_proto = eth->h_proto;
+    if (next_proto == bpf_htons(ETH_P_8021Q)) {
+	vlan = (void *)(eth + 1);
+        if (vlan + 1 > data_end) {
+            return XDP_DROP;
+        }
+        next_proto = vlan->h_vlan_encapsulated_proto;
+        ip = (void*)(vlan + 1);
+    }
+
+    if (next_proto != bpf_htons(ETH_P_IP))
+	return XDP_DROP;
+
+    //if (eth->h_proto != bpf_htons(ETH_P_IP))
+    //	return XDP_DROP;
     
+    //struct iphdr *ip = (void *)(eth + 1); 
+
     if (ip + 1 > data_end)
 	return XDP_DROP;
         
@@ -531,7 +693,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
     struct addr_port_time *match = bpf_map_lookup_elem(&reply, &rep);
 
     if (!match) {
-	bpf_printk("!match");
 	return XDP_DROP;
     }
     
@@ -544,12 +705,12 @@ int xdp_reply_v4(struct xdp_md *ctx)
     __u64 time = bpf_ktime_get_ns();
     
     if (time < match->time) {
-	bpf_printk("time < match->time");
+	//bpf_printk("time < match->time");
 	return XDP_DROP;
     }
     
     if ((time - match->time) > (5 * SECOND_NS)) {
-	bpf_printk("(time - match->time) > (5 * SECOND_NS)");
+	//bpf_printk("(time - match->time) > (5 * SECOND_NS)");
 	return XDP_DROP;
     }
     
@@ -566,114 +727,6 @@ int xdp_reply_v4(struct xdp_md *ctx)
 	udp->check = l4_csum_diff(&n, &o, udp->check);
 	break;
     }
-    
-    return XDP_PASS;
-}
 
-
-SEC("xdp")
-int xdp_mirror_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    struct ip6_hdr *ip6 = (void *)(eth + 1);
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	if (ip + 1 > data_end)
-	    return XDP_DROP;
-	
-	struct icmphdr *icmp4 = (void *)(ip + 1);
-	
-	switch(ip->protocol) {
-	case IPPROTO_ICMP:
-	    if (icmp4 + 1 > data_end)
-	    	return XDP_DROP;
-	    if (!(icmp4->type == ICMP_DEST_UNREACH && icmp4->code == ICMP_FRAG_NEEDED))
-		return XDP_PASS;
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-	
-    case bpf_htons(ETH_P_IPV6):
-	if (ip6 + 1 > data_end)
-	    return XDP_DROP;
-
-	struct icmp6_hdr *icmp6 = (void *) (ip6 + 1);
-	
-	switch(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
-	case IPPROTO_ICMPV6:
-	    if (icmp6 + 1 > data_end)
-	    	return XDP_DROP;
-	    switch (icmp6->icmp6_type) {
-	    case ND_NEIGHBOR_SOLICIT:
-	    case ND_NEIGHBOR_ADVERT:
-		return XDP_PASS;
-	    case ICMP6_PACKET_TOO_BIG:
-		break;
-	    default:
-		return XDP_DROP;
-	    }
-        case ICMP6_PACKET_TOO_BIG:
-	case IPPROTO_TCP:
-	case IPPROTO_UDP:
-	    reverse_ethhdr(eth);
-	    return XDP_TX;
-	}
-	return XDP_PASS;
-    }
-    
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_reply_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return xdp_reply_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-        return xdp_reply_v6(ctx);
-    }
-
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_request_func(struct xdp_md *ctx)
-{
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = (void *)(long)ctx->data;
-    
-    if (eth + 1 > data_end)
-        return XDP_DROP;
-    
-    switch(eth->h_proto) {
-    case bpf_htons(ETH_P_IP):
-	return xdp_request_v4(ctx);
-    case bpf_htons(ETH_P_IPV6):
-        return xdp_request_v6(ctx);
-    }
-
-    return XDP_PASS;
-}
-
-SEC("xdp")
-int xdp_pass(struct xdp_md *ctx)
-{
     return XDP_PASS;
 }

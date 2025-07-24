@@ -79,7 +79,7 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	if err = c.maps.init(options.BPF); err != nil {
+	if err = c.maps.init(options.BPFProgram); err != nil {
 		return nil, err
 	}
 
@@ -87,9 +87,10 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
+	//c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
+	c.settings = bpf_settings{active: 1}
 
-	if options.Bond {
+	if options.Bonding {
 		c.settings.multi = 0 // if untagged packet recieved then TX it rather than redirect
 	} else {
 		c.settings.multi = uint8(len(interfaces))
@@ -101,15 +102,29 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 
 	for _, nic := range nics {
 		c.maps.xdp.LinkDetach(nic)
+		if options.InterfaceInitDelay > 0 {
+			time.Sleep(time.Duration(options.InterfaceInitDelay) * time.Second)
+		}
 	}
 
-	if err = c.maps.initialiseFlows(options.Flows); err != nil {
+	if err = c.maps.tailCall("xdp_reply_v4", 0); err != nil {
+		return nil, err
+	}
+
+	if err = c.maps.tailCall("xdp_reply_v6", 1); err != nil {
+		return nil, err
+	}
+
+	if err = c.maps.initialiseFlows(options.FlowsPerCPU); err != nil {
 		return nil, err
 	}
 
 	for _, nic := range nics {
-		if err = c.maps.xdp.LoadBpfSection("xdp_forward_func", options.Native, nic); err != nil {
+		if err = c.maps.xdp.LoadBpfSection("xdp_forward_func", options.DriverMode, nic); err != nil {
 			return nil, err
+		}
+		if options.InterfaceInitDelay > 0 {
+			time.Sleep(time.Duration(options.InterfaceInitDelay) * time.Second)
 		}
 	}
 
@@ -271,23 +286,47 @@ func (c *client) icmpQueue() {
 			}
 
 			if nat.Is4() {
+				if family != IPv4 {
+					continue // shouldn't happen, but handle gracefully
+				}
 				as4 := nat.As4()
 				copy(packet[16:], as4[:]) // offset 16 is the destination address in IPv4
 			} else if nat.Is6() {
+				if family != IPv6 {
+					continue // shouldn't happen, but handle gracefully
+				}
 				as16 := nat.As16()
 				copy(packet[24:], as16[:]) // offset 24 is the destination address in IPv6
 			} else {
-				continue
+				continue // *REALLY* shouldn't happen, but handle gracefully
 			}
 
-			c.maps.xdp.SendRawPacket(int(c.settings.veth), c.settings.vethb, c.settings.vetha, packet)
+			raw := make([]byte, 14+len(packet)) // prepend packet with ethernet header
+			iface := c.netns.i2.idx
+			h_dest := c.netns.i3.mac
+			h_source := c.netns.i2.mac
+
+			copy(raw[0:], h_dest[:])
+			copy(raw[6:], h_source[:])
+
+			if family == IPv4 {
+				raw[12] = 0x08
+				raw[13] = 0x00
+			} else {
+				raw[12] = 0x86
+				raw[13] = 0xdd
+			}
+
+			copy(raw[14:], packet[:])
+
+			c.maps.xdp.SendRawPacket(int(iface), raw) // FIXME - log failed sends
 		}
 	}
 }
 
 func (c *client) configure() {
 
-	c.netinfo.config(c.config.VLANs4, c.config.VLANs6, c.config.Routes)
+	c.netinfo.config(c.config.IPv4VLANs, c.config.IPv6VLANs, c.config.Routes)
 
 	for i := uint32(1); i < 4095; i++ {
 		vi, v4, v6 := c.netinfo.vlaninfo(uint16(i))

@@ -26,27 +26,34 @@ import (
 
 type Protocol uint8
 type TunnelType uint8
-type TunnelFlags uint8
-type Flags uint8
+type tunnelFlags uint8
+type flags uint8
 
 const (
 	TCP Protocol = 0x06
 	UDP Protocol = 0x11
 )
 
+type Config struct {
+	IPv4VLANs map[uint16]netip.Prefix
+	IPv6VLANs map[uint16]netip.Prefix
+	Routes    map[netip.Prefix]uint16
+}
+
 type Options struct {
-	Native bool
-	Bond   bool
-	BPF    []byte
-	Flows  uint32
-	VLANs4 map[uint16]netip.Prefix
-	VLANs6 map[uint16]netip.Prefix
-	Routes map[netip.Prefix]uint16
-	Logger *slog.Logger
+	DriverMode         bool                    // Use XDP_FLAGS_DRV_MODE flag when attaching interface
+	Bonding            bool                    // Explicitly declare interfaces to be aggregated
+	BPFProgram         []byte                  // Override the embedded BPF program with this object code
+	FlowsPerCPU        uint32                  // Override default size of flow tracking tables
+	InterfaceInitDelay uint8                   // Pause (seconds) between each link attach/detach; to prevent bonds flapping
+	IPv4VLANs          map[uint16]netip.Prefix // VLAN ID/IPv4 Prefix mapping
+	IPv6VLANs          map[uint16]netip.Prefix // VLAN ID/IPv6 Prefix mapping
+	Routes             map[netip.Prefix]uint16 // Override route selection for layer 3 backends; prefix-to-VLAN ID map
+	Logger             *slog.Logger
 }
 
 func (o *Options) config() *Config {
-	return &Config{VLANs4: o.VLANs4, VLANs6: o.VLANs6, Routes: o.Routes}
+	return &Config{IPv4VLANs: o.IPv4VLANs, IPv6VLANs: o.IPv6VLANs, Routes: o.Routes}
 }
 
 type Client interface {
@@ -101,11 +108,17 @@ type Service struct {
 }
 
 type Stats struct {
-	Packets uint64
-	Octets  uint64
-	Flows   uint64 // rename? "Connections" (total connections, a counter, like Packets and Octets, more in tune with ipvs)
-	Current uint64 // rename? or move to DestinationExtended - ActiveConnections, like ipvs
-	Errors  uint64 // maybe remove?
+	Connections     uint64
+	IncomingPackets uint64
+	IncomingBytes   uint64
+
+	/*
+		Packets uint64
+		Octets  uint64
+		Flows   uint64
+		Current uint64
+		Errors  uint64
+	*/
 }
 
 type ServiceExtended struct {
@@ -115,30 +128,32 @@ type ServiceExtended struct {
 }
 
 type Destination struct {
-	Address     netip.Addr
-	TunnelType  TunnelType
-	TunnelPort  uint16
-	TunnelFlags TunnelFlags
-	Disable     bool
+	Address               netip.Addr
+	TunnelType            TunnelType
+	TunnelPort            uint16
+	TunnelEncapNoChecksum bool
+	Disable               bool
+}
+
+func (d *Destination) tunnelFlags() (f tunnelFlags) {
+	if d.TunnelEncapNoChecksum {
+		f |= tunnelEncapNoChecksums
+	}
+	return
 }
 
 type DestinationExtended struct {
-	Destination Destination
-	Stats       Stats
-	Metrics     map[string]uint64
-	MAC         [6]byte
+	Destination       Destination
+	ActiveConnections uint32
+	Stats             Stats
+	Metrics           map[string]uint64
+	MAC               [6]byte
 }
 
 type VIP struct {
 	Address netip.Addr
 	Stats   Stats
 	Metrics map[string]uint64
-}
-
-type Config struct {
-	VLANs4 map[uint16]netip.Prefix
-	VLANs6 map[uint16]netip.Prefix
-	Routes map[netip.Prefix]uint16
 }
 
 func (s *Service) vrpp(d netip.Addr) bpf_vrpp {
@@ -164,32 +179,32 @@ func (s *Service) check() error {
 
 func (c *Config) copy() (r Config, e error) {
 	r = *c
-	r.VLANs4 = make(map[uint16]netip.Prefix, len(c.VLANs4))
-	r.VLANs6 = make(map[uint16]netip.Prefix, len(c.VLANs6))
+	r.IPv4VLANs = make(map[uint16]netip.Prefix, len(c.IPv4VLANs))
+	r.IPv6VLANs = make(map[uint16]netip.Prefix, len(c.IPv6VLANs))
 	r.Routes = make(map[netip.Prefix]uint16, len(c.Routes))
 
 	for k, v := range c.Routes {
 		r.Routes[k] = v
 	}
 
-	for k, v := range c.VLANs4 {
+	for k, v := range c.IPv4VLANs {
 		if k == 0 || k > 4094 {
 			return r, fmt.Errorf("%d is not a valid VLAN ID", k)
 		}
 		if !v.Addr().Is4() {
 			return r, fmt.Errorf("Non-IPv4 prefix in VLANs4: %s", v)
 		}
-		r.VLANs4[k] = v
+		r.IPv4VLANs[k] = v
 	}
 
-	for k, v := range c.VLANs6 {
+	for k, v := range c.IPv6VLANs {
 		if k == 0 || k > 4094 {
 			return r, fmt.Errorf("%d is not a valid VLAN ID", k)
 		}
 		if !v.Addr().Is6() {
 			return r, fmt.Errorf("Non-IPv6 prefix in VLANs6: %s", v)
 		}
-		r.VLANs6[k] = v
+		r.IPv6VLANs[k] = v
 	}
 
 	return

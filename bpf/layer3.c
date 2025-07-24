@@ -48,7 +48,8 @@ const __u64 TIMEOUT = 60; // seconds
 enum fwd_action {
     FWD_OK = 0,
     FWD_TX,
-    FWD_PROBE_REPLY,
+    FWD_PROBE_REPLY4,
+    FWD_PROBE_REPLY6,
     FWD_PASS,
     FWD_DROP,
 
@@ -693,6 +694,8 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR(metadata, malformed);
+
+    metadata->octets = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
     
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
@@ -705,7 +708,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     
     if (!metadata->vip) {
     	if (bpf_map_lookup_elem(&vip_metrics, &saddr))
-	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+	    return FWD_PROBE_REPLY6; // source was a VIP - send to netns via veth interface
 	
 	metadata->global->not_a_vip++;
 	return FWD_PASS; // <- NOT AN ERROR
@@ -719,7 +722,8 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     struct tcphdr *tcp = (void *) (ip6 + 1);
     struct udphdr *udp = (void *) (ip6 + 1);
     struct icmp6_hdr *icmp = (void *) (ip6 + 1);
-
+    void *buffer = NULL;
+    
     switch (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt) {
     case IPPROTO_TCP:
 	if (tcp + 1 > data_end)
@@ -746,7 +750,6 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
         if (icmp + 1 > data_end)
 	    return FWD_ERROR(metadata, icmp_header);
 	if (icmp->icmp6_type == ICMP6_ECHO_REQUEST && icmp->icmp6_code == 0) {
-	    //bpf_printk("ICMPv6");
             ip6_reply(ip6, 64); // swap saddr/daddr, set TTL
 	    struct icmp6_hdr old = *icmp;
             icmp->icmp6_type = ICMP6_ECHO_REPLY;
@@ -758,9 +761,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	}
 	if (icmp->icmp6_type == ICMP6_PACKET_TOO_BIG && icmp->icmp6_code == 0) {
 	    //bpf_printk("ICMPv6 ICMP6_PACKET_TOO_BIG");
-	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
-	    
-	    if (!buffer)
+	    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
 		return FWD_ERROR(metadata, internal);
 	    
 	    if (icmp_dest_unreach_frag_needed6(ip6, icmp, data_end, buffer, BUFFER) < 0)
@@ -795,6 +796,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
 	return FWD_ERROR(metadata, malformed);
 
+    metadata->octets = bpf_ntohs(ip->tot_len);
+    
     struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
     
@@ -805,8 +808,9 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
     
     if (!metadata->vip) {
-	if (bpf_map_lookup_elem(&vip_metrics, &saddr))
-	    return FWD_PROBE_REPLY; // source was a VIP - send to netns via veth interface
+	if (bpf_map_lookup_elem(&vip_metrics, &saddr)) {
+	    return FWD_PROBE_REPLY4; // source was a VIP - send to netns via veth interface
+	}
 	
 	metadata->global->not_a_vip++;
 	return FWD_PASS; // <- NOT AN ERROR
@@ -828,6 +832,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     struct tcphdr *tcp = (void *) (ip + 1);
     struct udphdr *udp = (void *) (ip + 1);
     struct icmphdr *icmp = (void *) (ip + 1);
+    void *buffer = NULL;
     
     switch (ip->protocol) {
     case IPPROTO_TCP:
@@ -855,7 +860,6 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	if (icmp + 1 > data_end)
     	    return FWD_ERROR(metadata, icmp_header);
 	if (icmp->type == ICMP_ECHO && icmp->code == 0) {
-	    //bpf_printk("ICMPv4");
 	    ip4_reply(ip, 64); // swap saddr/daddr, set TTL
 	    struct icmphdr old = *icmp;
 	    icmp->type = ICMP_ECHOREPLY;
@@ -867,9 +871,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	}
 	if (icmp->type == ICMP_DEST_UNREACH && icmp->code == ICMP_FRAG_NEEDED) {
 	    //bpf_printk("ICMPv4 ICMP_FRAG_NEEDED");
-	    void *buffer = bpf_map_lookup_elem(&buffers, &ZERO);
-	    
-	    if (!buffer)
+	    if (!(buffer = bpf_map_lookup_elem(&buffers, &ZERO)))
 		return FWD_ERROR(metadata, internal);
 	    
 	    if (icmp_dest_unreach_frag_needed(ip, icmp, data_end, buffer, BUFFER) < 0)
@@ -964,7 +966,14 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
 
-    if ((data_end - next_header) + overhead > metadata->mtu) {
+    //if ((data_end - next_header) + overhead > metadata->mtu) {
+
+    // vmxnet3 in driver mode presents a buffer that can contain an
+    // MTU sized packet, so (data_end - next_header) is not the same
+    // as the size of the packet. better to use the size of the packet
+    // from the packet headers
+
+    if (metadata->octets + overhead > metadata->mtu) {	
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);
@@ -988,6 +997,12 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 
 
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 2);
+} jmp_table1 SEC(".maps");
 
 SEC("xdp")
 int xdp_forward_func(struct xdp_md *ctx)
@@ -1062,7 +1077,7 @@ int xdp_forward_func(struct xdp_md *ctx)
         return XDP_PASS;
 	
     case FWD_OK:
-
+	
 	if (metadata.backend)
 	    COUNTERS(metadata.backend, metadata);
 	
@@ -1082,7 +1097,15 @@ int xdp_forward_func(struct xdp_md *ctx)
 	    bpf_redirect_map(&redirect_map4, t.vlanid, XDP_DROP) :
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
-    case FWD_PROBE_REPLY:
+    case FWD_PROBE_REPLY6:
+	bpf_tail_call(ctx, &jmp_table1, 1);
+	return XDP_DROP;
+	
+    case FWD_PROBE_REPLY4:
+	bpf_tail_call(ctx, &jmp_table1, 0);
+	return XDP_DROP;
+
+	/*
 	if (!s->veth || nulmac(s->vetha) || nulmac(s->vethb))
 	    return XDP_DROP;
 	
@@ -1093,6 +1116,7 @@ int xdp_forward_func(struct xdp_md *ctx)
 	    return XDP_DROP;
 
 	return bpf_redirect(s->veth, 0);
+	*/
 
 	/**********************************************************************/
 
@@ -1106,8 +1130,10 @@ int xdp_forward_func(struct xdp_md *ctx)
     }
     
     return XDP_PASS;
-}
 
+    //fwd_probe_reply:
+    //return xdp_reply_(ctx, eth, ipv6);
+}
 
 char _license[] SEC("license") = "GPL";
 

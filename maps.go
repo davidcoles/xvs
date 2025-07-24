@@ -48,10 +48,26 @@ const (
 	FOU  TunnelType = bpf.T_FOU
 	GUE  TunnelType = bpf.T_GUE
 
-	Sticky Flags = bpf.F_STICKY
-
-	TunnelEncapNoChecksums TunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
+	sticky                 flags       = bpf.F_STICKY
+	tunnelEncapNoChecksums tunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
 )
+
+func (t TunnelType) string() string {
+	switch t {
+	case NONE:
+		return "none"
+	case IPIP:
+		return "ipip"
+	case GRE:
+		return "gre"
+	case FOU:
+		return "fou"
+	case GUE:
+		return "gre"
+	}
+
+	return fmt.Sprintf("%d", t)
+}
 
 func ktime() uint64 { return xdp.KtimeGet() * uint64(time.Second) }
 
@@ -81,6 +97,8 @@ type maps struct {
 	vip_metrics     xdp.Map
 	shared          xdp.Map
 	stats           xdp.Map
+
+	tail_calls xdp.Map
 }
 
 func (m *maps) counters(vrpp bpf_vrpp, t uint64) (c bpf_counter) {
@@ -326,6 +344,22 @@ func (m *maps) init(bpf []byte) (err error) {
 
 	if m.vip_metrics, err = x.FindMap("vip_metrics", 16, int(unsafe.Sizeof(bpf_global{}))); err != nil {
 		return err
+	}
+
+	if m.tail_calls, err = x.FindMap("jmp_table1", 4, 4); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *maps) tailCall(prog string, index uint32) error {
+	if fd, err := m.xdp.ProgramFD(prog); err != nil {
+		return err
+	} else {
+		if r := m.tail_calls.UpdateElem(uP(&index), uP(&fd), xdp.BPF_ANY); r != 0 {
+			return fmt.Errorf("Failed loading tail call fof %s: %d", prog, r)
+		}
 	}
 
 	return nil

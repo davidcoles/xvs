@@ -168,7 +168,7 @@ func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.A
 	macs := make(map[netip.Addr]mac, len(s.dests))
 
 	for k, d := range s.dests {
-		t := netinfo.find(k).bpf_tunnel(d.TunnelType, d.TunnelFlags, d.TunnelPort)
+		t := netinfo.find(k).bpf_tunnel(d.TunnelType, d.tunnelFlags(), d.TunnelPort)
 
 		reals[k] = dest{tunnel: t, disable: d.Disable}
 
@@ -177,9 +177,8 @@ func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.A
 		}
 
 		if logger != nil {
-			log := []any{"service", s.service.slog(), "destination", d.slog()}
-			log = append(log, t.log()...)
-			logger.Info("FWD", log...)
+			log := append(s.slog(), t.slog()...)
+			logger.Debug("forwarding", log...)
 		}
 	}
 
@@ -216,9 +215,9 @@ func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Ad
 	vip := s.service.Address
 	ret := map[addr16]bpf_vip_rip{}
 
-	for k, v := range reals {
+	for rip, v := range reals {
 		tun := v.tunnel
-		nat := natfn(vip, k)
+		nat := natfn(vip, rip)
 		ext := netinfo.ext(tun.vlanid, vip.Is6())
 
 		if !nat.IsValid() || !ext.IsValid() {
@@ -226,11 +225,15 @@ func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Ad
 		}
 
 		if logger != nil {
-			t := tun
-			logger.Info("NAT", "vip", vip, "rip", k, "nat", nat, "ext", ext,
-				"method", t.method, "vlanid", t.vlanid, "interface", t._interface,
-				"h_source", t.h_source, "h_dest", t.h_dest, "saddr", t.saddr,
-				"daddr", t.daddr)
+			log := []any{
+				"service.ip", vip.String(),
+				"destination.nat.ip", nat.String(),
+				"source.nat.ip", ext.String(),
+			}
+
+			log = append(log, tun.slog()...)
+			logger.Debug("nat", log...)
+
 		}
 
 		ret[as16(nat)] = bpf_vip_rip{tunnel: tun, vip: as16(vip), ext: as16(ext)}
@@ -249,15 +252,13 @@ func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fw
 		}
 	}
 
-	var flags Flags
+	var flags flags
 
 	if s.service.Sticky {
-		flags |= Sticky
+		flags |= sticky
 	}
 
 	fwd.dest[0].flags = uint8(flags)
-
-	//fwd.dest[0].flags = uint8(s.service.Flags)
 
 	var duration time.Duration
 
@@ -285,11 +286,19 @@ func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fw
 	}
 
 	if logger != nil {
-		hash := fmt.Sprint(fwd.hash[0:32])
-		logger.Info("MAG", "service", s.service, "hash", hash, "duration", duration)
+		hash := fmt.Sprint(fwd.hash[0:64])
+		log := append(s.slog(), "hash", hash, "duration", duration)
+		logger.Debug("maglev", log...)
 	}
 
 	return
+}
+func (s *service) slog() []any {
+	return []any{
+		"service.ip", s.service.Address.String(),
+		"service.port", s.service.Port,
+		"service.protocol", s.service.Protocol.string(),
+	}
 }
 
 func (s *service) rips() (r []netip.Addr) {
@@ -302,7 +311,7 @@ func (s *service) rips() (r []netip.Addr) {
 func (s *service) destinations(m maps) (r []DestinationExtended) {
 	for a, d := range s.dests {
 		c := m.counters(s.vrpp(a), s.sessions[a])
-		r = append(r, DestinationExtended{Destination: d, MAC: s.mac[a], Stats: c.stats(), Metrics: c.metrics()})
+		r = append(r, DestinationExtended{Destination: d, ActiveConnections: uint32(s.sessions[a]), MAC: s.mac[a], Stats: c.stats(), Metrics: c.metrics()})
 	}
 	return
 }

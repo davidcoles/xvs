@@ -91,7 +91,7 @@ func main() {
 		logger = nil
 	}
 
-	options := xvs.Options{VLANs4: vlan4, VLANs6: vlan6, Logger: logger}
+	options := xvs.Options{IPv4VLANs: vlan4, IPv6VLANs: vlan6, Logger: logger}
 
 	fmt.Println("Starting ...")
 
@@ -101,7 +101,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = client.SetConfig(xvs.Config{VLANs4: vlan4, VLANs6: vlan6})
+	err = client.SetConfig(xvs.Config{IPv4VLANs: vlan4, IPv6VLANs: vlan6})
 
 	if err != nil {
 		log.Fatal(err)

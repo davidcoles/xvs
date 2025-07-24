@@ -366,7 +366,7 @@ func (b backend) remote() bool {
 	return !b.local
 }
 
-func (b backend) bpf_tunnel(method TunnelType, flags TunnelFlags, dport uint16) (t bpf_tunnel) {
+func (b backend) bpf_tunnel(method TunnelType, flags tunnelFlags, dport uint16) (t bpf_tunnel) {
 	if !b.ok() {
 		return
 	}

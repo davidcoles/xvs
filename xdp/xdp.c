@@ -22,6 +22,10 @@
 #include <linux/if_link.h> /* depend on kernel-headers installed */
 #include <net/if.h>
 
+
+#include <netinet/in.h>
+#include <sys/ioctl.h>        // macro ioctl is defined
+
 #include <time.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -169,10 +173,12 @@ int create_lru_hash(int outer_fd, int index, const char *name, int key_size, int
 //#include <net/ethernet.h> // SOCK_RAW
 
 int raw_socket() {
-    return socket(AF_PACKET, SOCK_RAW, IPPROTO_RAW);
+    //return socket(AF_PACKET, SOCK_RAW, IPPROTO_RAW);
+    return socket(PF_PACKET, SOCK_RAW, htons (ETH_P_ALL));
 }
 
-int send_raw_packet(int sockfd, int ifindex, char *packet, int len) {
+int send_raw_packet(int sockfd, int ifindex, void *packet, int len) {
+    // https://www.pdbuchan.com/rawsock/icmp6_ll.c
     // https://stackoverflow.com/questions/21411851/how-to-send-data-over-a-raw-ethernet-socket-using-sendto-without-using-sockaddr
     // setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, "eth0", 4); // doesn't seem to be needed
     
@@ -189,7 +195,8 @@ int send_raw_packet(int sockfd, int ifindex, char *packet, int len) {
 					  .sll_ifindex = ifindex,
 					  .sll_halen = ETH_ALEN };
     
-    memcpy(socket_address.sll_addr, eth->h_dest, ETH_ALEN);
+    //memcpy(socket_address.sll_addr, eth->h_dest, ETH_ALEN); // <- stupid bug! amazed that this worked at all
+    memcpy(socket_address.sll_addr, eth->h_source, ETH_ALEN);    
     
     return sendto(sockfd, packet, len, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll));
 }
@@ -205,3 +212,43 @@ struct sockaddr_ll {
         unsigned char   sll_addr[8]; //
 };
 */
+
+int load_tail_call(void *o, char *name, int map, int index) {
+    struct bpf_object *obj = o;
+    struct bpf_program *bpf_prog;
+    int prog_fd = -1;
+
+    bpf_prog = bpf_object__find_program_by_name(obj, name);
+    if (!bpf_prog) {
+        fprintf(stderr, "ERR: finding progsec: %s\n", name);
+        return -1;
+    }
+
+    prog_fd = bpf_program__fd(bpf_prog);
+    if (prog_fd <= 0) {
+        fprintf(stderr, "ERR: bpf_program__fd failed\n");
+        return -1;
+    }
+
+    return bpf_map_update_elem(map, &index, &prog_fd, BPF_ANY);
+}
+
+int program_fd(void *o, char *name, int map, int index) {
+    struct bpf_object *obj = o;
+    struct bpf_program *bpf_prog;
+    int prog_fd = -1;
+
+    bpf_prog = bpf_object__find_program_by_name(obj, name);
+    if (!bpf_prog) {
+        fprintf(stderr, "ERR: finding progsec: %s\n", name);
+        return -1;
+    }
+
+    prog_fd = bpf_program__fd(bpf_prog);
+    if (prog_fd <= 0) {
+        fprintf(stderr, "ERR: bpf_program__fd failed\n");
+        return -1;
+    }
+
+    return bpf_map_update_elem(map, &index, &prog_fd, BPF_ANY);
+}
