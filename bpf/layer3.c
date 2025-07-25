@@ -107,7 +107,9 @@ struct tunnel {
     __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
     __u8 h_source[6]; // local hw address
     __u8 hints; // internal flags (ie.: not TunnelFlags)
-    __u8 pad[7]; // round this up to 64 bytes - the size of a cache line
+    //__u8 pad[7]; // round this up to 64 bytes - the size of a cache line
+    __u8 pad[5]; // round this up to 64 bytes - the size of a cache line
+    __u16 olen; // kernel use only!
     __u32 _interface; // userspace use only!
 };
 typedef struct tunnel tunnel_t;
@@ -695,7 +697,13 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR(metadata, malformed);
 
-    metadata->octets = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+    unsigned int buf_len = data_end - (void *) ip6;
+    unsigned int tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+
+    if (tot_len > buf_len)
+	return FWD_ERROR(metadata, malformed);
+
+    metadata->octets = tot_len;
     
     struct addr saddr = { .addr6 = ip6->ip6_src };
     struct addr daddr = { .addr6 = ip6->ip6_dst };
@@ -780,6 +788,8 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 
     enum fwd_action r = lookup(ft, t, metadata);
 
+    t->olen = tot_len; // write original packet length to tunnel info
+
     // FIXME - apply to all hosts on local VLANs?
     if (FWD_LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
 	ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim = 1;
@@ -796,8 +806,14 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
 	return FWD_ERROR(metadata, malformed);
 
-    metadata->octets = bpf_ntohs(ip->tot_len);
-    
+    unsigned int buf_len = data_end - (void *) ip;
+    unsigned int tot_len = bpf_ntohs(ip->tot_len);
+
+    if (tot_len > buf_len)
+	return FWD_ERROR(metadata, malformed);
+
+    metadata->octets = tot_len;
+
     struct addr saddr = { .addr4.addr = ip->saddr };
     struct addr daddr = { .addr4.addr = ip->daddr };
     
@@ -806,7 +822,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     ft->proto = ip->protocol;
 
     metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
-    
+
     if (!metadata->vip) {
 	if (bpf_map_lookup_elem(&vip_metrics, &saddr)) {
 	    return FWD_PROBE_REPLY4; // source was a VIP - send to netns via veth interface
@@ -890,6 +906,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 
     enum fwd_action r = lookup(ft, t, metadata);
 
+    t->olen = tot_len; // write original packet length to tunnel info
+    
     // FIXME - apply to all hosts on local VLANs?
     if (FWD_LAYER2_DSR == r && ip->ttl > 1)
 	ip4_set_ttl(ip, 1);
@@ -923,7 +941,6 @@ enum fwd_action FWD(metadata_t *m, int r)
 static __always_inline
 enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
-    //void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     __u8 ipv6 = 0, gue_protocol = 0; // plain fou by default
     enum fwd_action result = FWD_DROP;
@@ -955,7 +972,16 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return FWD_PASS; // <- NOT AN ERROR
     }
 
+    // vmxnet3 in driver mode presents a buffer that can contain an
+    // MTU sized packet, so (data_end - next_header) is not the same
+    // as the size of the packet. better to use the size of the packet
+    // from the packet headers. update: i did have this issue but now
+    // cannot recreate. I suspect that I managed to trigger it via
+    // experimenting with ethtool settings.
+
     int overhead = is_ipv4_addr_p(&t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
+    int packet_length = data_end - next_header; // vmxnet3 issue?
+    //int packet_length = metadata->octets; // vmxnet3 issue?
     
     switch (result) {
     case FWD_LAYER3_GRE: overhead += GRE_OVERHEAD; break;
@@ -967,18 +993,14 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
 
-    if ((data_end - next_header) != metadata->octets)
-	bpf_printk("PACKET LEN %d != %d", (data_end - next_header), metadata->octets);
+    void *data = (void *)(long)ctx->data;
+    if ((data_end - next_header) != metadata->octets && (data_end - data) > 64) {
+	//bpf_printk("PACKET LEN %d != %d %u", (data_end - next_header), metadata->octets, (data_end - data));
+	bpf_printk("PACKET LEN %d != %d %u", (data_end - next_header), metadata->octets, *((__u8 *) next_header));	
+	return FWD_PASS;
+    }
     
-    //if ((data_end - next_header) + overhead > metadata->mtu) {
-
-    // vmxnet3 in driver mode presents a buffer that can contain an
-    // MTU sized packet, so (data_end - next_header) is not the same
-    // as the size of the packet. better to use the size of the packet
-    // from the packet headers
-
-    //if (metadata->octets + overhead > metadata->mtu) {	
-    if ((data_end - next_header) + overhead > metadata->mtu) {	
+    if (packet_length + overhead > metadata->mtu) {	
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);
@@ -993,7 +1015,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     case FWD_LAYER3_GRE:  return FWD(metadata, send_gre(ctx, t, ipv6));
     case FWD_LAYER2_DSR:  return FWD(metadata, send_l2(ctx, t));
     case FWD_LAYER3_GUE:  gue_protocol = ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP;    // fallthrough ...
-    case FWD_LAYER3_FOU:  return FWD(metadata, send_gue(ctx, t, gue_protocol)); // default to plain FOU unless gue_protocol set above
+    case FWD_LAYER3_FOU:  return FWD(metadata, send_gue(ctx, t, gue_protocol)); // plain FOU unless gue_protocol set
     default: break;
     }
 

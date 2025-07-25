@@ -245,7 +245,13 @@ func (c *client) icmpQueue() {
 		length := meta >> 5
 		family := meta >> 4 & 0x01
 		proto4 := meta >> 3 & 0x01
-		//reason := meta & 0x07
+		reason := meta & 0x07
+
+		if reason == 1 {
+			packet := buff[2 : 2+length]
+			fmt.Println("SNOOP", packet)
+			return
+		}
 
 		protocol := TCP
 

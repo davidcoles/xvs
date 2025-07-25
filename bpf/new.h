@@ -516,7 +516,7 @@ __u16 icmp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
     }
 
     csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op // FIXME
-    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // upper bits also a no-op
+    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // upper bits also a no-op // FIXME? bpf_htons not wanted?
     csum = internet_checksum(l4, data_end, csum);
 
     // https://www.ietf.org/rfc/rfc2460.txt 8.1 - if csum is 0 then 0xffff must be used
@@ -676,7 +676,8 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     	return -1;
     
     // Update the outer IP header to send to the FOU target
-    int tot_len = sizeof(struct iphdr) + overhead + orig_len;
+    //int tot_len = sizeof(struct iphdr) + overhead + orig_len;
+    int tot_len = sizeof(struct iphdr) + overhead + t->olen;
     new_iphdr(p->ip, tot_len, protocol, saddr, daddr);
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
@@ -686,8 +687,8 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
     
-    // Layer 3 services are only received on the same interface/VLAN as recieved, so we can simply TX
-    return orig_len;
+    //return orig_len;
+    return 0;
 }
 
 static __always_inline
@@ -713,7 +714,8 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (new + 1 > p->data_end)
         return -1;
     
-    int payload_len = overhead + orig_len;
+    //int payload_len = overhead + orig_len;
+    int payload_len = overhead + t->olen;
     new_ip6hdr(new, payload_len, protocol, &(t->saddr.addr6), &(t->daddr.addr6));
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
@@ -723,7 +725,8 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
 
-    return orig_len;
+    //return orig_len;
+    return 0;
 }
 
 static __always_inline
@@ -767,7 +770,8 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
-    udp->len = bpf_htons(overhead + orig_len);
+    //udp->len = bpf_htons(overhead + orig_len);
+    udp->len = bpf_htons(overhead + t->olen); // UDP length field includes the UDP header, so overhead + original length is correct
     udp->check = 0;
 
     if (protocol) {
@@ -826,7 +830,8 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
-    udp->len = bpf_htons(overhead + orig_len);
+    //udp->len = bpf_htons(overhead + orig_len);
+    udp->len = bpf_htons(overhead + t->olen); // UDP length field includes the UDP header, so overhead + original length is correct
     udp->check = 0;
 
     if (protocol) {
@@ -902,10 +907,11 @@ int send_l2(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)//, unsigned int olen)
 {
     struct pointers p = {};
-
+    //t->olen = olen;
+    
     if (is_addr4(&(t->daddr)))
 	return push_xin4(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0);
 
@@ -913,8 +919,10 @@ int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
+int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)//, unsigned int olen)
 {
+    //t->olen = olen;
+    
     if (is_addr4(&(t->daddr)))
 	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
     
@@ -922,14 +930,15 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 }
 
 static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
+int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)//, unsigned int olen)
 {
+    //t->olen = olen;
+
     if (is_addr4(&(t->daddr)))
 	return push_gue4(ctx, t, protocol);
     
     return push_gue6(ctx, t, protocol);
 }
-
 
 static __always_inline
 int icmp_dest_unreach_frag_needed(struct iphdr *ip, struct icmphdr *icmp, void *data_end, void *buffer, int size)
