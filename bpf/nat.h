@@ -57,8 +57,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return XDP_DROP;
     
-    unsigned int buf_len = data_end - (void *) ip6;
-    unsigned int tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+    __u16 buf_len = data_end - (void *) ip6;
+    __u16 tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
     if (tot_len > buf_len)
         return XDP_DROP;
 
@@ -90,7 +90,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
-    t.olen = tot_len;
+    t.tot_len = tot_len;
 
     void *reply_map = &reply;
 
@@ -227,8 +227,8 @@ int xdp_request_v4(struct xdp_md *ctx)
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
     
-    unsigned int buf_len = data_end - (void *) ip;
-    unsigned int tot_len = bpf_ntohs(ip->tot_len);
+    __u16 buf_len = data_end - (void *) ip;
+    __u16 tot_len = bpf_ntohs(ip->tot_len);
     if (tot_len > buf_len)
         return XDP_DROP;
     
@@ -255,7 +255,7 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
-    t.olen = tot_len;
+    t.tot_len = tot_len;
 
     void *reply_map = &reply;
     

@@ -515,8 +515,8 @@ __u16 icmp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
 	csum += *(p++);
     }
 
-    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op // FIXME
-    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // upper bits also a no-op // FIXME? bpf_htons not wanted?
+    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op - same with ip6_un1_nxt
+    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // ip6_un1_nxt is a u8 - need be16
     csum = internet_checksum(l4, data_end, csum);
 
     // https://www.ietf.org/rfc/rfc2460.txt 8.1 - if csum is 0 then 0xffff must be used
@@ -597,8 +597,8 @@ int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead)
     if (preserve_l2_headers(ctx, p) < 0)
 	return -1;
 
-    void *data_end = (void *)(long)ctx->data_end;
-    int orig_len = data_end - (void *) p->ip; // FIXME
+    //void *data_end = (void *)(long)ctx->data_end;
+    //int orig_len = data_end - (void *) p->ip; // FIXME
     
     // Insert space for new headers before the start of the packet
     if (bpf_xdp_adjust_head(ctx, 0 - overhead))
@@ -607,8 +607,9 @@ int adjust_head(struct xdp_md *ctx, struct pointers *p, int overhead)
     // After bpf_xdp_adjust_head we need to re-calculate the header pointers and restore contents
     if (restore_l2_headers(ctx, p) < 0)
 	return -1;
-
-    return orig_len;
+    
+    //return orig_len;
+    return 0; // nothing uses orig_len any more
 }
 
 static __always_inline
@@ -640,8 +641,8 @@ __u16 udp6_checksum(struct ip6_hdr *ip6, void *l4, void *data_end) {
 	csum += *(p++);
     }
 
-    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op // FIXME
-    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // also a no-op
+    csum += bpf_htons(data_end - l4); // upper 16 bits are zero so a no-op - same with ip6_un1_nxt
+    csum += bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt); // ip6_un1_nxt is a u8 - need be16
     csum = internet_checksum(l4, data_end, csum);
 
     // https://www.ietf.org/rfc/rfc2460.txt 8.1 - if csum is 0 then 0xffff must be used
@@ -659,9 +660,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (!saddr || !daddr)
 	return -1;
     
-    int orig_len = adjust_head(ctx, p, sizeof(struct iphdr) + overhead);
-    
-    if (orig_len < 0)
+    if (adjust_head(ctx, p, sizeof(struct iphdr) + overhead) < 0)
 	return -1;
 
     if (p->vlan) {
@@ -676,8 +675,7 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     	return -1;
     
     // Update the outer IP header to send to the FOU target
-    //int tot_len = sizeof(struct iphdr) + overhead + orig_len;
-    int tot_len = sizeof(struct iphdr) + overhead + t->olen;
+    int tot_len = sizeof(struct iphdr) + overhead + t->tot_len;
     new_iphdr(p->ip, tot_len, protocol, saddr, daddr);
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
@@ -687,20 +685,17 @@ int push_xin4(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
     
-    //return orig_len;
     return 0;
 }
 
 static __always_inline
-int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, unsigned int overhead)
+int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol, __u16 overhead)
 {
     if (nul6(&(t->saddr.addr6)) || nul6(&(t->daddr.addr6)))
     	return -1;
     
     // adjust the packet to add the FOU header - pointers to new header fields will be in p
-    int orig_len = adjust_head(ctx, p, sizeof(struct ip6_hdr) + overhead);
-    
-    if (orig_len < 0)
+    if (adjust_head(ctx, p, sizeof(struct ip6_hdr) + overhead) < 0)
 	return -1;
 
     if (p->vlan) {
@@ -714,18 +709,16 @@ int push_xin6(struct xdp_md *ctx, tunnel_t *t, struct pointers *p, __u8 protocol
     if (new + 1 > p->data_end)
         return -1;
     
-    //int payload_len = overhead + orig_len;
-    int payload_len = overhead + t->olen;
+    int payload_len = overhead + t->tot_len;
     new_ip6hdr(new, payload_len, protocol, &(t->saddr.addr6), &(t->daddr.addr6));
 
     memcpy(p->eth->h_dest, t->h_dest, 6);
     memcpy(p->eth->h_source, t->h_source,6);
 
-    // some final sanity checks on ethernet addresses
+    // some final coherence checks on ethernet addresses
     if (nulmac(p->eth->h_source) || nulmac(p->eth->h_dest))
 	return -1;
 
-    //return orig_len;
     return 0;
 }
 
@@ -734,9 +727,7 @@ int push_gre6(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
     
-    int orig_len = push_xin6(ctx, t, &p, IPPROTO_GRE, sizeof(struct gre_hdr));
-
-    if (orig_len < 0)
+    if (push_xin6(ctx, t, &p, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)
 	return -1;
 
     struct gre_hdr *gre = (void *) ((struct ip6_hdr *) p.ip + 1);
@@ -757,10 +748,8 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 	return -1;
     
     struct pointers p = {};
-    int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
-    int orig_len = push_xin6(ctx, t, &p, IPPROTO_UDP, overhead);
-    
-    if (orig_len < 0)
+    __u16 overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
+    if (push_xin6(ctx, t, &p, IPPROTO_UDP, overhead) < 0)
         return -1;
 
     struct udphdr *udp = (void *) ((struct ip6_hdr *) p.ip + 1);
@@ -770,8 +759,7 @@ int push_gue6(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
 
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
-    //udp->len = bpf_htons(overhead + orig_len);
-    udp->len = bpf_htons(overhead + t->olen); // UDP length field includes the UDP header, so overhead + original length is correct
+    udp->len = bpf_htons(overhead + t->tot_len); // UDP length field includes the UDP header, so overhead + original length is correct
     udp->check = 0;
 
     if (protocol) {
@@ -796,7 +784,7 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 {
     struct pointers p = {};
     
-    if (push_xin4(ctx,t,  &p, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)	
+    if (push_xin4(ctx, t, &p, IPPROTO_GRE, sizeof(struct gre_hdr)) < 0)	
 	return -1;
 
     struct gre_hdr *gre = (void *) (p.ip + 1);
@@ -811,16 +799,14 @@ int push_gre4(struct xdp_md *ctx,  tunnel_t *t, __u16 protocol)
 }
 
 static __always_inline
-int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
+int push_gue4(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
 {
     if (!t->sport || !t->dport)
 	return -1;
 
     struct pointers p = {};
-    int overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
-    int orig_len = push_xin4(ctx, t, &p, IPPROTO_UDP, overhead);
-    
-    if (orig_len < 0)
+    __u16 overhead = protocol ? GUE_OVERHEAD : FOU_OVERHEAD;
+    if (push_xin4(ctx, t, &p, IPPROTO_UDP, overhead) < 0)
 	return -1;
     
     struct udphdr *udp = (void *) (p.ip + 1);
@@ -830,8 +816,7 @@ int push_gue4(struct xdp_md *ctx,  tunnel_t *t, __u8 protocol)
     
     udp->source = bpf_htons(t->sport);
     udp->dest = bpf_htons(t->dport);
-    //udp->len = bpf_htons(overhead + orig_len);
-    udp->len = bpf_htons(overhead + t->olen); // UDP length field includes the UDP header, so overhead + original length is correct
+    udp->len = bpf_htons(overhead + t->tot_len); // UDP length field includes the UDP header, so overhead + original length is correct
     udp->check = 0;
 
     if (protocol) {
@@ -884,7 +869,7 @@ int _is_ipv4_addr(struct addr a) {
     return (!a.addr4.pad1 && !a.addr4.pad2 && !a.addr4.pad3) ? 1 : 0;
 }
 
-//static __always_inline
+static __always_inline
 int is_ipv4_addr_p(struct addr *a) {
     return (!a->addr4.pad1 && !a->addr4.pad2 && !a->addr4.pad3) ? 1 : 0;
 }
@@ -907,10 +892,9 @@ int send_l2(struct xdp_md *ctx, tunnel_t *t)
 }
 
 static __always_inline
-int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)//, unsigned int olen)
+int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
     struct pointers p = {};
-    //t->olen = olen;
     
     if (is_addr4(&(t->daddr)))
 	return push_xin4(ctx, t, &p, is_ipv6 ? IPPROTO_IPV6 : IPPROTO_IPIP, 0);
@@ -919,10 +903,8 @@ int send_ipip(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)//, unsigned int olen
 }
 
 static __always_inline
-int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)//, unsigned int olen)
+int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)
 {
-    //t->olen = olen;
-    
     if (is_addr4(&(t->daddr)))
 	return push_gre4(ctx, t, is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
     
@@ -930,10 +912,8 @@ int send_gre(struct xdp_md *ctx, tunnel_t *t, int is_ipv6)//, unsigned int olen)
 }
 
 static __always_inline
-int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)//, unsigned int olen)
+int send_gue(struct xdp_md *ctx, tunnel_t *t, __u8 protocol)
 {
-    //t->olen = olen;
-
     if (is_addr4(&(t->daddr)))
 	return push_gue4(ctx, t, protocol);
     

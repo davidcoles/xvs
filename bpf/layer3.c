@@ -109,7 +109,7 @@ struct tunnel {
     __u8 hints; // internal flags (ie.: not TunnelFlags)
     //__u8 pad[7]; // round this up to 64 bytes - the size of a cache line
     __u8 pad[5]; // round this up to 64 bytes - the size of a cache line
-    __u16 olen; // kernel use only!
+    __u16 tot_len; // kernel use only! (original ipv4/ipv6 packet total length)
     __u32 _interface; // userspace use only!
 };
 typedef struct tunnel tunnel_t;
@@ -697,8 +697,9 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR(metadata, malformed);
 
-    unsigned int buf_len = data_end - (void *) ip6;
-    unsigned int tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+    // in some cases (eg. runt ethernet packets) pack length can be smaller than the buffer
+    __u16 buf_len = data_end - (void *) ip6;
+    __u16 tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
 
     if (tot_len > buf_len)
 	return FWD_ERROR(metadata, malformed);
@@ -788,7 +789,7 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 
     enum fwd_action r = lookup(ft, t, metadata);
 
-    t->olen = tot_len; // write original packet length to tunnel info
+    t->tot_len = tot_len; // write original packet length to tunnel info
 
     // FIXME - apply to all hosts on local VLANs?
     if (FWD_LAYER2_DSR == r && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
@@ -806,8 +807,8 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
 	return FWD_ERROR(metadata, malformed);
 
-    unsigned int buf_len = data_end - (void *) ip;
-    unsigned int tot_len = bpf_ntohs(ip->tot_len);
+    __u16 buf_len = data_end - (void *) ip;
+    __u16 tot_len = bpf_ntohs(ip->tot_len);
 
     if (tot_len > buf_len)
 	return FWD_ERROR(metadata, malformed);
@@ -906,7 +907,7 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 
     enum fwd_action r = lookup(ft, t, metadata);
 
-    t->olen = tot_len; // write original packet length to tunnel info
+    t->tot_len = tot_len; // write original packet length to tunnel info
     
     // FIXME - apply to all hosts on local VLANs?
     if (FWD_LAYER2_DSR == r && ip->ttl > 1)
@@ -980,9 +981,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     // experimenting with ethtool settings.
 
     int overhead = is_ipv4_addr_p(&t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
-    int packet_length = data_end - next_header; // vmxnet3 issue?
-    //int packet_length = metadata->octets; // vmxnet3 issue?
-    
     switch (result) {
     case FWD_LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case FWD_LAYER3_FOU: overhead += FOU_OVERHEAD; break;
@@ -992,10 +990,12 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     default:
 	return result;
     }
-
+    
+    //int packet_length = data_end - next_header; // vmxnet3 issue?
+    int packet_length = t->tot_len; // vmxnet3 issue?
+    
     void *data = (void *)(long)ctx->data;
     if ((data_end - next_header) != metadata->octets && (data_end - data) > 64) {
-	//bpf_printk("PACKET LEN %d != %d %u", (data_end - next_header), metadata->octets, (data_end - data));
 	bpf_printk("PACKET LEN %d != %d %u", (data_end - next_header), metadata->octets, *((__u8 *) next_header));	
 	return FWD_PASS;
     }
