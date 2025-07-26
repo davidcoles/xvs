@@ -18,7 +18,6 @@ MAX_CPU_SUPPORT ?= 8192
 FLOW_STATE_SIZE ?= 1000000
 FLOW_QUEUE_SIZE ?= 10000
 ICMP_QUEUE_SIZE ?= 1000
-SNOOP_QUEUE_SIZE ?= 1000
 
 default: layer3.o.gz
 
@@ -26,22 +25,21 @@ clean:
 	rm -f *.o
 
 distclean: clean
-	rm -rf libbpf
+	rm -f *.gz
 
 pristine: distclean
-	rm -f *.gz
+	rm -rf libbpf
 
 %.o.gz: %.o
 	gzip -f $*.o
 
-%.o: %.c libbpf/bpf
+%.o: %.c %.h libbpf/bpf
 	clang -S \
 	    -target bpf \
 	    -D FLOW_STATE_SIZE=$(FLOW_STATE_SIZE) \
 	    -D FLOW_QUEUE_SIZE=$(FLOW_QUEUE_SIZE) \
 	    -D MAX_CPU_SUPPORT=$(MAX_CPU_SUPPORT) \
 	    -D ICMP_QUEUE_SIZE=$(ICMP_QUEUE_SIZE) \
-	    -D SNOOP_QUEUE_SIZE=$(SNOOP_QUEUE_SIZE) \
 	    -D __BPF_TRACING__ \
 	    -I$(LIBBPF) $(INCLUDE) \
 	    -Wall \

@@ -221,7 +221,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_QUEUE);
     __type(value, __u8[BUFFER]);
-    __uint(max_entries, 1000);
+    __uint(max_entries, ICMP_QUEUE_SIZE);
 } icmp_queue SEC(".maps");
 
 /**********************************************************************/
