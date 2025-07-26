@@ -24,8 +24,8 @@ import (
 	"net/netip"
 )
 
-type slogLogger interface {
-	Info(msg string, args ...any)
+type Logger interface {
+	//Info(msg string, args ...any)
 	Debug(msg string, args ...any)
 }
 
@@ -54,7 +54,7 @@ type Options struct {
 	IPv4VLANs          map[uint16]netip.Prefix // VLAN ID/IPv4 Prefix mapping
 	IPv6VLANs          map[uint16]netip.Prefix // VLAN ID/IPv6 Prefix mapping
 	Routes             map[netip.Prefix]uint16 // Override route selection for layer 3 backends; prefix-to-VLAN ID map
-	Logger             slogLogger
+	Logger             Logger
 }
 
 func (o *Options) config() *Config {
