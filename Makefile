@@ -20,13 +20,16 @@ pristine:
 cloc:
 	cloc  $$(ls -1 *.go */*.go */*.c */*.h | grep -v _test.go)
 
-
-
+bpf_printk:
+	if `egrep -v '^\s*//' bpf/*.h bpf/*.c | grep bpf_printk >/dev/null 2>&1`; then echo uncommented bpf_printk; exit 1; fi
+	echo passed
 
 tests:
 	(cd bpf/ && go test -v)
 	(cd maglev/ && go test -v -cover)
 	CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go test -v -cover
+
+prerelease: bpf_printk tests
 
 # For Raspberry Pi (I'm using "Raspberry Pi OS Lite (32 bit): Debian Bookworm"),
 # to rebuild the eBPF object with lower memory use:	

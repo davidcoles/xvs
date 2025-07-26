@@ -20,7 +20,7 @@ package xvs
 
 import (
 	"fmt"
-	"log/slog"
+	//"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -47,7 +47,7 @@ type client struct {
 	maps     maps
 	latency  uint64
 	test     bool
-	logger   *slog.Logger
+	logger   slogLogger
 }
 
 func (c *client) current() (r uint64) {
