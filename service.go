@@ -20,7 +20,6 @@ package xvs
 
 import (
 	"fmt"
-	"log/slog"
 	"net/netip"
 	"sort"
 	"time"
@@ -162,7 +161,7 @@ func (s *service) local() (r []netip.Addr) {
 	return
 }
 
-func (s *service) recalc(logger *slog.Logger, netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
+func (s *service) recalc(logger Logger, netinfo *netinfo, nat func(netip.Addr, netip.Addr) netip.Addr) (bpf_service, map[addr16]bpf_vip_rip) {
 
 	reals := make(map[netip.Addr]dest, len(s.dests))
 	macs := make(map[netip.Addr]mac, len(s.dests))
@@ -211,7 +210,7 @@ func (p Protocol) string() string {
 	return fmt.Sprintf("%d", p)
 }
 
-func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip.Addr, reals map[netip.Addr]dest) map[addr16]bpf_vip_rip {
+func (s *service) nat(logger Logger, netinfo *netinfo, natfn func(netip.Addr, netip.Addr) netip.Addr, reals map[netip.Addr]dest) map[addr16]bpf_vip_rip {
 	vip := s.service.Address
 	ret := map[addr16]bpf_vip_rip{}
 
@@ -242,7 +241,7 @@ func (s *service) nat(logger *slog.Logger, netinfo *netinfo, natfn func(netip.Ad
 	return ret
 }
 
-func (s *service) forwarding(logger *slog.Logger, reals map[netip.Addr]dest) (fwd bpf_service) {
+func (s *service) forwarding(logger Logger, reals map[netip.Addr]dest) (fwd bpf_service) {
 
 	addrs := make([]netip.Addr, 0, len(reals))
 

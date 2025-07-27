@@ -57,32 +57,11 @@ int xdp_request_v6(struct xdp_md *ctx) {
     if ((ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
         return XDP_DROP;
     
-    //if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6)
-    //	//return XDP_DROP;
-    //	return XDP_PASS;
+    __u16 buf_len = data_end - (void *) ip6;
+    __u16 tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+    if (tot_len > buf_len)
+        return XDP_DROP;
 
-    struct tcphdr *tcp = (void *) (ip6 + 1);
-    struct udphdr *udp = (void *) (ip6 + 1);
-    struct icmp6_hdr *icmp = (void *) (ip6 + 1);
-
-    /*
-    if (ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt == IPPROTO_ICMPV6) {
-	if (icmp + 1 > data_end)
-	    return XDP_DROP;
-	switch (icmp->icmp6_type) {
-	case ND_NEIGHBOR_SOLICIT:
-	case ND_NEIGHBOR_ADVERT:
-	    return XDP_PASS; // pass neighbour discovery traffic, otherwise the veth pair won't see each other
-	case ICMP6_PACKET_TOO_BIG:
-	    break;
-	default:
-	    //bpf_printk("ICMP6 %d %d %d", icmp->icmp6_type, icmp->icmp6_code, ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim);
-	    return XDP_DROP;
-	}
-    }
-
-    */
-        
     addr_t src = { .addr6 = ip6->ip6_src };
     addr_t nat = { .addr6 = ip6->ip6_dst };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
@@ -111,8 +90,13 @@ int xdp_request_v6(struct xdp_md *ctx) {
 
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : (0x8000 | (l4_hash_(&ft) & 0x7fff));
+    t.tot_len = tot_len;
 
     void *reply_map = &reply;
+
+    struct tcphdr *tcp = (void *) (ip6 + 1);
+    struct udphdr *udp = (void *) (ip6 + 1);
+    struct icmp6_hdr *icmp = (void *) (ip6 + 1);
     
     switch(proto) {
     case IPPROTO_TCP:
@@ -146,7 +130,8 @@ int xdp_request_v6(struct xdp_md *ctx) {
     }
     
     int overhead = 0;
-    int packet_length = sizeof(struct ip6_hdr) + bpf_ntohs(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+    //int packet_length = sizeof(struct ip6_hdr) + bpf_ntohs(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen); // vmxnet3 issue?
+    int packet_length = data_end - (void *) ip6; // vmxnet3 issue?
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct ip6_hdr) + GRE_OVERHEAD; break;
@@ -158,7 +143,7 @@ int xdp_request_v6(struct xdp_md *ctx) {
     }
 
     //if ((data_end - (void *) ip6) + overhead > MTU) // vmxnet3 issue
-    if (packet_length + overhead > MTU)	
+    if (packet_length + overhead > MTU)
 	return XDP_DROP; // handle btter
 
     if (t.method == T_NONE && ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim > 1)
@@ -242,13 +227,17 @@ int xdp_request_v4(struct xdp_md *ctx)
     if ((ip->frag_off & bpf_htons(0x3fff)) != 0)
         return XDP_DROP;
     
+    __u16 buf_len = data_end - (void *) ip;
+    __u16 tot_len = bpf_ntohs(ip->tot_len);
+    if (tot_len > buf_len)
+        return XDP_DROP;
+    
     addr_t src = { .addr4.addr = ip->saddr };
     addr_t nat = { .addr4.addr = ip->daddr };
     struct vip_rip *vip_rip = bpf_map_lookup_elem(&nat_to_vip_rip, &nat);
 
     if (!vip_rip)
     	return XDP_PASS;
-    
 
     if (ip->ttl <= 1)
 	return XDP_DROP;
@@ -266,13 +255,14 @@ int xdp_request_v4(struct xdp_md *ctx)
     
     tunnel_t t = *destinfo;
     t.sport = t.sport ? t.sport : ( 0x8000 | (l4_hash_(&ft) & 0x7fff));
+    t.tot_len = tot_len;
 
+    void *reply_map = &reply;
+    
     struct tcphdr *tcp = (void *)(ip + 1);
     struct udphdr *udp = (void *)(ip + 1);
     struct icmphdr *icmp = (void *)(ip + 1);
 
-    void *reply_map = &reply;
-    
     switch(proto) {
     case IPPROTO_TCP:
 	if (tcp + 1 > data_end)
@@ -305,7 +295,8 @@ int xdp_request_v4(struct xdp_md *ctx)
     }
 
     int overhead = 0;
-    int packet_length = bpf_ntohs(ip->tot_len);
+    //int packet_length = bpf_ntohs(ip->tot_len); // vmxnet3 issue?
+    int packet_length = data_end - (void *) ip; // vmxnet3 issue?
 
     switch (t.method) {
     case T_GRE:  overhead = sizeof(struct iphdr) + GRE_OVERHEAD; break;

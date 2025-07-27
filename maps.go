@@ -98,6 +98,9 @@ type maps struct {
 	shared          xdp.Map
 	stats           xdp.Map
 
+	shared_tcp xdp.Map
+	shared_udp xdp.Map
+
 	tail_calls xdp.Map
 }
 
@@ -262,7 +265,8 @@ func (m *maps) writeFlow(f []byte) {
 		val := uP(&f[ft_size])
 		time := (*uint64)(val)
 		*time = ktime() // set first 8 bytes of state to the local kernel time
-		m.shared.UpdateElem(key, val, xdp.BPF_ANY)
+		//m.shared.UpdateElem(key, val, xdp.BPF_ANY)
+		m.shared_tcp.UpdateElem(key, val, xdp.BPF_ANY)
 	}
 }
 
@@ -368,6 +372,7 @@ func (m *maps) tailCall(prog string, index uint32) error {
 func (m *maps) initialiseFlows(max uint32) error {
 
 	flows_tcp, err := m.xdp.FindMap("flows_tcp", 4, 4)
+	flows_shared, err := m.xdp.FindMap("flows_shared", 4, 4)
 
 	if err != nil {
 		return err
@@ -375,13 +380,14 @@ func (m *maps) initialiseFlows(max uint32) error {
 
 	if max == 0 {
 		// default max entries to be the same as the shared map
-		max_entries := m.shared.MaxEntries()
+		//max_entries := m.shared.MaxEntries()
 
-		if max_entries < 1 {
-			return fmt.Errorf("Error looking up size of the flow state map")
-		}
+		//if max_entries < 1 {
+		//	return fmt.Errorf("Error looking up size of the flow state map")
+		//}
 
-		max = uint32(max_entries)
+		//max = uint32(max_entries)
+		max = 1000000
 	}
 
 	max_cpu := flows_tcp.MaxEntries()
@@ -398,9 +404,24 @@ func (m *maps) initialiseFlows(max uint32) error {
 
 	for cpu := 0; cpu < num_cpu; cpu++ {
 		name := fmt.Sprintf("flows_tcp_inner_%d", cpu)
-		if r := flows_tcp.CreateLruHash(uint32(cpu), name, ft_size, flow_size, max); r != 0 {
+		if r := flows_tcp.CreateLruHash(uint32(cpu), name, ft_size, flow_size, max); r <= 0 {
 			return fmt.Errorf("Unable to create flow state map for CPU %d: %d", cpu, r)
 		}
+	}
+
+	for _, i := range []uint32{0, 1} {
+		name := fmt.Sprintf("flows_shared_inner_%d", i)
+		r := flows_shared.CreateLruHash(i, name, ft_size, flow_size, max)
+		if r <= 0 {
+			return fmt.Errorf("Unable to create flow share map for index %d: %d", i, r)
+		}
+		switch i {
+		case 0:
+			m.shared_tcp = xdp.Map(r)
+		case 1:
+			m.shared_udp = xdp.Map(r)
+		}
+
 	}
 
 	return nil

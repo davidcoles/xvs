@@ -4,9 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"log/slog"
+	//"log/slog"
 	"net/netip"
-	"os"
+	//"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +30,8 @@ func main() {
 	tport6 := flag.Uint("6", 6666, "Port to use for FOU IPv6 VIPs")
 	tportg := flag.Uint("G", 8888, "Port to use for GUE")
 	extra := flag.String("V", "", "Extra VLAN")
-	test := flag.Bool("T", false, "Library test mode")
+	flows := flag.Uint("f", 1000, "Port to use for GUE")
+	//test := flag.Bool("T", false, "Library test mode")
 
 	flag.Var(&vips, "v", "extra vips")
 	flag.Var(&serv, "p", "ports to add to vips")
@@ -85,13 +86,9 @@ func main() {
 	}
 
 	//logger := slog.Default()
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	//logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	if !*test {
-		logger = nil
-	}
-
-	options := xvs.Options{IPv4VLANs: vlan4, IPv6VLANs: vlan6, Logger: logger}
+	options := xvs.Options{IPv4VLANs: vlan4, IPv6VLANs: vlan6, FlowsPerCPU: uint32(*flows)} //, Logger: logger}
 
 	fmt.Println("Starting ...")
 

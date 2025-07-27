@@ -164,7 +164,12 @@ int create_lru_hash(int outer_fd, int index, const char *name, int key_size, int
     if (fd < 0)
 	return fd;
     
-    return bpf_map_update_elem(outer_fd, &index, &fd, BPF_ANY);
+    //return bpf_map_update_elem(outer_fd, &index, &fd, BPF_ANY);
+    int r = bpf_map_update_elem(outer_fd, &index, &fd, BPF_ANY);
+    if (r < 0)
+	return r;
+
+    return fd;
 }
 
 #include <linux/if_packet.h> // SOCK_RAW

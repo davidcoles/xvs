@@ -20,7 +20,6 @@ package xvs
 
 import (
 	"fmt"
-	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -47,7 +46,7 @@ type client struct {
 	maps     maps
 	latency  uint64
 	test     bool
-	logger   *slog.Logger
+	logger   Logger
 }
 
 func (c *client) current() (r uint64) {
@@ -155,7 +154,8 @@ func (c *client) background() error {
 	for {
 		select {
 		case <-ping.C:
-			clear(hosts)
+			//clear(hosts) // go1.21 required, which doesn't seem to work on my Pi.
+			hosts = make(map[netip.Addr]bool, 65536) // maybe I can find a moer elegant solution
 			c.mutex.Lock()
 			for _, s := range c.services {
 				for _, d := range s.local() {
@@ -245,7 +245,13 @@ func (c *client) icmpQueue() {
 		length := meta >> 5
 		family := meta >> 4 & 0x01
 		proto4 := meta >> 3 & 0x01
-		//reason := meta & 0x07
+		reason := meta & 0x07
+
+		if reason == 1 {
+			packet := buff[2 : 2+length]
+			fmt.Println("SNOOP", packet)
+			return
+		}
 
 		protocol := TCP
 
@@ -361,15 +367,14 @@ func (c *client) clean() {
 
 	c.natmap.clean(nmap)
 
-	for k, v := range c.natmap.all() {
-		nat := c.netns.nat(v, k[0].Is6()) // k[0] is the vip
-		nats[nat] = true
+	for viprip, index := range c.natmap.all() {
+		nats[c.netns.nat(index, viprip[0].Is6())] = true // viprip[0] is the vip
 	}
 
 	c.maps.clean(serv, vips, vrpp, nats, c.test)
 
 	if c.logger != nil {
-		c.logger.Info("Clean-up took", "duration", time.Now().Sub(mark))
+		c.logger.Debug("clean", "duration", time.Now().Sub(mark))
 	}
 }
 

@@ -15,10 +15,10 @@ INCLUDE ?=
 # kernel source, so it probably wouldn't hurt to set it to that
 # (although you'd need a lot of memory - which you probably do)
 MAX_CPU_SUPPORT ?= 8192
-FLOW_STATE_SIZE ?= 1000000
+#FLOW_STATE_SIZE ?= 1000000
+FLOW_STATE_SIZE ?= 100
 FLOW_QUEUE_SIZE ?= 10000
 ICMP_QUEUE_SIZE ?= 1000
-SNOOP_QUEUE_SIZE ?= 1000
 
 default: layer3.o.gz
 
@@ -26,10 +26,10 @@ clean:
 	rm -f *.o
 
 distclean: clean
-	rm -rf libbpf
+	rm -f *.gz
 
 pristine: distclean
-	rm -f *.gz
+	rm -rf libbpf
 
 %.o.gz: %.o
 	gzip -f $*.o
@@ -41,7 +41,6 @@ pristine: distclean
 	    -D FLOW_QUEUE_SIZE=$(FLOW_QUEUE_SIZE) \
 	    -D MAX_CPU_SUPPORT=$(MAX_CPU_SUPPORT) \
 	    -D ICMP_QUEUE_SIZE=$(ICMP_QUEUE_SIZE) \
-	    -D SNOOP_QUEUE_SIZE=$(SNOOP_QUEUE_SIZE) \
 	    -D __BPF_TRACING__ \
 	    -I$(LIBBPF) $(INCLUDE) \
 	    -Wall \
