@@ -194,10 +194,19 @@ struct {
     __array(values, struct flows);
 } flows_tcp SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(max_entries, 2); // 0: shared, 1: udp
+    __array(values, struct flows);
+} flows_shared SEC(".maps");
+
 // UDP: eventually, track flow for ~30s, reselect backend, and time
 // flow out after ~120s idle - allows for breaking tie to a down
 // server, whilst getting a rough idea about concurrent users (array
 // of maps?)
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, fourtuple_t);
@@ -472,12 +481,13 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
 }
 
 static __always_inline
-flow_t *lookup_shared(void *flows, fourtuple_t *ft)
+flow_t *lookup_shared(void *flows, fourtuple_t *ft, void *shared)
 {
-    if (!flows)
+    if (!flows || !shared)
 	return NULL;
     
-    flow_t *flow = bpf_map_lookup_elem(&shared, ft);
+    flow_t *flow = bpf_map_lookup_elem(shared, ft);
+    //flow_t *flow = bpf_map_lookup_elem(&shared, ft);
     
     if (!flow)
 	return NULL;
@@ -599,6 +609,8 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
 
+    void *shared = bpf_map_lookup_elem(&flows_shared, &ZERO);
+
     switch(ft->proto) {
     case IPPROTO_TCP:
 	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn, metadata->seq, metadata->shared))) {
@@ -608,11 +620,11 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	}
 
 	if (metadata->shared)
-	    flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
+	    flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft, shared);
 	break;
 	
-    case IPPROTO_UDP:
-	flow = lookup_udp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft);
+    case IPPROTO_UDPLITE:  // I want to comment this out, but the verifier won't let me .... wtf? hence IPPROTO_UDPLITE
+	flow = lookup_udp_flow(&flows_udp, (fourtuple_t *) ft);
 	break;
     }
 	
@@ -671,7 +683,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	case IPPROTO_TCP:
 	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, metadata->era-1);
 	    break;
-	case IPPROTO_UDP:
+	case IPPROTO_UDPLITE:
 	    store_flow(&flows_udp, (fourtuple_t *) ft, t, metadata->era-1);
 	    break;
 	}
