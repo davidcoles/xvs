@@ -41,6 +41,9 @@
 
 #define SECOND_NS 1000000000l
 
+const __u32 SHARED_MAP = 0;
+const __u32 UDP_MAP = 1;
+
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 60; // seconds
@@ -179,10 +182,10 @@ typedef struct flow flow_t;
 
 struct flows {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, fourtuple_t);
-    __type(value, flow_t);
-    //__type(key, __u8[sizeof(fourtuple_t)]);
-    //__type(value, __u8[sizeof(flow_t)]);
+    //__type(key, fourtuple_t);
+    //__type(value, flow_t);
+    __type(key, __u8[sizeof(fourtuple_t)]);
+    __type(value, __u8[sizeof(flow_t)]);
     __uint(max_entries, 1); // will get set when map created from userspace
 };
 
@@ -206,7 +209,7 @@ struct {
 // flow out after ~120s idle - allows for breaking tie to a down
 // server, whilst getting a rough idea about concurrent users (array
 // of maps?)
-
+/*
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, fourtuple_t);
@@ -220,7 +223,7 @@ struct {
     __type(value, flow_t);
     __uint(max_entries, FLOW_STATE_SIZE);
 } shared SEC(".maps");
-
+*/
 struct {
     __uint(type, BPF_MAP_TYPE_QUEUE);
     __type(value, __u8[sizeof(fourtuple_t) + sizeof(flow_t)]);
@@ -402,8 +405,11 @@ struct {
 } vlaninfo SEC(".maps");
 
 static __always_inline
-flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u32 seq, __u8 shared)
+flow_t *lookup_tcp_flow(fourtuple_t *ft, __u8 syn, __u32 seq, __u8 shared)
 {
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &cpu_id);
+    
     if (!flows)
 	return NULL;
     
@@ -449,8 +455,11 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u32 seq, __u8 
 }
 
 static __always_inline
-flow_t *lookup_udp_flow(void *flows, fourtuple_t *ft)
+flow_t *lookup_udp_flow(fourtuple_t *ft)
 {
+
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &UDP_MAP);
+    
     if (!flows)
 	return NULL;
     
@@ -468,8 +477,10 @@ flow_t *lookup_udp_flow(void *flows, fourtuple_t *ft)
 }
 
 static __always_inline
-int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
+int store_udp_flow(fourtuple_t *ft, tunnel_t *t, __u8 era)
 {
+    void *flows = bpf_map_lookup_elem(&flows_shared, &UDP_MAP);
+    
     if (!flows)
 	return -1;
 
@@ -481,17 +492,35 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
 }
 
 static __always_inline
-flow_t *lookup_shared(void *flows, fourtuple_t *ft, void *shared)
+int store_tcp_flow(fourtuple_t *ft, tunnel_t *t, __u8 era)
 {
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &cpu_id);
+    
+    if (!flows)
+	return -1;
+
+    __u64 time = bpf_ktime_get_ns();
+    flow_t flow = { .tunnel = *t, .time = time, .era = era };
+    bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
+
+    return 0;
+}
+
+static __always_inline
+flow_t *lookup_shared(fourtuple_t *ft)
+{
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &cpu_id);
+    void *shared = bpf_map_lookup_elem(&flows_shared, &SHARED_MAP);
+    
     if (!flows || !shared)
 	return NULL;
     
     flow_t *flow = bpf_map_lookup_elem(shared, ft);
-    //flow_t *flow = bpf_map_lookup_elem(&shared, ft);
     
     if (!flow)
 	return NULL;
-
     
     __u64 time = bpf_ktime_get_ns();
     
@@ -538,12 +567,6 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft, void *shared)
     bpf_map_update_elem(flows, ft, flow, BPF_ANY);
 
     return flow;
-}
-
-static __always_inline
-void *array_of_maps(void *outer) {
-    __u32 cpu_id = bpf_get_smp_processor_id();
-    return bpf_map_lookup_elem(outer, &cpu_id);
 }
 
 static __always_inline
@@ -609,22 +632,20 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
 
-    void *shared = bpf_map_lookup_elem(&flows_shared, &ZERO);
-
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn, metadata->seq, metadata->shared))) {
+	if ((flow = lookup_tcp_flow((fourtuple_t *) ft, metadata->syn, metadata->seq, metadata->shared))) {
 	    vrpp_t vrpp = {.vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto};
 	    tcp_concurrent(vrpp, metadata, flow, metadata->era);
 	    break;
 	}
 
 	if (metadata->shared)
-	    flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft, shared);
+	    flow = lookup_shared((fourtuple_t *) ft);
 	break;
 	
-    case IPPROTO_UDPLITE:  // I want to comment this out, but the verifier won't let me .... wtf? hence IPPROTO_UDPLITE
-	flow = lookup_udp_flow(&flows_udp, (fourtuple_t *) ft);
+    case IPPROTO_UDP:
+	flow = lookup_udp_flow((fourtuple_t *) ft);
 	break;
     }
 	
@@ -669,9 +690,9 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
-    // comes through. Of course, an attacker could send a SYN and a
-    // bogus ACK; but upstream stateful inspection DDoS prevention
-    // would catch this
+    // comes through. Of course, an attacker could send a SYN followed
+    // by a bogus ACK; but upstream stateful inspection DDoS
+    // prevention would catch this
 
     if (flow && !metadata->syn && flow->syn_seqn_reserved) {
 	if (flow->syn_seqn_reserved == bpf_ntohl(metadata->seq))
@@ -681,10 +702,10 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	metadata->new_flow = 1;
 	switch(ft->proto) {
 	case IPPROTO_TCP:
-	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, metadata->era-1);
+	    store_tcp_flow((fourtuple_t *) ft, t, metadata->era-1);
 	    break;
-	case IPPROTO_UDPLITE:
-	    store_flow(&flows_udp, (fourtuple_t *) ft, t, metadata->era-1);
+	case IPPROTO_UDP:
+	    store_udp_flow((fourtuple_t *) ft, t, metadata->era-1);
 	    break;
 	}
     }
@@ -985,13 +1006,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return FWD_PASS; // <- NOT AN ERROR
     }
 
-    // vmxnet3 in driver mode presents a buffer that can contain an
-    // MTU sized packet, so (data_end - next_header) is not the same
-    // as the size of the packet. better to use the size of the packet
-    // from the packet headers. update: i did have this issue but now
-    // cannot recreate. I suspect that I managed to trigger it via
-    // experimenting with ethtool settings.
-
     int overhead = is_ipv4_addr_p(&t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
     switch (result) {
     case FWD_LAYER3_GRE: overhead += GRE_OVERHEAD; break;
@@ -1003,16 +1017,33 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
     
-    //int packet_length = data_end - next_header; // vmxnet3 issue?
-    int packet_length = t->tot_len; // vmxnet3 issue?
-    
     void *data = (void *)(long)ctx->data;
-    if ((data_end - next_header) != metadata->octets && (data_end - data) > 64) {
-	bpf_printk("PACKET LEN %d != %d %u", (data_end - next_header), metadata->octets, *((__u8 *) next_header));	
-	return FWD_PASS;
+    if ((data_end - next_header) != t->tot_len && (data_end - data) >= 64) {
+
+	// I had noticed that native-mode XDP support had been added
+	// for the vmxnet3 driver so experimented with enabling it in
+	// dev (https://lists.openwall.net/netdev/2022/12/22/90)
+
+	// Immmediately I encountered a mismatch between the length of
+	// IP packets reported by the headers and the length of the
+	// buffer reported by the value of data_end.
+
+	// I suspect that the issue was because of the following bug:
+	// https://lore.kernel.org/linux-cve-announce/2025050349-CVE-2025-37799-bb83@gregkh/T
+
+	// I was using 6.11.0-29-generic, but the problem went away
+	// with 6.14.0-24-generic 
+
+	// So, out of an abundance of caution, if the IP packet length
+	// as reported by the headers does not match the length of the
+	// buffer containing it then it will be dropped, execpt in the
+	// case of a runt runt frame (<64 bytes) which will be padded
+	// with zeros.
+	
+	return FWD_DROP;
     }
-    
-    if (packet_length + overhead > metadata->mtu) {	
+
+    if (t->tot_len + overhead > metadata->mtu) {	
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);
@@ -1041,7 +1072,7 @@ struct {
     __type(key, __u32);
     __type(value, __u32);
     __uint(max_entries, 2);
-} jmp_table1 SEC(".maps");
+} tail_calls SEC(".maps");
 
 SEC("xdp")
 int xdp_forward_func(struct xdp_md *ctx)
@@ -1137,11 +1168,11 @@ int xdp_forward_func(struct xdp_md *ctx)
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
     case FWD_PROBE_REPLY6:
-	bpf_tail_call(ctx, &jmp_table1, 1);
+	bpf_tail_call(ctx, &tail_calls, PROBE_REPLY6);
 	return XDP_DROP;
 	
     case FWD_PROBE_REPLY4:
-	bpf_tail_call(ctx, &jmp_table1, 0);
+	bpf_tail_call(ctx, &tail_calls, PROBE_REPLY4);
 	return XDP_DROP;
 
 	/*

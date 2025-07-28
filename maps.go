@@ -50,6 +50,8 @@ const (
 
 	sticky                 flags       = bpf.F_STICKY
 	tunnelEncapNoChecksums tunnelFlags = bpf.F_TUNNEL_ENCAP_NO_CHECKSUMS
+	probeReply4                        = bpf.PROBE_REPLY4
+	probeReply6                        = bpf.PROBE_REPLY6
 )
 
 func (t TunnelType) string() string {
@@ -95,13 +97,11 @@ type maps struct {
 	global_metrics  xdp.Map
 	service_metrics xdp.Map
 	vip_metrics     xdp.Map
-	shared          xdp.Map
 	stats           xdp.Map
-
-	shared_tcp xdp.Map
-	shared_udp xdp.Map
-
-	tail_calls xdp.Map
+	shared_tcp      xdp.Map
+	shared_udp      xdp.Map
+	tail_calls      xdp.Map
+	//shared          xdp.Map
 }
 
 func (m *maps) counters(vrpp bpf_vrpp, t uint64) (c bpf_counter) {
@@ -338,9 +338,9 @@ func (m *maps) init(bpf []byte) (err error) {
 		return err
 	}
 
-	if m.shared, err = x.FindMap("shared", int(ft_size), int(flow_size)); err != nil {
-		return err
-	}
+	//if m.shared, err = x.FindMap("shared", int(ft_size), int(flow_size)); err != nil {
+	//	return err
+	//}
 
 	if m.global_metrics, err = x.FindMap("global_metrics", 4, int(unsafe.Sizeof(bpf_global{}))); err != nil {
 		return err
@@ -350,7 +350,7 @@ func (m *maps) init(bpf []byte) (err error) {
 		return err
 	}
 
-	if m.tail_calls, err = x.FindMap("jmp_table1", 4, 4); err != nil {
+	if m.tail_calls, err = x.FindMap("tail_calls", 4, 4); err != nil {
 		return err
 	}
 
