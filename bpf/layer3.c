@@ -41,6 +41,9 @@
 
 #define SECOND_NS 1000000000l
 
+const __u32 SHARED_MAP = 0;
+const __u32 UDP_MAP = 1;
+
 const __u32 ZERO = 0;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 60; // seconds
@@ -206,7 +209,7 @@ struct {
 // flow out after ~120s idle - allows for breaking tie to a down
 // server, whilst getting a rough idea about concurrent users (array
 // of maps?)
-
+/*
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, fourtuple_t);
@@ -220,7 +223,7 @@ struct {
     __type(value, flow_t);
     __uint(max_entries, FLOW_STATE_SIZE);
 } shared SEC(".maps");
-
+*/
 struct {
     __uint(type, BPF_MAP_TYPE_QUEUE);
     __type(value, __u8[sizeof(fourtuple_t) + sizeof(flow_t)]);
@@ -402,8 +405,11 @@ struct {
 } vlaninfo SEC(".maps");
 
 static __always_inline
-flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u32 seq, __u8 shared)
+flow_t *lookup_tcp_flow(fourtuple_t *ft, __u8 syn, __u32 seq, __u8 shared)
 {
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &cpu_id);
+    
     if (!flows)
 	return NULL;
     
@@ -449,8 +455,11 @@ flow_t *lookup_tcp_flow(void *flows, fourtuple_t *ft, __u8 syn, __u32 seq, __u8 
 }
 
 static __always_inline
-flow_t *lookup_udp_flow(void *flows, fourtuple_t *ft)
+flow_t *lookup_udp_flow(fourtuple_t *ft)
 {
+
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &UDP_MAP);
+    
     if (!flows)
 	return NULL;
     
@@ -468,8 +477,10 @@ flow_t *lookup_udp_flow(void *flows, fourtuple_t *ft)
 }
 
 static __always_inline
-int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
+int store_udp_flow(fourtuple_t *ft, tunnel_t *t, __u8 era)
 {
+    void *flows = bpf_map_lookup_elem(&flows_shared, &UDP_MAP);
+    
     if (!flows)
 	return -1;
 
@@ -481,13 +492,32 @@ int store_flow(void *flows, fourtuple_t *ft, tunnel_t *t, __u8 era)
 }
 
 static __always_inline
-flow_t *lookup_shared(void *flows, fourtuple_t *ft, void *shared)
+int store_tcp_flow(fourtuple_t *ft, tunnel_t *t, __u8 era)
 {
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &cpu_id);
+    
+    if (!flows)
+	return -1;
+
+    __u64 time = bpf_ktime_get_ns();
+    flow_t flow = { .tunnel = *t, .time = time, .era = era };
+    bpf_map_update_elem(flows, ft, &flow, BPF_ANY);
+
+    return 0;
+}
+
+static __always_inline
+flow_t *lookup_shared(fourtuple_t *ft)
+{
+    __u32 cpu_id = bpf_get_smp_processor_id();
+    void *flows = bpf_map_lookup_elem(&flows_tcp, &cpu_id);
+    void *shared = bpf_map_lookup_elem(&flows_shared, &SHARED_MAP);
+    
     if (!flows || !shared)
 	return NULL;
     
     flow_t *flow = bpf_map_lookup_elem(shared, ft);
-    //flow_t *flow = bpf_map_lookup_elem(&shared, ft);
     
     if (!flow)
 	return NULL;
@@ -538,12 +568,6 @@ flow_t *lookup_shared(void *flows, fourtuple_t *ft, void *shared)
     bpf_map_update_elem(flows, ft, flow, BPF_ANY);
 
     return flow;
-}
-
-static __always_inline
-void *array_of_maps(void *outer) {
-    __u32 cpu_id = bpf_get_smp_processor_id();
-    return bpf_map_lookup_elem(outer, &cpu_id);
 }
 
 static __always_inline
@@ -609,22 +633,20 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 {
     flow_t *flow = NULL;
 
-    void *shared = bpf_map_lookup_elem(&flows_shared, &ZERO);
-
     switch(ft->proto) {
     case IPPROTO_TCP:
-	if ((flow = lookup_tcp_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, metadata->syn, metadata->seq, metadata->shared))) {
+	if ((flow = lookup_tcp_flow((fourtuple_t *) ft, metadata->syn, metadata->seq, metadata->shared))) {
 	    vrpp_t vrpp = {.vaddr = ft->daddr, .raddr = flow->tunnel.daddr, .vport = bpf_ntohs(ft->dport), .protocol = ft->proto};
 	    tcp_concurrent(vrpp, metadata, flow, metadata->era);
 	    break;
 	}
 
 	if (metadata->shared)
-	    flow = lookup_shared(array_of_maps(&flows_tcp), (fourtuple_t *) ft, shared);
+	    flow = lookup_shared((fourtuple_t *) ft);
 	break;
 	
-    case IPPROTO_UDPLITE:  // I want to comment this out, but the verifier won't let me .... wtf? hence IPPROTO_UDPLITE
-	flow = lookup_udp_flow(&flows_udp, (fourtuple_t *) ft);
+    case IPPROTO_UDP:
+	flow = lookup_udp_flow((fourtuple_t *) ft);
 	break;
     }
 	
@@ -669,9 +691,9 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     
     // don't store a flow with a SYN - should stop SYN floods from
     // wiping out the LRU hash - we will store when the first ACK
-    // comes through. Of course, an attacker could send a SYN and a
-    // bogus ACK; but upstream stateful inspection DDoS prevention
-    // would catch this
+    // comes through. Of course, an attacker could send a SYN followed
+    // by a bogus ACK; but upstream stateful inspection DDoS
+    // prevention would catch this
 
     if (flow && !metadata->syn && flow->syn_seqn_reserved) {
 	if (flow->syn_seqn_reserved == bpf_ntohl(metadata->seq))
@@ -681,10 +703,10 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	metadata->new_flow = 1;
 	switch(ft->proto) {
 	case IPPROTO_TCP:
-	    store_flow(array_of_maps(&flows_tcp), (fourtuple_t *) ft, t, metadata->era-1);
+	    store_tcp_flow((fourtuple_t *) ft, t, metadata->era-1);
 	    break;
-	case IPPROTO_UDPLITE:
-	    store_flow(&flows_udp, (fourtuple_t *) ft, t, metadata->era-1);
+	case IPPROTO_UDP:
+	    store_udp_flow((fourtuple_t *) ft, t, metadata->era-1);
 	    break;
 	}
     }
