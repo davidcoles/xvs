@@ -39,7 +39,10 @@ enum tunnel_type {
 		  //T_FOU_GRE = 5, // maybe - not sure that GRE in FOU gives any advantage over GUE for load balancing
 };
 
-
+enum tail_call {
+    PROBE_REPLY4 = 0,
+    PROBE_REPLY6 = 1,
+};
 
 // https://github.com/davidcoles/xvs/issues/2
 static __always_inline

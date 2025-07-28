@@ -106,11 +106,11 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		}
 	}
 
-	if err = c.maps.tailCall("xdp_reply_v4", 0); err != nil {
+	if err = c.maps.tailCall("xdp_reply_v4", probeReply4); err != nil {
 		return nil, err
 	}
 
-	if err = c.maps.tailCall("xdp_reply_v6", 1); err != nil {
+	if err = c.maps.tailCall("xdp_reply_v6", probeReply6); err != nil {
 		return nil, err
 	}
 

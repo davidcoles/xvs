@@ -182,10 +182,10 @@ typedef struct flow flow_t;
 
 struct flows {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, fourtuple_t);
-    __type(value, flow_t);
-    //__type(key, __u8[sizeof(fourtuple_t)]);
-    //__type(value, __u8[sizeof(flow_t)]);
+    //__type(key, fourtuple_t);
+    //__type(value, flow_t);
+    __type(key, __u8[sizeof(fourtuple_t)]);
+    __type(value, __u8[sizeof(flow_t)]);
     __uint(max_entries, 1); // will get set when map created from userspace
 };
 
@@ -521,7 +521,6 @@ flow_t *lookup_shared(fourtuple_t *ft)
     
     if (!flow)
 	return NULL;
-
     
     __u64 time = bpf_ktime_get_ns();
     
@@ -1007,13 +1006,6 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return FWD_PASS; // <- NOT AN ERROR
     }
 
-    // vmxnet3 in driver mode presents a buffer that can contain an
-    // MTU sized packet, so (data_end - next_header) is not the same
-    // as the size of the packet. better to use the size of the packet
-    // from the packet headers. update: i did have this issue but now
-    // cannot recreate. I suspect that I managed to trigger it via
-    // experimenting with ethtool settings.
-
     int overhead = is_ipv4_addr_p(&t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
     switch (result) {
     case FWD_LAYER3_GRE: overhead += GRE_OVERHEAD; break;
@@ -1025,16 +1017,33 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	return result;
     }
     
-    //int packet_length = data_end - next_header; // vmxnet3 issue?
-    int packet_length = t->tot_len; // vmxnet3 issue?
-    
     void *data = (void *)(long)ctx->data;
-    if ((data_end - next_header) != metadata->octets && (data_end - data) > 64) {
-	bpf_printk("PACKET LEN %d != %d %u", (data_end - next_header), metadata->octets, *((__u8 *) next_header));	
-	return FWD_PASS;
+    if ((data_end - next_header) != t->tot_len && (data_end - data) >= 64) {
+
+	// I had noticed that native-mode XDP support had been added
+	// for the vmxnet3 driver so experimented with enabling it in
+	// dev (https://lists.openwall.net/netdev/2022/12/22/90)
+
+	// Immmediately I encountered a mismatch between the length of
+	// IP packets reported by the headers and the length of the
+	// buffer reported by the value of data_end.
+
+	// I suspect that the issue was because of the following bug:
+	// https://lore.kernel.org/linux-cve-announce/2025050349-CVE-2025-37799-bb83@gregkh/T
+
+	// I was using 6.11.0-29-generic, but the problem went away
+	// with 6.14.0-24-generic 
+
+	// So, out of an abundance of caution, if the IP packet length
+	// as reported by the headers does not match the length of the
+	// buffer containing it then it will be dropped, execpt in the
+	// case of a runt runt frame (<64 bytes) which will be padded
+	// with zeros.
+	
+	return FWD_DROP;
     }
-    
-    if (packet_length + overhead > metadata->mtu) {	
+
+    if (t->tot_len + overhead > metadata->mtu) {	
 	FWD_ERROR(metadata, too_big); // FIXME FWD_ERROR4
 	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
 	    return FWD_ERROR(metadata, adjust_failed);
@@ -1063,7 +1072,7 @@ struct {
     __type(key, __u32);
     __type(value, __u32);
     __uint(max_entries, 2);
-} jmp_table1 SEC(".maps");
+} tail_calls SEC(".maps");
 
 SEC("xdp")
 int xdp_forward_func(struct xdp_md *ctx)
@@ -1159,11 +1168,11 @@ int xdp_forward_func(struct xdp_md *ctx)
 	    bpf_redirect_map(&redirect_map6, t.vlanid, XDP_DROP);
 
     case FWD_PROBE_REPLY6:
-	bpf_tail_call(ctx, &jmp_table1, 1);
+	bpf_tail_call(ctx, &tail_calls, PROBE_REPLY6);
 	return XDP_DROP;
 	
     case FWD_PROBE_REPLY4:
-	bpf_tail_call(ctx, &jmp_table1, 0);
+	bpf_tail_call(ctx, &tail_calls, PROBE_REPLY4);
 	return XDP_DROP;
 
 	/*

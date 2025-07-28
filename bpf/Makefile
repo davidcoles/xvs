@@ -16,7 +16,7 @@ INCLUDE ?=
 # (although you'd need a lot of memory - which you probably do)
 MAX_CPU_SUPPORT ?= 8192
 #FLOW_STATE_SIZE ?= 1000000
-FLOW_STATE_SIZE ?= 100
+#FLOW_STATE_SIZE ?= 100
 FLOW_QUEUE_SIZE ?= 10000
 ICMP_QUEUE_SIZE ?= 1000
 

@@ -19,6 +19,9 @@ const (
 
 	FLOW_VERSION byte   = C.FLOW_VERSION
 	BUFFER       uint16 = C.BUFFER
+
+	PROBE_REPLY4 = C.PROBE_REPLY4
+	PROBE_REPLY6 = C.PROBE_REPLY6
 )
 
 func Pow64(x uint8) uint64 {
