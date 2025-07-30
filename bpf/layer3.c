@@ -141,9 +141,6 @@ struct settings {
     __u64 watchdog;
     __u64 packets;
     __u64 latency;
-    __u32 veth;
-    __u8 vetha[6];
-    __u8 vethb[6];
     __u8 multi;
     __u8 era;
     __u8 active;

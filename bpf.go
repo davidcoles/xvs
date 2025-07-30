@@ -161,9 +161,6 @@ type bpf_settings struct {
 	watchdog uint64 // periodically reset to 0
 	packets  uint64
 	latency  uint64
-	veth     uint32
-	vetha    mac
-	vethb    mac
 	multi    uint8
 	era      uint8
 	active   uint8
