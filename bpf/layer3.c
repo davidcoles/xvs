@@ -717,22 +717,13 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR(metadata, err_malformed);
 
-    //struct addr saddr = { .addr6 = ip6->ip6_src };
-    //struct addr daddr = { .addr6 = ip6->ip6_dst };
-
-    //ft->saddr = saddr;
-    //ft->daddr = daddr;
     ft->saddr.addr6 = ip6->ip6_src;
     ft->daddr.addr6 = ip6->ip6_dst;
     ft->proto = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 
-    //metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
-    metadata->vip = bpf_map_lookup_elem(&vip_metrics, &(ft->daddr));
-    
-    if (!metadata->vip) {
-    	//if (bpf_map_lookup_elem(&vip_metrics, &saddr))
+    if (!(metadata->vip = bpf_map_lookup_elem(&vip_metrics, &(ft->daddr)))) {
     	if (bpf_map_lookup_elem(&vip_metrics, &(ft->saddr.addr6)))
-	    return FWD_PROBE_REPLY6; // source was a VIP - send to netns via veth interface
+	    return FWD_PROBE_REPLY6;
 	
 	return FWD_NOT_A_VIP;
     }
@@ -799,7 +790,9 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	    
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, BPF_EXIST) != 0)
-		return FWD_USERSPACE;
+		return FWD_ERROR(metadata, err_internal);
+
+	    return FWD_USERSPACE;
 	}
 
 	return FWD_ERROR(metadata, err_icmp_unsupported);
@@ -825,25 +818,16 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = (void *)(long)ctx->data;
     
-    if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
+    if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4)
 	return FWD_ERROR(metadata, err_malformed);
 
-    //struct addr saddr = { .addr4.addr = ip->saddr };
-    //struct addr daddr = { .addr4.addr = ip->daddr };
-    
-    //ft->saddr = saddr;
-    //ft->daddr = daddr;
     ft->saddr.addr4.addr = ip->saddr;
     ft->daddr.addr4.addr = ip->daddr;
     ft->proto = ip->protocol;
 
-    //metadata->vip = bpf_map_lookup_elem(&vip_metrics, &daddr);
-    metadata->vip = bpf_map_lookup_elem(&vip_metrics, &(ft->daddr));
-
-    if (!metadata->vip) {
-	//if (bpf_map_lookup_elem(&vip_metrics, &saddr))
+    if (!(metadata->vip = bpf_map_lookup_elem(&vip_metrics, &(ft->daddr)))) {
 	if (bpf_map_lookup_elem(&vip_metrics, &(ft->saddr)))	    
-	    return FWD_PROBE_REPLY4; // source was a VIP - send to netns via veth interface
+	    return FWD_PROBE_REPLY4;
 	
 	return FWD_NOT_A_VIP;
     }    
@@ -914,10 +898,12 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	    
 	    if (icmp_dest_unreach_frag_needed(ip, icmp, data_end, buffer, BUFFER) < 0)
 		return FWD_ERROR(metadata, err_internal);
-
+	    
 	    // send packet to userspace to be forwarded to backend(s)
 	    if (bpf_map_push_elem(&icmp_queue, buffer, BPF_EXIST) != 0)
-		return FWD_USERSPACE;
+		return FWD_ERROR(metadata, err_internal);
+	    
+	    return FWD_USERSPACE;
 	}
 
 	return FWD_ERROR(metadata, err_icmp_unsupported);
