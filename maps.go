@@ -287,7 +287,7 @@ func (m *maps) init(bpf []byte) (err error) {
 	m.xdp = x
 
 	if unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{}) {
-		return fmt.Errorf("Inconsistent bpf_global definition")
+		return fmt.Errorf("Inconsistent bpf_global/bpf_global_ definition")
 	}
 
 	if unsafe.Sizeof(bpf_tunnel{}) != 64 {

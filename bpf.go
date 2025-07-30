@@ -246,8 +246,9 @@ type bpf_vip_rip struct {
 	ext    addr16
 }
 
+// this struct neds to have the same number of entries as bpf_global
 type bpf_global_ struct {
-	counters [31]uint64
+	counters [32]uint64
 }
 
 func (g *bpf_global_) add(c bpf_global_) {

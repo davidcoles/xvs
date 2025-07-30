@@ -1000,7 +1000,8 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	// case of a runt runt frame (<64 bytes) which will be padded
 	// with zeros.
 	
-	return FWD_ERROR(metadata, err_cve_2025_37799);
+	//return FWD_ERROR(metadata, err_cve_2025_37799);
+	return FWD_ERROR(metadata, err_adjust_failed);
     }
 
     if (t->tot_len + overhead > metadata->mtu) {	
