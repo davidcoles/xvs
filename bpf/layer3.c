@@ -367,12 +367,10 @@ struct {
 struct vlaninfo {
     addr_t ip4;
     addr_t ip6;
-    //addr_t _gw6; // unused
-    //__be32 _gw4; // unused
     __u8 hw4[6];
     __u8 hw6[6];
-    __u8 gh4[6];
-    __u8 gh6[6];
+    __u8 gw4[6];
+    __u8 gw6[6];
 };
 
 struct {
@@ -526,12 +524,12 @@ flow_t *lookup_shared(fourtuple_t *ft)
     if (is_ipv4_addr_p(&(t->daddr))) {
 	t->saddr = vlan->ip4;              // set to this node's IP address on the vlan
 	memcpy(t->h_source, vlan->hw4, 6); // set to this node's MAC address on thw vlan
-	memcpy(h_gw, vlan->gh4, 6);        // copy this node's gateway MAC to temp addr
+	memcpy(h_gw, vlan->gw4, 6);        // copy this node's gateway MAC to temp addr
     } else {
 	// same as above, but for IPv6 destinations ...
 	t->saddr = vlan->ip6;
 	memcpy(t->h_source, vlan->hw6, 6);
-	memcpy(h_gw, vlan->gh6, 6);
+	memcpy(h_gw, vlan->gw6, 6);
     }
 
     // if the destination is not on a local VLAN then we need to send

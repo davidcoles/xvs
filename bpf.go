@@ -225,8 +225,8 @@ type bpf_vlaninfo struct {
 	ip6 addr16
 	hw4 mac
 	hw6 mac
-	gh4 mac
-	gh6 mac
+	gw4 mac
+	gw6 mac
 }
 
 type bpf_service struct {
