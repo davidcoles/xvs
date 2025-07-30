@@ -717,15 +717,6 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
     if (eth + 1 > data_end || ip6 + 1 > data_end || (ip6->ip6_ctlun.ip6_un2_vfc >> 4) != 6)
 	return FWD_ERROR(metadata, err_malformed);
 
-    // in some cases (eg. runt ethernet packets) pack length can be smaller than the buffer
-    __u16 buf_len = data_end - (void *) ip6;
-    __u16 tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
-
-    if (tot_len > buf_len)
-	return FWD_ERROR(metadata, err_tot_len); // new type
-
-    metadata->octets = tot_len;
-    
     //struct addr saddr = { .addr6 = ip6->ip6_src };
     //struct addr daddr = { .addr6 = ip6->ip6_dst };
 
@@ -745,6 +736,15 @@ enum fwd_action lookup6(struct xdp_md *ctx, struct ip6_hdr *ip6, fivetuple_t *ft
 	
 	return FWD_NOT_A_VIP;
     }
+    
+    // in some cases (eg. runt ethernet packets) pack length can be smaller than the buffer
+    __u16 buf_len = data_end - (void *) ip6;
+    __u16 tot_len = sizeof(struct ip6_hdr) + bpf_htons(ip6->ip6_ctlun.ip6_un1.ip6_un1_plen);
+
+    if (tot_len > buf_len)
+	return FWD_ERROR(metadata, err_tot_len); // new type
+
+    metadata->octets = tot_len;
     
     if (ip6->ip6_ctlun.ip6_un1.ip6_un1_hlim <= 1)
 	return FWD_ERROR(metadata, err_expired);
@@ -828,14 +828,6 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
     if (eth + 1 > data_end || ip + 1 > data_end || ip->version != 4 || ip->ihl < 5 )
 	return FWD_ERROR(metadata, err_malformed);
 
-    __u16 buf_len = data_end - (void *) ip;
-    __u16 tot_len = bpf_ntohs(ip->tot_len);
-
-    if (tot_len > buf_len)
-	return FWD_ERROR(metadata, err_tot_len);
-
-    metadata->octets = tot_len;
-
     //struct addr saddr = { .addr4.addr = ip->saddr };
     //struct addr daddr = { .addr4.addr = ip->daddr };
     
@@ -855,6 +847,14 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 	
 	return FWD_NOT_A_VIP;
     }    
+
+    __u16 buf_len = data_end - (void *) ip;
+    __u16 tot_len = bpf_ntohs(ip->tot_len);
+
+    if (tot_len > buf_len)
+	return FWD_ERROR(metadata, err_tot_len);
+
+    metadata->octets = tot_len;
 
     if (ip->ihl != 5)
 	return FWD_ERROR(metadata, err_malformed);
