@@ -276,9 +276,7 @@ struct metrics {
     __u64 userspace;
     __u64 icmp_echo_request;
 
-    __u64 too_big; // exceeds MTU for tunnel (separate ipv4 and ipv6 version?) - not an error per-se
-    
-    // forwarded packets only?
+    __u64 too_big;
     __u64 packets;
     __u64 octets;
     __u64 flows;

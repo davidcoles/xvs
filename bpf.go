@@ -43,14 +43,6 @@ func as16(a netip.Addr) (r addr16) {
 	return
 }
 
-//func as4(a netip.Addr) (r addr4) {
-//	if a.Is4() {
-//		return a.As4()
-//	}
-//
-//	return
-//}
-
 func (m mac) String() string {
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 }
@@ -77,27 +69,6 @@ func (a addr16) String() string {
 
 	return netip.AddrFrom4(a4).String()
 }
-
-/*
-func from16(a [16]byte) netip.Addr {
-	var is6 bool = false
-	for n := 0; n < 12; n++ {
-		if a[n] != 0 {
-			is6 = true
-		}
-	}
-
-	if is6 {
-		return netip.AddrFrom16(a)
-	}
-
-	var a4 [4]byte
-
-	copy(a4[:], a[12:])
-
-	return netip.AddrFrom4(a4)
-}
-*/
 
 type bpf_vrpp struct {
 	vaddr    addr16 // virtual service IP
