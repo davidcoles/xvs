@@ -281,6 +281,7 @@ type bpf_global struct {
 	err_udp_header         uint64
 	err_icmp_header        uint64
 	err_internal           uint64
+	err_cve_2025_37799     uint64
 	not_ip                 uint64
 	not_a_vip              uint64
 	probe_reply            uint64
@@ -318,6 +319,7 @@ func (f bpf_global) metrics() map[string]uint64 {
 	m["err_udp_header"] = f.err_udp_header
 	m["err_icmp_header"] = f.err_icmp_header
 	m["err_internal"] = f.err_internal
+	m["err_cve_2025_37799"] = f.err_cve_2025_37799
 	m["not_ip"] = f.not_ip
 	m["not_a_vip"] = f.not_a_vip
 	m["probe_reply"] = f.probe_reply

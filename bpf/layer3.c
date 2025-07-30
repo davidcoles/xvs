@@ -54,7 +54,8 @@ enum fwd_action {
     FWD_PROBE_REPLY4,
     FWD_PROBE_REPLY6,
     FWD_PASS,
-    FWD_DROP,
+    FWD_ERR_DROP,
+    FWD_NOT_IP,
     FWD_NOT_A_VIP,
     FWD_USERSPACE,
     FWD_ICMP_ECHO_REQUEST,
@@ -266,7 +267,8 @@ struct metrics {
     __u64 err_tcp_header;
     __u64 err_udp_header;
     __u64 err_icmp_header;
-    __u64 err_internal; 
+    __u64 err_internal;
+    __u64 err_cve_2025_37799;
     
     __u64 not_ip;
     __u64 not_a_vip;
@@ -586,10 +588,7 @@ void tcp_concurrent(vrpp_t vr, metadata_t *tcp, flow_t *flow, __u8 era)
 
 
 #define INC_COUNTER(M, F) (M->global->F++, M->vip && M->vip->F++, M->service && M->service->F++)
-#define FWD_ERROR(M, F) (INC_COUNTER(M, F), FWD_DROP)
-
-
-#define X_FWD_ERROR(M, F) (M->global->F++, M->vip && M->vip->F++, M->service && M->service->F++, FWD_DROP)
+#define FWD_ERROR(M, F) (INC_COUNTER(M, F), FWD_ERR_DROP)
 
 static __always_inline
 counter_t *is_backend_valid(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
@@ -941,17 +940,14 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 {
     void *data_end = (void *)(long)ctx->data_end;
     __u8 ipv6 = 0, gue_protocol = 0; // plain fou by default
-    enum fwd_action result = FWD_DROP;
+    enum fwd_action result = FWD_ERR_DROP;
     
     struct vlan_hdr *vlan = NULL;
     void *next_header = eth + 1;
     __be16 next_proto = eth->h_proto;
     if (next_proto == bpf_htons(ETH_P_8021Q)) {	
-	if ((vlan = next_header) + 1 > data_end) {
-	    //metadata->global->malformed++;
-	    //return FWD_DROP;
+	if ((vlan = next_header) + 1 > data_end)
 	    return FWD_ERROR(metadata, err_malformed);
-	}
 	next_proto = vlan->h_vlan_encapsulated_proto;
 	next_header = vlan + 1;
     }
@@ -967,8 +963,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	ipv6 = 1;
 	break;
     default:
-	metadata->global->not_ip++;
-	return FWD_PASS; // <- NOT AN ERROR
+	return FWD_NOT_IP; // pass to regular network stack
     }
 
     int overhead = is_ipv4_addr_p(&t->daddr) ? sizeof(struct iphdr) : sizeof(struct ip6_hdr);
@@ -976,7 +971,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
     case FWD_LAYER3_GRE: overhead += GRE_OVERHEAD; break;
     case FWD_LAYER3_FOU: overhead += FOU_OVERHEAD; break;
     case FWD_LAYER3_GUE: overhead += GUE_OVERHEAD; break;
-    case FWD_LAYER2_DSR: overhead = 0; break; // no overheaded needed for l2
+    case FWD_LAYER2_DSR: overhead = 0; break; // no overhead for l2
     case FWD_LAYER3_IPIP: break;
     default:
 	return result;
@@ -1005,7 +1000,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 	// case of a runt runt frame (<64 bytes) which will be padded
 	// with zeros.
 	
-	return FWD_DROP;
+	return FWD_ERROR(metadata, err_cve_2025_37799);
     }
 
     if (t->tot_len + overhead > metadata->mtu) {	
@@ -1103,11 +1098,12 @@ int xdp_forward_func(struct xdp_md *ctx)
     case FWD_TX:
 	return XDP_TX;
 	
-    case FWD_DROP:
-	metadata.global->errors++;
-	metadata.vip && metadata.vip->errors++;
-	metadata.service && metadata.service->errors++;
-	metadata.backend && metadata.backend->errors++;	
+    case FWD_ERR_DROP:
+	//metadata.global->errors++;
+	//metadata.vip && metadata.vip->errors++;
+	//metadata.service && metadata.service->errors++;
+	//metadata.backend && metadata.backend->errors++;	
+	INC_COUNTER((&metadata), errors);
 	return XDP_DROP;
 	
     case FWD_PASS:
@@ -1146,6 +1142,10 @@ int xdp_forward_func(struct xdp_md *ctx)
 
     case FWD_NOT_A_VIP:
 	INC_COUNTER((&metadata), not_a_vip);
+	return XDP_PASS;
+
+    case FWD_NOT_IP:
+	INC_COUNTER((&metadata), not_ip);
 	return XDP_PASS;
 
     case FWD_USERSPACE:
