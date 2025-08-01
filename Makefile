@@ -1,12 +1,16 @@
 BPFVER  ?= v1.5.0
 LIBBPF  := $(PWD)/bpf/libbpf
-INCLUDE ?= 
+INCLUDE ?=
+RACE    ?=
 
 default: cmd/balancer
 
 cmd/balancer: cmd/balancer.go *.go
 	cd bpf && $(MAKE) libbpf/bpf/libbpf.a layer3.o.gz
-	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build -race -o balancer balancer.go
+	cd cmd && CGO_CFLAGS="-I$(LIBBPF)" CGO_LDFLAGS="-L$(LIBBPF)/bpf" go build $(RACE) -o balancer balancer.go
+
+race:
+	$(MAKE) cmd/balancer RACE=-race
 
 clean:
 	rm -f cmd/balancer
