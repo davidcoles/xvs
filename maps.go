@@ -113,7 +113,7 @@ func (m *maps) counters(vrpp bpf_vrpp, t uint64) (c bpf_counter) {
 		c.add(v)
 	}
 
-	c._current = t
+	c.current = t
 
 	return c
 }
@@ -132,7 +132,7 @@ func (m *maps) globals(concurrent uint64) (c bpf_global) {
 
 	c = *((*bpf_global)(uP(&b)))
 
-	c._current = concurrent
+	c.current = concurrent
 
 	return c
 }
@@ -150,7 +150,7 @@ func (m *maps) virtualMetrics(a16 addr16, concurrent uint64) (c bpf_global) {
 
 	c = *((*bpf_global)(uP(&b)))
 
-	c._current = concurrent
+	c.current = concurrent
 
 	return
 }
@@ -168,7 +168,7 @@ func (m *maps) serviceMetrics(key bpf_servicekey, concurrent uint64) (c bpf_glob
 
 	c = *((*bpf_global)(uP(&b)))
 
-	c._current = concurrent
+	c.current = concurrent
 
 	return
 }
@@ -287,7 +287,7 @@ func (m *maps) init(bpf []byte) (err error) {
 	m.xdp = x
 
 	if unsafe.Sizeof(bpf_global_{}) != unsafe.Sizeof(bpf_global{}) {
-		return fmt.Errorf("Inconsistent bpf_global definition")
+		return fmt.Errorf("Inconsistent bpf_global/bpf_global_ definition")
 	}
 
 	if unsafe.Sizeof(bpf_tunnel{}) != 64 {

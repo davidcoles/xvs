@@ -100,6 +100,10 @@ func (x *XDP) LinkDetach(iface uint32) {
 	C.xdp_link_detach(C.int(iface))
 }
 
+func LinkDetach(iface uint32) {
+	C.xdp_link_detach(C.int(iface))
+}
+
 func (x *XDP) LoadBpfSection(section string, native bool, iface uint32) error {
 	var n int
 

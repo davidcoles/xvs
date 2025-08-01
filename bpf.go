@@ -43,14 +43,6 @@ func as16(a netip.Addr) (r addr16) {
 	return
 }
 
-//func as4(a netip.Addr) (r addr4) {
-//	if a.Is4() {
-//		return a.As4()
-//	}
-//
-//	return
-//}
-
 func (m mac) String() string {
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 }
@@ -78,27 +70,6 @@ func (a addr16) String() string {
 	return netip.AddrFrom4(a4).String()
 }
 
-/*
-func from16(a [16]byte) netip.Addr {
-	var is6 bool = false
-	for n := 0; n < 12; n++ {
-		if a[n] != 0 {
-			is6 = true
-		}
-	}
-
-	if is6 {
-		return netip.AddrFrom16(a)
-	}
-
-	var a4 [4]byte
-
-	copy(a4[:], a[12:])
-
-	return netip.AddrFrom4(a4)
-}
-*/
-
 type bpf_vrpp struct {
 	vaddr    addr16 // virtual service IP
 	raddr    addr16 // real server IP
@@ -118,7 +89,7 @@ type bpf_counter struct {
 	tunnel_unsupported uint64
 	too_big            uint64
 	adjust_failed      uint64
-	_current           uint64
+	current            uint64
 }
 
 func (c *bpf_counter) add(x bpf_counter) {
@@ -134,18 +105,9 @@ func (c *bpf_counter) add(x bpf_counter) {
 }
 
 func (c bpf_counter) stats() (s Stats) {
-	/*
-		s.Packets = c.packets
-		s.Octets = c.octets
-		s.Flows = c.flows
-		s.Errors = c.errors
-		s.Current = c._current
-	*/
-
 	s.Connections = c.flows
 	s.IncomingPackets = c.packets
 	s.IncomingBytes = c.octets
-
 	return
 }
 
@@ -162,7 +124,7 @@ func (c bpf_counter) metrics() map[string]uint64 {
 	m["tunnel_unsupported"] = c.tunnel_unsupported
 	m["too_big"] = c.too_big
 	m["adjust_failed"] = c.adjust_failed
-	m["current"] = c._current
+	m["current"] = c.current
 	return m
 }
 
@@ -170,9 +132,6 @@ type bpf_settings struct {
 	watchdog uint64 // periodically reset to 0
 	packets  uint64
 	latency  uint64
-	veth     uint32
-	vetha    mac
-	vethb    mac
 	multi    uint8
 	era      uint8
 	active   uint8
@@ -237,8 +196,8 @@ type bpf_vlaninfo struct {
 	ip6 addr16
 	hw4 mac
 	hw6 mac
-	gh4 mac
-	gh6 mac
+	gw4 mac
+	gw6 mac
 }
 
 type bpf_service struct {
@@ -258,8 +217,9 @@ type bpf_vip_rip struct {
 	ext    addr16
 }
 
+// this struct neds to have the same number of entries as bpf_global
 type bpf_global_ struct {
-	counters [31]uint64
+	counters [32]uint64
 }
 
 func (g *bpf_global_) add(c bpf_global_) {
@@ -268,79 +228,76 @@ func (g *bpf_global_) add(c bpf_global_) {
 	}
 }
 
-type bpf_global struct {
-	malformed          uint64
-	not_ip             uint64
-	not_a_vip          uint64
-	probe_reply        uint64
-	l4_unsupported     uint64
-	icmp_unsupported   uint64
-	icmp_echo_request  uint64
-	fragmented         uint64
-	service_not_found  uint64
-	no_backend         uint64
-	too_big            uint64
-	expired            uint64
-	adjust_failed      uint64
-	tunnel_unsupported uint64
-	packets            uint64
-	octets             uint64
-	flows              uint64
-	errors             uint64
-	syn                uint64
-	ack                uint64
-	fin                uint64
-	rst                uint64
-	ip_options         uint64
-	tcp_header         uint64
-	udp_header         uint64
-	icmp_header        uint64
-	_current           uint64
-	fwd_octets         uint64
-	icmp_too_big       uint64
-	icmp_frag_needed   uint64
-	userspace          uint64
-}
-
-//func (p bpf_global) String() string {
-//	return fmt.Sprintf("malformed:%d not_ip:%d not_a_vip:%d too_big:%d packets:%d flows:%d syn:%d ack:%d",
-//		p.malformed, p.not_ip, p.not_a_vip, p.too_big, p.packets, p.flows, p.syn, p.ack)
-//}
-
 func (f bpf_global) stats() (s Stats) {
-	/*
-		s.Packets = f.packets
-		s.Octets = f.octets
-		s.Flows = f.flows
-		s.Current = f._current
-		s.Errors = f.errors
-	*/
-
 	s.Connections = f.flows
 	s.IncomingPackets = f.packets
 	s.IncomingBytes = f.octets
-
 	return
 }
 
+type bpf_global struct {
+	current                uint64
+	err_malformed          uint64
+	err_tot_len            uint64
+	err_l4_unsupported     uint64
+	err_icmp_unsupported   uint64
+	err_fragmented         uint64
+	err_service_not_found  uint64
+	err_no_backend         uint64
+	err_backend_invalid    uint64
+	err_no_tunnel_port     uint64
+	err_expired            uint64
+	err_adjust_failed      uint64
+	err_tunnel_unsupported uint64
+	err_tcp_header         uint64
+	err_udp_header         uint64
+	err_icmp_header        uint64
+	err_internal           uint64
+	err_cve_2025_37799     uint64
+	not_ip                 uint64
+	not_a_vip              uint64
+	probe_reply            uint64
+	userspace              uint64
+	icmp_echo_request      uint64
+	too_big                uint64
+	packets                uint64
+	octets                 uint64
+	flows                  uint64
+	errors                 uint64
+	syn                    uint64
+	ack                    uint64
+	fin                    uint64
+	rst                    uint64
+}
+
 func (f bpf_global) metrics() map[string]uint64 {
-	// cat /tmp/foo | grep -v '//' | awk '{print "m.[\"" $1 "\"] = f." $1}'
+	// cat /tmp/foo | grep -v '//' | awk '{print "m[\"" $1 "\"] = f." $1}'
 	m := make(map[string]uint64, 30)
 
-	m["malformed"] = f.malformed
+	m["current"] = f.current
+	m["err_malformed"] = f.err_malformed
+	m["err_tot_len"] = f.err_tot_len
+	m["err_l4_unsupported"] = f.err_l4_unsupported
+	m["err_icmp_unsupported"] = f.err_icmp_unsupported
+	m["err_fragmented"] = f.err_fragmented
+	m["err_service_not_found"] = f.err_service_not_found
+	m["err_no_backend"] = f.err_no_backend
+	m["err_backend_invalid"] = f.err_backend_invalid
+	m["err_no_tunnel_port"] = f.err_no_tunnel_port
+	m["err_expired"] = f.err_expired
+	m["err_adjust_failed"] = f.err_adjust_failed
+	m["err_tunnel_unsupported"] = f.err_tunnel_unsupported
+	m["err_tcp_header"] = f.err_tcp_header
+	m["err_udp_header"] = f.err_udp_header
+	m["err_icmp_header"] = f.err_icmp_header
+	m["err_internal"] = f.err_internal
+	m["err_cve_2025_37799"] = f.err_cve_2025_37799
 	m["not_ip"] = f.not_ip
 	m["not_a_vip"] = f.not_a_vip
 	m["probe_reply"] = f.probe_reply
-	m["l4_unsupported"] = f.l4_unsupported
-	m["icmp_unsupported"] = f.icmp_unsupported
+	m["userspace"] = f.userspace
 	m["icmp_echo_request"] = f.icmp_echo_request
-	m["fragmented"] = f.fragmented
-	m["service_not_found"] = f.service_not_found
-	m["no_backend"] = f.no_backend
 	m["too_big"] = f.too_big
-	m["expired"] = f.expired
-	m["adjust_failed"] = f.adjust_failed
-	m["tunnel_unsupported"] = f.tunnel_unsupported
 	m["packets"] = f.packets
 	m["octets"] = f.octets
 	m["flows"] = f.flows
@@ -349,15 +306,6 @@ func (f bpf_global) metrics() map[string]uint64 {
 	m["ack"] = f.ack
 	m["fin"] = f.fin
 	m["rst"] = f.rst
-	m["ip_options"] = f.ip_options
-	m["tcp_header"] = f.tcp_header
-	m["udp_header"] = f.udp_header
-	m["icmp_header"] = f.icmp_header
-	m["current"] = f._current
-	//m["fwd_octets"] = f.fwd_octets
-	m["icmp_too_big"] = f.icmp_too_big
-	m["icmp_frag_needed"] = f.icmp_frag_needed
-	m["userspace"] = f.userspace
 
 	return m
 }
