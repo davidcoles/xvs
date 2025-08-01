@@ -74,6 +74,15 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		}
 	}
 
+	for _, nic := range nics {
+		xdp.LinkDetach(nic)
+		if options.InterfaceInitDelay > 0 {
+			time.Sleep(time.Duration(options.InterfaceInitDelay) * time.Second)
+		}
+	}
+
+	c.netns.netnsdel()
+
 	if c.config, err = options.config().copy(); err != nil {
 		return nil, err
 	}
@@ -97,13 +106,6 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 
 	if err = c.icmp.start(); err != nil {
 		return nil, err
-	}
-
-	for _, nic := range nics {
-		c.maps.xdp.LinkDetach(nic)
-		if options.InterfaceInitDelay > 0 {
-			time.Sleep(time.Duration(options.InterfaceInitDelay) * time.Second)
-		}
 	}
 
 	if err = c.maps.tailCall("xdp_reply_v4", probeReply4); err != nil {

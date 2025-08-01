@@ -48,8 +48,10 @@ should run on any Linux architecture. Currently AMD64 and ARM
 (Raspberry Pi) are confirmed to work.
 
 Devices with constrained memory might have issues loading the default
-size flow state tables. This can now be overriden with the MaxFlows
-parameter on newer kernels.
+size flow state tables. This can now be overriden with the FlowsPerCPU
+parameter.
+
+`cmd/balancer -r 180 wlan0 192.168.0.1/24 192.168.101.1 192.168.0.10`
 
 ## Documentation
 

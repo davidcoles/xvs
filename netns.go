@@ -63,6 +63,12 @@ func (n *netns) nat(idx uint32, wantIPv6 bool) (r netip.Addr) {
 	return netip.AddrFrom4(ip4)
 }
 
+const namespace = "xvs"
+
+func (n *netns) netnsdel() {
+	exec.Command("ip", "netns", "del", namespace).Output()
+}
+
 //func (n *netns) nic() uint32     { return uint32(n.i0.idx) }
 //func (n *netns) src() [6]byte    { return n.i0.mac }
 //func (n *netns) dst() [6]byte    { return n.i1.mac }
@@ -75,7 +81,7 @@ func (n *netns) ipv4() netip.Addr { return n.i2.ip4 }
 func (n *netns) ipv6() netip.Addr { return n.i2.ip6 }
 func (n *netns) init(x *xdp.XDP) error {
 
-	namespace := "xvs"
+	//namespace := "xvs"
 
 	n.ns = namespace
 	//n.i0.nic = namespace + "0"
