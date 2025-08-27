@@ -118,7 +118,8 @@ func (n *netinfo) hw6() map[netip.Addr]neighbor {
 
 	hw6 := map[netip.Addr]neighbor{}
 
-	cmd := exec.Command("/bin/sh", "-c", "ip -6 neighbor show")
+	//cmd := exec.Command("/bin/sh", "-c", "ip -6 neighbor show")
+	cmd := exec.Command("ip", "-6", "neighbor", "show")
 	_, _ = cmd.StdinPipe()
 	//stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()

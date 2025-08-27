@@ -203,7 +203,8 @@ working/needing testing
 * rationalise netinfo
 
 https://archive.nanog.org/meetings/nanog51/presentations/Monday/NANOG51.Talk45.nanog51-Schaumann.pdf
-
+https://www.netdevconf.org/0.1/docs/herbert-UDP-Encapsulation-Linux.pdf
+https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4680868
 
 
 IPv6/L3 features:

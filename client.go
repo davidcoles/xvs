@@ -310,9 +310,9 @@ func (c *client) icmpQueue() {
 			}
 
 			raw := make([]byte, 14+len(packet)) // prepend packet with ethernet header
-			iface := c.netns.i2.idx
-			h_dest := c.netns.i3.mac
-			h_source := c.netns.i2.mac
+			iface := c.netns.vetha.idx
+			h_dest := c.netns.vethb.mac
+			h_source := c.netns.vetha.mac
 
 			copy(raw[0:], h_dest[:])
 			copy(raw[6:], h_source[:])
