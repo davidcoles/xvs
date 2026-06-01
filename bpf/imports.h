@@ -18,6 +18,7 @@
 
 enum {
     F_STICKY    = 0x01,
+    F_NO_TRACK  = 0x02,
     F_NOT_LOCAL = 0x80,
 };
 

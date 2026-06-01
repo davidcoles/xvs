@@ -38,6 +38,7 @@
 
 #define MAX_SERVICES 1024
 #define MAX_BACKENDS  256
+//#define DEV 0 // migrate to userspace setting
 
 #define SECOND_NS 1000000000l
 
@@ -45,6 +46,7 @@ const __u32 SHARED_MAP = 0;
 const __u32 UDP_MAP = 1;
 
 const __u32 ZERO = 0;
+const __u16 MAX_MTU = 2000;
 const __u16 MTU = 1500;
 const __u64 TIMEOUT = 60; // seconds
 
@@ -114,7 +116,6 @@ struct tunnel {
     __u8 h_dest[6];   // backend (l2) or router hw address (or nul to return to sender?)
     __u8 h_source[6]; // local hw address
     __u8 hints; // internal flags (ie.: not TunnelFlags)
-    //__u8 pad[7]; // round this up to 64 bytes - the size of a cache line
     __u8 pad[5]; // round this up to 64 bytes - the size of a cache line
     __u16 tot_len; // kernel use only! (original ipv4/ipv6 packet total length)
     __u32 _interface; // userspace use only!
@@ -142,10 +143,12 @@ struct settings {
     __u64 watchdog;
     __u64 packets;
     __u64 latency;
+    __u16 mtu;
     __u8 multi;
     __u8 era;
     __u8 active;
-    __u8 pad[5]; // must be multiple of 8 bytes
+    __u8 dev;
+    __u8 pad[2]; // must be multiple of 8 bytes
 };
 typedef struct settings settings_t;
 
@@ -307,6 +310,7 @@ struct metadata {
     __u16 new_flow:1;
     __u16 shared:1;
     __u8 era;
+    __u8 dev;
 };
 typedef struct metadata metadata_t;
 
@@ -632,6 +636,8 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 
     if(!(metadata->service = bpf_map_lookup_elem(&service_metrics, &key)))
 	return FWD_ERROR(metadata, err_service_not_found);
+
+    __u8 no_track = 0;
     
     if (flow) {
 	if (flow->era != metadata->era)
@@ -645,6 +651,7 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
 	    return FWD_ERROR(metadata, err_service_not_found);
 	}
     
+	no_track = service->dest[0].flags & F_NO_TRACK;
 	__u8 sticky = service->dest[0].flags & F_STICKY;
 	__u16 hash3 = l3_hash((fourtuple_t *) ft);
 	__u16 hash4 = l4_hash((fourtuple_t *) ft);
@@ -673,7 +680,10 @@ enum fwd_action lookup(fivetuple_t *ft, tunnel_t *t, metadata_t *metadata)
     // by a bogus ACK; but upstream stateful inspection DDoS
     // prevention would catch this
 
-    if (flow && !metadata->syn && flow->syn_seqn_reserved) {
+    if (no_track) {
+	//bpf_printk("no_track");
+	// do nothing
+    } else if (flow && !metadata->syn && flow->syn_seqn_reserved) {
 	if (flow->syn_seqn_reserved == bpf_ntohl(metadata->seq))
 	    metadata->new_flow = 1;
 	flow->syn_seqn_reserved = 0;
@@ -916,10 +926,10 @@ enum fwd_action lookup4(struct xdp_md *ctx, struct iphdr *ip, fivetuple_t *ft, t
 }
 
 static __always_inline
-int too_big(struct xdp_md *ctx, fivetuple_t *ft, int req_mtu, int vip_is_ipv6) {
+int too_big(struct xdp_md *ctx, fivetuple_t *ft, int req_mtu, int vip_is_ipv6, int dev) {
     return vip_is_ipv6 ?
 	icmp6_too_big(ctx, &(ft->daddr.addr6),  &(ft->saddr.addr6), req_mtu):
-	frag_needed4(ctx, ft->saddr.addr4.addr, req_mtu); // FIXME - source addr
+	frag_needed4(ctx, ft->daddr.addr4.addr, ft->saddr.addr4.addr, req_mtu, dev);
 }
 
 static __always_inline
@@ -1004,7 +1014,7 @@ enum fwd_action xdp_fwd(struct xdp_md *ctx, struct ethhdr *eth, fivetuple_t *ft,
 
     if (t->tot_len + overhead > metadata->mtu) {	
 	INC_COUNTER(metadata, too_big);
-	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6) < 0)
+	if (too_big(ctx, ft, metadata->mtu - overhead, ipv6, metadata->dev) < 0)
 	    return FWD_ERROR(metadata, err_adjust_failed);
 	return FWD_TX;
     }
@@ -1050,7 +1060,7 @@ int xdp_forward_func(struct xdp_md *ctx)
 	return XDP_PASS;
     }
 
-    metadata_t metadata = { .era = s->era, .shared = 1 };
+    metadata_t metadata = { .era = s->era, .shared = 1, .dev = s->dev, .mtu = s->mtu };
     void *data_end = (void *)(long)ctx->data_end;
     //void *data     = (void *)(long)ctx->data;
     //int ingress    = ctx->ingress_ifindex;
@@ -1058,7 +1068,8 @@ int xdp_forward_func(struct xdp_md *ctx)
     if (!(metadata.global = bpf_map_lookup_elem(&global_metrics, &ZERO)))
 	return XDP_DROP;
 
-    metadata.mtu = 1500;
+    if (metadata.mtu == 0) 
+	metadata.mtu = MTU;
     
     struct ethhdr *eth = (void *)(long)ctx->data;
     

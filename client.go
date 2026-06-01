@@ -64,12 +64,24 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 
 	c := &client{services: map[threetuple]*service{}, natmap: natmap{}, logger: options.Logger}
 
+	const IPv6_MINIMUM_MTU = 1280
+
 	var nics []uint32
+	var mtu int
 
 	for _, ifname := range interfaces {
 		if iface, err := net.InterfaceByName(ifname); err != nil {
 			return nil, err
 		} else {
+			if iface.MTU < IPv6_MINIMUM_MTU {
+				return nil, fmt.Errorf("Interface %s has MTU below %d (%d)", iface.Name, IPv6_MINIMUM_MTU, iface.MTU)
+			}
+			if mtu == 0 {
+				mtu = iface.MTU
+			}
+			if iface.MTU < mtu {
+				mtu = iface.MTU
+			}
 			nics = append(nics, uint32(iface.Index))
 		}
 	}
@@ -95,8 +107,11 @@ func newClientWithOptions(options Options, interfaces ...string) (_ *client, err
 		return nil, err
 	}
 
-	//c.settings = bpf_settings{veth: c.netns.nic(), vetha: c.netns.src(), vethb: c.netns.dst(), active: 1}
-	c.settings = bpf_settings{active: 1}
+	c.settings = bpf_settings{active: 1, mtu: uint16(mtu)}
+
+	if options.Development {
+		c.settings.dev = 1
+	}
 
 	if options.Bonding {
 		c.settings.multi = 0 // if untagged packet recieved then TX it rather than redirect

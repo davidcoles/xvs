@@ -132,10 +132,12 @@ type bpf_settings struct {
 	watchdog uint64 // periodically reset to 0
 	packets  uint64
 	latency  uint64
+	mtu      uint16
 	multi    uint8
 	era      uint8
 	active   uint8
-	pad      [5]uint8
+	dev      uint8
+	pad      [2]uint8
 }
 
 type bpf_tunnel struct {

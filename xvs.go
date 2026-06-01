@@ -52,6 +52,7 @@ type Options struct {
 	IPv4VLANs          map[uint16]netip.Prefix // VLAN ID/IPv4 Prefix mapping
 	IPv6VLANs          map[uint16]netip.Prefix // VLAN ID/IPv6 Prefix mapping
 	Routes             map[netip.Prefix]uint16 // Override route selection for layer 3 backends; prefix-to-VLAN ID map
+	Development        bool                    // Development mode
 	Logger             Logger
 }
 
@@ -107,6 +108,7 @@ type Service struct {
 	Port     uint16
 	Protocol Protocol
 	Sticky   bool
+	NoTrack  bool
 	//Flags    Flags
 }
 

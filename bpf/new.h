@@ -140,7 +140,7 @@ __u16 internet_checksum(void *data, void *data_end, __u32 csum)
 {
     __u16 *p = data;
     
-    for (int n = 0; n < MTU; n += 2) {
+    for (int n = 0; n < MAX_MTU; n += 2) {
 	if (p + 1 > data_end)
 	    break;
 	csum += *p;
@@ -389,7 +389,7 @@ int nulmac(const unsigned char *mac)
 }
 
 static __always_inline
-int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
+int frag_needed_trim(struct xdp_md *ctx, struct pointers *p, int dev)
 {
     const int max = 128;
     void *data_end = (void *)(long)ctx->data_end;
@@ -409,9 +409,11 @@ int frag_needed_trim(struct xdp_md *ctx, struct pointers *p)
     // if a packet was smaller than "max" bytes then it should not have been too big - drop
     if (iplen < max)
       return -1;
-    
-    // DELIBERATE BREAKAGE
-    p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+
+    if (dev) {
+	// DELIBERATE BREAKAGE
+	p->ip->daddr = 0; // prevent the ICMP from changing the path MTU whilst testing
+    }
     
     // truncate the packet if > max bytes (it could of course be exactly max bytes)
     if (iplen > max && bpf_xdp_adjust_tail(ctx, 0 - (int)(iplen - max)))
@@ -465,12 +467,12 @@ int frag_needed_trim6(struct xdp_md *ctx, struct pointers *p)
 
 
 static __always_inline
-int frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
+int frag_needed4(struct xdp_md *ctx, __be32 saddr, __be32 daddr, __u16 mtu, int dev)
 {
     struct pointers p = {};
     int iplen;
     
-    if ((iplen = frag_needed_trim(ctx, &p)) < 0)	
+    if ((iplen = frag_needed_trim(ctx, &p, dev)) < 0)	
 	return -1;
     
     void *data     = (void *)(long)ctx->data;
@@ -489,7 +491,7 @@ int frag_needed4(struct xdp_md *ctx, __be32 saddr, __u16 mtu)
     reverse_ethhdr(p.eth);
 
     int tot_len = sizeof(struct iphdr) + sizeof(struct icmphdr) + iplen;
-    new_iphdr(p.ip, tot_len, IPPROTO_ICMP, saddr, p.ip->saddr); // source becomes LB's IP, destination is the client
+    new_iphdr(p.ip, tot_len, IPPROTO_ICMP, saddr, daddr); // source becomes LB's IP, destination is the client
 
     // reply to client with LB's address
     // ensure DEST_UNREACH/FRAG_NEEDED is allowed out

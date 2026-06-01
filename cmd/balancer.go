@@ -31,7 +31,7 @@ func main() {
 	tportg := flag.Uint("G", 8888, "Port to use for GUE")
 	extra := flag.String("V", "", "Extra VLAN")
 	flows := flag.Uint("f", 1000, "Port to use for GUE")
-	//test := flag.Bool("T", false, "Library test mode")
+	test := flag.Bool("T", false, "Library test mode")
 
 	flag.Var(&vips, "v", "extra vips")
 	flag.Var(&serv, "p", "ports to add to vips")
@@ -88,7 +88,7 @@ func main() {
 	//logger := slog.Default()
 	//logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	options := xvs.Options{IPv4VLANs: vlan4, IPv6VLANs: vlan6, FlowsPerCPU: uint32(*flows)} //, Logger: logger}
+	options := xvs.Options{IPv4VLANs: vlan4, IPv6VLANs: vlan6, FlowsPerCPU: uint32(*flows), Development: *test} //, Logger: logger}
 
 	fmt.Println("Starting ...")
 
