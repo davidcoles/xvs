@@ -130,7 +130,7 @@ func (n *netinfo) hw6() map[netip.Addr]neighbor {
 	}
 
 	defer stdout.Close()
-	defer cmd.Close()
+	defer cmd.Wait()
 
 	s := bufio.NewScanner(stdout)
 
